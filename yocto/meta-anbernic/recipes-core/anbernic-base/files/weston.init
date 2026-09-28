@@ -13,6 +13,8 @@ weston --backend=drm --shell=kiosk --socket=$WAYLAND_DISPLAY --log=/var/log/west
 (
 	export HOME=/data
 	while :; do
+		# SDL gives up on wayland if the socket isn't there yet
+		while [ ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]; do sleep 0.02; done
 		launcher=/data/bin/launcher
 		[ -x $launcher ] || launcher=/usr/bin/launcher
 		$launcher

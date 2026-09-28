@@ -70,3 +70,18 @@ SPL/U-Boot/TF-A at 8 KiB is shared by both slots. Updating it is the one step th
 tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/rg35xx-sp/u-boot-sunxi-with-spl.bin
 ```
 Recovery: flash the full `.wic.zst` from a PC (see [yocto.md](yocto.md)).
+
+## Kernel config iteration
+
+Every `defconfig` edit reruns `do_unpack`, and `kernel.bbclass` cleans `${B}` there, so bitbake rebuilds the kernel from scratch every time.
+To iterate faster, build out of tree with host clang, then swap the Image into the current slot image:
+
+```
+K=/mnt/multimedia/anbernic-yocto/kernel-dev    # src/ = patched source, out/ = build, bin/bc = Yocto's bc (host has none)
+cp yocto/meta-anbernic/recipes-kernel/linux/files/defconfig $K/out/.config
+(cd $K/src && PATH=$K/bin:$PATH make O=$K/out ARCH=arm64 LLVM=1 olddefconfig Image -j16)   # incremental
+cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-zst> && cp ../out/arch/arm64/boot/Image root/boot/Image-7.2.0 && mksquashfs root t.sqfs -comp zstd -noappend'
+tools/ota $K/test/t.sqfs
+```
+
+When it works: `make savedefconfig` and copy `out/defconfig` back into the recipe (bitbake runs `olddefconfig`, so a minimal defconfig is enough).

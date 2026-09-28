@@ -44,3 +44,10 @@ IMAGE_FEATURES += "read-only-rootfs"
 
 # No deferred first-boot postinst scripts; don't build run-postinsts (-> util-linux)
 ROOTFS_BOOTSTRAP_INSTALL = ""
+
+# read-only-rootfs puts the dropbear host key on tmpfs: a new RSA key (1.6 s) on every boot.
+# /data is mounted in rcS (S40anbernic), before dropbear: generate it once per card instead.
+ROOTFS_POSTPROCESS_COMMAND:append = " dropbear_key_on_data"
+dropbear_key_on_data () {
+	sed -i 's#^DROPBEAR_RSAKEY_DIR=.*#DROPBEAR_RSAKEY_DIR=/data/dropbear#' ${IMAGE_ROOTFS}/etc/default/dropbear
+}

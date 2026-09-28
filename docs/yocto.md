@@ -27,7 +27,7 @@ Output: `/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp/anbern
 conf/machine/rg35xx-sp.conf              machine: cortex-a53, dtbs, u-boot defconfig, wic
 conf/distro/anbernic.conf                our distro (no poky): busybox+mdev, 6 DISTRO_FEATURES, no SPDX, no python in build graph
 recipes-kernel/linux/linux-anbernic_7.2.bb   kernel.org 7.2 + 29 patches
-recipes-kernel/linux/files/defconfig     ROCKNIX H700 config (initramfs off, firmware built-in)
+recipes-kernel/linux/files/defconfig     savedefconfig, trimmed to this board: all built in (no modules), no initramfs, firmware built in
 recipes-kernel/linux/files/firmware/     panel init blobs + rtw88/rtl_bt fw → CONFIG_EXTRA_FIRMWARE
 recipes-bsp/u-boot/                      BL31 into SPL, BOOTDELAY=0
 recipes-bsp/trusted-firmware-a/          COMPATIBLE_MACHINE only
