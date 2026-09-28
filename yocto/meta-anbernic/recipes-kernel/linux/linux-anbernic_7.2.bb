@@ -1,0 +1,53 @@
+SUMMARY = "Mainline Linux with ROCKNIX H700 patches for the Anbernic RG35XX-SP"
+LICENSE = "GPL-2.0-only"
+LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
+
+inherit kernel
+
+COMPATIBLE_MACHINE = "rg35xx-sp"
+
+# Patches: ROCKNIX projects/ROCKNIX/devices/H700/patches/linux, refreshed for 7.2
+# (fuzz removed). Skipped 0140/0144/0150: need ROCKNIX's out-of-tree joypad driver,
+# we use mainline gpio-keys instead.
+SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
+    file://defconfig \
+    file://firmware \
+    file://0001-0002-rg35xx-enable-HDMI-LCD.patch \
+    file://0002-0003-Update-sun8i_tcon_top.c.patch \
+    file://0003-0007-rg35xx-add-GPU-opp.patch \
+    file://0004-0008-v8_20260804_james_hilliard1_introduce_allwinner.patch \
+    file://0005-0010-rg35xx-enable-pwm-backlight.patch \
+    file://0006-0040-Revert-usb-musb-Fix-hardware-lockup-on-first-Rx.patch \
+    file://0007-0110-v2_20250226_kikuchan98_drm_panel_add_generic_mi.patch \
+    file://0008-0111-rg35xx-2024-use-panel-mipi-dpi-spi-driver.patch \
+    file://0009-0124-battery-name.patch \
+    file://0010-0126-20241018_macroalpha82_rg35xx_add_additional_har.patch \
+    file://0011-0127-enable-mmc1-for-RG35XX-2024.patch \
+    file://0012-0151-phy-fix-OTG-host-mode.patch \
+    file://0013-0152-rg35xx-2024-enable-usb-otg.patch \
+    file://0014-0153-enable-rgb-leds.patch \
+    file://0015-0154-rocknix-dt-id.patch \
+    file://0016-0155-sun4i-set-rgb-connector-as-DSI.patch \
+    file://0017-0156-rg35xx-plus-add-pcf8563-rtc.patch \
+    file://0018-0157-input-axp20x-pek-do-not-report-the-key-press-th.patch \
+    file://0019-0158-mmc-sunxi-mmc-mask-data0-when-updating-the-cloc.patch \
+    file://0020-0159-arm64-dts-rg35xx-2024-keep-the-second-sd-card-p.patch \
+    file://0021-0160-phy-sun4i-usb-disable-the-clock-that-was-enable.patch \
+    file://0022-0161-drm-sun4i-gate-the-display-pipeline-across-syst.patch \
+    file://0023-0162-pinctrl-sunxi-release-the-lcd0-pads-while-the-p.patch \
+    file://0024-0163-asoc-sun4i-codec-suspend-the-codec-and-switch-t.patch \
+    file://0025-0200-h700-update-opps.patch \
+    file://0026-0204-dts-Enable-hdmi-sound.patch \
+    file://0027-0210-h616-cpu-opp-mark-480MHz-as-suspend-opp.patch \
+    file://0028-0901-dts-rg35xx-2024-fix-led-1-color.patch \
+    file://0029-arm64-dts-allwinner-add-RG35XX-SP-v2-panel-dts.patch \
+"
+SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
+
+S = "${UNPACKDIR}/linux-${PV}"
+
+# Panel init sequences + wifi/bt firmware are built into the kernel
+# (CONFIG_EXTRA_FIRMWARE) so the display comes up without an initramfs.
+do_configure:prepend() {
+    cp -rT ${UNPACKDIR}/firmware ${S}/external-firmware
+}

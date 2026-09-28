@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ROCKNIX <rocknix@rocknix>
+Date: Mon, 28 Sep 2026 17:43:53 +0200
+Subject: [PATCH] 0124-battery-name
+
+Imported from ROCKNIX distribution (projects/ROCKNIX/devices/H700/patches/linux), refreshed for linux 7.2.
+Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distribution]
+---
+ drivers/power/supply/axp20x_battery.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/power/supply/axp20x_battery.c b/drivers/power/supply/axp20x_battery.c
+index 50ca8e110..d75725cee 100644
+--- a/drivers/power/supply/axp20x_battery.c
++++ b/drivers/power/supply/axp20x_battery.c
+@@ -886,7 +886,7 @@ static int axp717_battery_prop_writeable(struct power_supply *psy,
+ }
+ 
+ static const struct power_supply_desc axp209_batt_ps_desc = {
+-	.name = "axp20x-battery",
++	.name = "battery",
+ 	.type = POWER_SUPPLY_TYPE_BATTERY,
+ 	.properties = axp20x_battery_props,
+ 	.num_properties = ARRAY_SIZE(axp20x_battery_props),
+@@ -896,7 +896,7 @@ static const struct power_supply_desc axp209_batt_ps_desc = {
+ };
+ 
+ static const struct power_supply_desc axp717_batt_ps_desc = {
+-	.name = "axp20x-battery",
++	.name = "battery",
+ 	.type = POWER_SUPPLY_TYPE_BATTERY,
+ 	.properties = axp717_battery_props,
+ 	.num_properties = ARRAY_SIZE(axp717_battery_props),

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ROCKNIX <rocknix@rocknix>
+Date: Mon, 28 Sep 2026 17:43:54 +0200
+Subject: [PATCH] 0155-sun4i-set-rgb-connector-as-DSI
+
+Imported from ROCKNIX distribution (projects/ROCKNIX/devices/H700/patches/linux), refreshed for linux 7.2.
+Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distribution]
+---
+ drivers/gpu/drm/sun4i/sun4i_rgb.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sun4i/sun4i_rgb.c b/drivers/gpu/drm/sun4i/sun4i_rgb.c
+index dfb6acc42..e29c40086 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_rgb.c
++++ b/drivers/gpu/drm/sun4i/sun4i_rgb.c
+@@ -222,7 +222,7 @@ int sun4i_rgb_init(struct drm_device *drm, struct sun4i_tcon *tcon)
+ 					 &sun4i_rgb_con_helper_funcs);
+ 		ret = drm_connector_init(drm, &rgb->connector,
+ 					 &sun4i_rgb_con_funcs,
+-					 DRM_MODE_CONNECTOR_Unknown);
++					 DRM_MODE_CONNECTOR_DSI);
+ 		if (ret) {
+ 			dev_err(drm->dev, "Couldn't initialise the rgb connector\n");
+ 			goto err_cleanup_connector;

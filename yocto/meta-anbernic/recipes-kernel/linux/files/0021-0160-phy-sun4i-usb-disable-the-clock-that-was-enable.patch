@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ROCKNIX <rocknix@rocknix>
+Date: Mon, 28 Sep 2026 17:43:55 +0200
+Subject: [PATCH] 0160-phy-sun4i-usb-disable-the-clock-that-was-enabled
+
+Imported from ROCKNIX distribution (projects/ROCKNIX/devices/H700/patches/linux), refreshed for linux 7.2.
+Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distribution]
+---
+ drivers/phy/allwinner/phy-sun4i-usb.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/phy/allwinner/phy-sun4i-usb.c b/drivers/phy/allwinner/phy-sun4i-usb.c
+index 201d17208..5e826a3c0 100644
+--- a/drivers/phy/allwinner/phy-sun4i-usb.c
++++ b/drivers/phy/allwinner/phy-sun4i-usb.c
+@@ -318,7 +318,7 @@ static int sun4i_usb_phy_init(struct phy *_phy)
+ 			writel(val, phy2->pmu + REG_HCI_PHY_CTL);
+ 		}
+ 
+-		clk_disable_unprepare(phy->clk2);
++		clk_disable_unprepare(phy2->clk2);
+ 	}
+ 
+ 	if (phy->pmu && data->cfg->hci_phy_ctl_clear) {

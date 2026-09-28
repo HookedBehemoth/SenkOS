@@ -1,0 +1,2 @@
+# Allwinner FEL (BROM USB boot) - let the logged-in user run sunxi-fel
+SUBSYSTEM=="usb", ATTR{idVendor}=="1f3a", ATTR{idProduct}=="efe8", TAG+="uaccess"

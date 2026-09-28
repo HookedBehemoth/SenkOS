@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ROCKNIX <rocknix@rocknix>
+Date: Mon, 28 Sep 2026 17:43:51 +0200
+Subject: [PATCH] 0003-Update-sun8i_tcon_top.c
+
+Imported from ROCKNIX distribution (projects/ROCKNIX/devices/H700/patches/linux), refreshed for linux 7.2.
+Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distribution]
+---
+ drivers/gpu/drm/sun4i/sun8i_tcon_top.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
+index 8adda578c..badb6609d 100644
+--- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
++++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
+@@ -179,7 +179,7 @@ static int sun8i_tcon_top_bind(struct device *dev, struct device *master,
+ 	 * At least on H6, some registers have some bits set by default
+ 	 * which may cause issues. Clear them here.
+ 	 */
+-	writel(0, regs + TCON_TOP_PORT_SEL_REG);
++	writel(0x20, regs + TCON_TOP_PORT_SEL_REG);
+ 	writel(0, regs + TCON_TOP_GATE_SRC_REG);
+ 
+ 	/*

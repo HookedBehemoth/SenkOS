@@ -1,0 +1,5 @@
+bitbake/
+openembedded-core/
+meta-yocto/
+meta-arm/
+build.log

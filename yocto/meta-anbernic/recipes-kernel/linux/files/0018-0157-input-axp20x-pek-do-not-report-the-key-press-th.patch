@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ROCKNIX <rocknix@rocknix>
+Date: Mon, 28 Sep 2026 17:43:55 +0200
+Subject: [PATCH] 
+ 0157-input-axp20x-pek-do-not-report-the-key-press-that-woke-the-system
+
+Imported from ROCKNIX distribution (projects/ROCKNIX/devices/H700/patches/linux), refreshed for linux 7.2.
+Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distribution]
+---
+ drivers/input/misc/axp20x-pek.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/misc/axp20x-pek.c b/drivers/input/misc/axp20x-pek.c
+index 24f9e9d89..56479c825 100644
+--- a/drivers/input/misc/axp20x-pek.c
++++ b/drivers/input/misc/axp20x-pek.c
+@@ -26,6 +26,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+ #include <linux/slab.h>
++#include <linux/suspend.h>
+ 
+ #define AXP20X_PEK_STARTUP_MASK		(0xc0)
+ #define AXP20X_PEK_SHUTDOWN_MASK	(0x03)
+@@ -204,10 +205,19 @@ static irqreturn_t axp20x_pek_irq(int irq, void *pwr)
+ 	 * The power-button is connected to ground so a falling edge (dbf)
+ 	 * means it is pressed.
+ 	 */
+-	if (irq == axp20x_pek->irq_dbf)
++	if (irq == axp20x_pek->irq_dbf) {
++		/*
++		 * A press that woke the system has done its job; reporting it
++		 * would suspend again at once. The release is still reported so
++		 * the key is not left held.
++		 */
++		if (pm_suspend_in_progress())
++			return IRQ_HANDLED;
++
+ 		input_report_key(idev, KEY_POWER, true);
+-	else if (irq == axp20x_pek->irq_dbr)
++	} else if (irq == axp20x_pek->irq_dbr) {
+ 		input_report_key(idev, KEY_POWER, false);
++	}
+ 
+ 	input_sync(idev);
+ 

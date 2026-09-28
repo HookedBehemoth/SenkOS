@@ -1,0 +1,32 @@
+header:
+  version: 18
+
+machine: rg35xx-sp
+distro: anbernic
+target: anbernic-image
+
+repos:
+  meta-anbernic:
+    path: meta-anbernic
+  bitbake:
+    url: https://git.openembedded.org/bitbake
+    branch: "2.18"
+    layers:
+      .: disabled
+  openembedded-core:
+    url: https://git.openembedded.org/openembedded-core
+    branch: wrynose
+    layers:
+      meta:
+  meta-arm:
+    url: https://git.yoctoproject.org/meta-arm
+    branch: wrynose
+    layers:
+      meta-arm:
+      meta-arm-toolchain:
+
+local_conf_header:
+  anbernic: |
+    INHERIT += "rm_work"
+    # build dirs live on /mnt/multimedia (see ./kas); rm_work still keeps them small
+    BB_DISKMON_DIRS = "STOPTASKS,${TMPDIR},2G,100K STOPTASKS,${DL_DIR},2G,100K HALT,${TMPDIR},500M,10K"

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ROCKNIX <rocknix@rocknix>
+Date: Mon, 28 Sep 2026 17:43:55 +0200
+Subject: [PATCH] 0159-arm64-dts-rg35xx-2024-keep-the-second-sd-card-powered
+
+Imported from ROCKNIX distribution (projects/ROCKNIX/devices/H700/patches/linux), refreshed for linux 7.2.
+Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distribution]
+---
+ .../boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts     | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
+index 8a0e2b913..dcf7bfc9f 100644
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
+@@ -284,6 +284,8 @@ reg_vcc3v3_mmc2: regulator-vcc3v3-mmc2 {
+ 		regulator-min-microvolt = <3300000>;
+ 		regulator-max-microvolt = <3300000>;
+ 		regulator-name = "vcc3v3-mmc2";
++		/* The card is back-powered through its pulled-up I/O pins when this is off. */
++		regulator-always-on;
+ 	};
+ 
+ 	reg_usb0_vbus: regulator-usb0-vbus {
