@@ -1,4 +1,4 @@
-SUMMARY = "RG35XX-SP image: kernel + busybox (init, mdev, shell), USB gadget + ssh, A/B slots, lid sleep, GPU demo"
+SUMMARY = "RG35XX-SP image: kernel + busybox (init, mdev, shell), USB gadget + ssh, A/B slots, lid sleep, launcher"
 LICENSE = "MIT"
 
 inherit image
@@ -30,14 +30,16 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-good-matroska \
     gstreamer1.0-plugins-base-videoconvertscale \
     wireless-regdb-static \
+    liberation-fonts \
+    ttf-bitstream-vera \
 "
 IMAGE_LINGUAS = ""
-# Weston is started by anbernic-base (root + seatd, kiosk shell); no fonts (no Weston clients)
-BAD_RECOMMENDATIONS += "weston-init liberation-fonts"
+# Weston is started by anbernic-base (root + seatd, kiosk shell)
+BAD_RECOMMENDATIONS += "weston-init"
 # Bring-up only: passwordless root on the LCD, serial and USB (ssh) consoles. Remove before anything ships.
 IMAGE_FEATURES = "empty-root-password allow-empty-password allow-root-login"
 # Slots are squashfs (zstd): smaller, and decompressing beats the SD card's read speed.
-# Writable: /var/volatile (tmpfs), /uboot (FAT, A/B state). A data partition comes later.
+# Writable: /var/volatile (tmpfs), /uboot (FAT, A/B state), /data (ext4, rest of the card, see `ab`).
 IMAGE_FEATURES += "read-only-rootfs"
 
 # No deferred first-boot postinst scripts; don't build run-postinsts (-> util-linux)

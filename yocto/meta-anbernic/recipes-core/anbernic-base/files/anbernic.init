@@ -7,7 +7,7 @@
 # `ab suspend`-style callers must stop this first (SIGTERM = magic close).
 watchdog -T 16 -t 4 /dev/watchdog
 
-ab mount	# /uboot exists in the (read-only) image
+ab mount	# /uboot, /data: mount points exist in the (read-only) image
 
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 g=/sys/kernel/config/usb_gadget/g1

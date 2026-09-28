@@ -2,3 +2,6 @@
 raw/
 *.log
 *.img
+tools/bitbake/
+tools/meta-arm/
+tools/openembedded-core/

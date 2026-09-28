@@ -21,8 +21,9 @@ Fixed MACs (`02:35:58:00:00:01` device, `…:02` host), so the host keeps the sa
 ```
 8 KiB   SPL + U-Boot (+ TF-A BL31)       not A/B; see "Bootloader" below
 p1 FAT  64M  boot.scr, ab.txt            mounted at /uboot
-p2 ext4 512M slot a: rootfs, /boot/Image + dtb
-p3 ext4 512M slot b: same
+p2 squashfs 512M slot a: rootfs, /boot/Image + dtb
+p3 squashfs 512M slot b: same
+p4 ext4  rest    /data, read-write; made by the first boot (`ab mount`), survives slot updates
 ```
 
 `boot.scr` ([boot.cmd](../yocto/meta-anbernic/recipes-bsp/u-boot/files/boot.cmd)) reads `ab.txt`:
@@ -46,6 +47,21 @@ tools/ssh ab status
 ```
 
 Device side: [ab](../yocto/meta-anbernic/recipes-core/anbernic-base/files/ab) with `status|mount|flash|commit|boot`.
+
+## /data and the launcher
+
+`/data` is the writable, non-system part: the image never touches it, so what lives there survives
+`tools/ota`. wic can't know the card size, so the image has no p4. At boot, `ab mount` does this:
+- If p4 is missing, it appends one that spans the rest of the card (`sfdisk`).
+- It formats p4 only while `/uboot/data-new` marks the partition as just created by it.
+- It mounts p4 at `/data`.
+
+The UI is [launcher/](../launcher) (SDL2 + HarfBuzz + fontconfig, immediate mode). `/etc/init.d/weston` runs
+`/data/bin/launcher` if it exists, or else the image's `/usr/bin/launcher`. It restarts the launcher whenever it exits.
+- `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/bin`, and restarts it. You don't need to reflash.
+- `tools/ssh rm /data/bin/launcher`: goes back to the image's launcher.
+- Its Apps page lists every executable in `/data/apps`.
+- On the desktop: `meson setup build launcher && ninja -C build && build/launcher` (arrows, Enter, PgUp/PgDn).
 
 ## Bootloader
 

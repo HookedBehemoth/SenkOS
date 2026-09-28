@@ -1,8 +1,21 @@
 #!/bin/sh
 # Weston on the LCD: DRM backend, kiosk shell (every client fullscreen). seatd (rc5.d S09)
 # hands it the DRM/input devices. Clients: see /etc/profile.d/wayland.sh.
+# Then the UI: /data/bin/launcher when there is one (tools/deploy-launcher), else the image's.
+# Restarted whenever it exits, so a deploy only has to kill the old one.
 [ "$1" = start ] || exit 0
 . /etc/profile.d/wayland.sh
+. /etc/profile.d/panvk.sh
 mkdir -p -m 0700 $XDG_RUNTIME_DIR
 weston --backend=drm --shell=kiosk --socket=$WAYLAND_DISPLAY --log=/var/log/weston.log \
 	</dev/null >/dev/null 2>&1 &
+# HOME on /data: fontconfig and Mesa's shader cache need somewhere writable, and it persists
+(
+	export HOME=/data
+	while :; do
+		launcher=/data/bin/launcher
+		[ -x $launcher ] || launcher=/usr/bin/launcher
+		$launcher
+		sleep 1
+	done
+) </dev/null >/var/log/launcher.log 2>&1 &

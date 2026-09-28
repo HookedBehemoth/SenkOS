@@ -1,4 +1,4 @@
-SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slot tool, watchdog, Weston startup"
+SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /data, watchdog, Weston + launcher startup"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
@@ -15,7 +15,7 @@ do_install() {
     install -Dm0644 ${S}/wayland.sh ${D}${sysconfdir}/profile.d/wayland.sh
     install -Dm0755 ${S}/weston.init ${D}${sysconfdir}/init.d/weston
     install -Dm0644 ${S}/weston.ini ${D}${sysconfdir}/xdg/weston/weston.ini
-    install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot
+    install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot ${D}/data
     # after populate-volatile (S37); trial timer last, once everything else came up
     ln -s ../init.d/anbernic ${D}${sysconfdir}/rcS.d/S40anbernic
     printf '#!/bin/sh\n[ "$1" = start ] && exec %s/ab boot\n' ${sbindir} > ${D}${sysconfdir}/init.d/ab-boot
@@ -24,5 +24,5 @@ do_install() {
     ln -s ../init.d/weston ${D}${sysconfdir}/rc5.d/S20weston
 }
 
-FILES:${PN} += "/uboot"
-RDEPENDS:${PN} = "busybox dropbear weston seatd"
+FILES:${PN} += "/uboot /data"
+RDEPENDS:${PN} = "busybox dropbear weston seatd launcher util-linux-sfdisk e2fsprogs-mke2fs"
