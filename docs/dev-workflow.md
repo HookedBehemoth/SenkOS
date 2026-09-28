@@ -67,6 +67,10 @@ mGBA (GBA) isn't in the image yet. Its recipe only deploys it: `kas build --targ
 `deploy/images/rg35xx-sp/mgba/` to `/data/mgba` and run it from there: mGBA looks for `portable.ini` in
 the cwd and then keeps its config next to it. `config.ini` holds the gamepad bindings. Saves go next to the ROM (`/data/roms/gba`).
 
+SuperTuxKart works the same way: `kas build --target supertuxkart`, copy `deploy/images/rg35xx-sp/supertuxkart/` (786 MB, too big
+for a slot) to `/data/supertuxkart`. It finds `data/` next to the binary and keeps its config in `$HOME/.config` (`/data`).
+Its shared libs (OpenAL Soft, vorbis, curl, ...) are in the image.
+
 ## Bootloader
 
 SPL/U-Boot/TF-A at 8 KiB is shared by both slots. Updating it is the one step that can still need the card reader:

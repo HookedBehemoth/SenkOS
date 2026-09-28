@@ -4,6 +4,7 @@ LICENSE = "MIT"
 inherit image
 
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
+# openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
 IMAGE_INSTALL = " \
     base-files \
     base-passwd \
@@ -36,6 +37,11 @@ IMAGE_INSTALL = " \
     libasound \
     libpng \
     libzstd \
+    openal-soft \
+    libvorbis \
+    libjpeg-turbo \
+    libcurl \
+    libcrypto \
 "
 IMAGE_LINGUAS = ""
 # Weston is started by anbernic-base (root + seatd, kiosk shell)

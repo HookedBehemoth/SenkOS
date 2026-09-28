@@ -245,7 +245,7 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
     case SDLK_DOWN: button = SDL_CONTROLLER_BUTTON_DPAD_DOWN; break;
     case SDLK_LEFT: button = SDL_CONTROLLER_BUTTON_DPAD_LEFT; break;
     case SDLK_RIGHT: button = SDL_CONTROLLER_BUTTON_DPAD_RIGHT; break;
-    case SDLK_RETURN: button = SDL_CONTROLLER_BUTTON_B; break;
+    case SDLK_RETURN: button = SDL_CONTROLLER_BUTTON_A; break;
     case SDLK_PAGEUP: button = SDL_CONTROLLER_BUTTON_LEFTSHOULDER; break;
     case SDLK_PAGEDOWN: button = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER; break;
     }
@@ -271,8 +271,8 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
     break;
   case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: turn_page(page, -1); break;
   case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: turn_page(page, 1); break;
-  /* The A button is BTN_EAST (Nintendo layout), which SDL calls B. */
-  case SDL_CONTROLLER_BUTTON_B: nav_activate(ui); break;
+  /* A by label: SDL_GAMECONTROLLERCONFIG (/etc/profile.d/wayland.sh) maps the pad */
+  case SDL_CONTROLLER_BUTTON_A: nav_activate(ui); break;
   }
   return true;
 }
