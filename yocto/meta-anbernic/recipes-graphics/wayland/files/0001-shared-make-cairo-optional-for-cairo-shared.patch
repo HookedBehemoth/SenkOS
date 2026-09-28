@@ -1,0 +1,52 @@
+From: SenkOS
+Subject: [PATCH] build: make cairo and libpng optional without clients
+
+cairo-shared (image loader, cairo utils, frames) and toytoolkit are only
+linked by the nested/headless backends, xwayland and the clients. A
+DRM-backend kiosk build needs none of them, so do not require cairo/libpng
+at configure time, only build the helpers when something links them, and
+skip weston-screenshooter (toytoolkit, cairo) when cairo is missing.
+
+Upstream-Status: Pending
+---
+--- a/clients/meson.build	2026-09-28 22:31:18.211084189 +0200
++++ b/clients/meson.build	2026-09-28 22:36:19.093381111 +0200
+@@ -36,6 +36,7 @@
+ 	srcs_toytoolkit,
+ 	include_directories: common_inc,
+ 	dependencies: deps_toytoolkit,
++	build_by_default: false,
+ 	install: false,
+ )
+ dep_toytoolkit = declare_dependency(
+@@ -500,7 +501,7 @@
+ 	env_modmap += 'weston-desktop-shell=@0@;'.format(exe_shell_desktop.full_path())
+ endif
+ 
+-if get_option('shell-desktop') or get_option('deprecated-shell-fullscreen') or get_option('shell-kiosk') or get_option('shell-ivi')
++if (get_option('shell-desktop') or get_option('deprecated-shell-fullscreen') or get_option('shell-kiosk') or get_option('shell-ivi')) and dependency('cairo', required: false).found()
+ 	exe_shooter = executable(
+ 		'weston-screenshooter',
+ 		'screenshot.c',
+--- a/shared/meson.build	2026-09-28 22:31:18.218937451 +0200
++++ b/shared/meson.build	2026-09-28 22:32:50.215936900 +0200
+@@ -50,8 +50,9 @@
+ 
+ deps_cairo_shared = [
+ 	dep_libshared,
+-	dependency('cairo'),
+-	dependency('libpng'),
++	# only the nested/headless backends, xwayland and the clients use cairo-shared
++	dependency('cairo', required: false),
++	dependency('libpng', required: false),
+ 	dep_pixman,
+ 	dep_libm,
+ ]
+@@ -92,6 +93,7 @@
+ 	srcs_cairo_shared,
+ 	include_directories: common_inc,
+ 	dependencies: deps_cairo_shared,
++	build_by_default: false,
+ 	install: false
+ )
+ dep_lib_cairo_shared = declare_dependency(

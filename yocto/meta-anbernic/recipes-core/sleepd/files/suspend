@@ -1,0 +1,5 @@
+#!/bin/sh
+# Suspend to RAM now, return after wake-up (sleepd runs this on lid close / power key).
+# The watchdog keeps running: TF-A's suspend stub pauses it for the sleep.
+# A USB gadget that comes back detached is rebound by /etc/init.d/anbernic.
+echo mem > /sys/power/state

@@ -1,0 +1,28 @@
+# A/B boot. ab.txt next to this script holds slot=<a|b> (last known good) and, after
+# `ab flash`, tryslot=<a|b> tries=<n>. tryslot gets 3 boots; `ab commit` in Linux makes
+# it the new slot, otherwise we fall back. Slot a = partition 2, b = partition 3.
+setenv slot a
+setenv tryslot
+setenv tries 0
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} ab.txt; then
+	env import -t ${scriptaddr} ${filesize}
+fi
+setenv bslot ${slot}
+if test -n "${tryslot}"; then
+	if test ${tries} -lt 3; then
+		setexpr tries ${tries} + 1
+		setenv bslot ${tryslot}
+		env export -t ${scriptaddr} slot tryslot tries
+	else
+		echo "slot ${tryslot} failed 3 times, back to ${slot}"
+		env export -t ${scriptaddr} slot
+	fi
+	fatwrite ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} ab.txt ${filesize}
+fi
+if test "${bslot}" = b; then setenv rootpart 3; else setenv rootpart 2; fi
+part uuid ${devtype} ${devnum}:${rootpart} rootuuid
+load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
+load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/sun50i-h700-anbernic-rg35xx-sp.dtb
+# ro: slots are squashfs (an ext4 slot still works, init remounts it rw)
+setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 ab=${bslot}
+booti ${kernel_addr_r} - ${fdt_addr_r}

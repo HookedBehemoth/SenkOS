@@ -1,0 +1,5 @@
+#!/bin/sh
+# ssh to the handheld over the USB cable (NCM gadget, device is 10.55.0.1).
+# Host keys change with every flashed slot, so don't record them.
+exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+	-o ConnectTimeout=3 root@10.55.0.1 "$@"

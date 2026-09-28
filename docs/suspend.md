@@ -48,3 +48,28 @@ Sources: ROCKNIX commit [`fca6ac51` "H700: firmware deep sleep"](https://github.
 [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub),
 [kailashrs/H700_rocknix_enhancement](https://github.com/kailashrs/H700_rocknix_enhancement) (DESIGN/OEM_STANDBY/VALIDATION docs),
 [MustardOS suspend.sh](https://github.com/MustardOS/internal/blob/main/script/system/suspend.sh), muOS config on the card.
+
+## Stock "Super standby": what boot0 does on wake (reverse engineered)
+
+From the boot0 in the reference image (`RG35XXSP-V1.1.5-BASE-…img`, eGON.BT0 at 8 KiB, AArch32 Thumb, loaded at `0x20000`; `llvm-objdump --triple=thumbv7a`):
+
+| RTC register (`0x07000000 +`) | Meaning in boot0 |
+|---|---|
+| `0x1f8` bit 16 | **super standby flag**: printed as "rtc standby flag is 0x%x, super standby flag is 0x%x", then the register is cleared |
+| `0x100` (GP0) | `0x7654321x`: magic in the upper 28 bits, low nibble = mode |
+| `0x118`/`0x11c` (GP6/GP7) | start / length of a DRAM range that boot0 sums (32-bit word sum) after DRAM init |
+| `0x10c` (GP3) | expected sum; mismatch → "dram crc error" and **hang** |
+| `0x1fc` | resume address: "find standby flag, jump to addr 0x%x", boot0 jumps there instead of loading U-Boot |
+| `0x1f4` bit 0 | DRAM pad hold (retention); our suspend stub releases it on resume too |
+| `0x108` (GP2) | not standby: `0x5AA5A55A` = "eraly jump fel", `0x5AA55AA5` = crashdump → FEL |
+
+So in Super standby the **SoC really powers off**: the AXP717 cuts every rail except DRAM, and wake-up is a cold boot through the BROM. boot0 re-inits DRAM without clearing it ("donot select dram_para when wakeup from standby"), checks the RAM sum, and jumps back into the vendor BL31, which restores the SoC and returns to Linux.
+
+Porting that to our stack would take three pieces:
+1. **SPL**: flag check, DRAM init in resume mode (the stub's `dram-resume.patch` already has that path), jump to the BL31 warm entry.
+2. **TF-A**: the stub ends with an AXP717 power-down instead of WFI.
+3. **Linux**: every driver has to survive a full SoC power loss (CCU, pinctrl, GIC and so on get reset). Mainline sunxi drivers mostly don't save and restore that state. The BSP kernel's own standby code does.
+
+Also, only PMIC-side events can wake it: the power key and VBUS. The lid Hall sensor is on a SoC GPIO (PE7), so it **can't wake the device from Super standby**.
+
+Order of work: get normal deep sleep (TF-A stub) working and measure its drain first; then decide whether Super is worth the kernel-wide effort.

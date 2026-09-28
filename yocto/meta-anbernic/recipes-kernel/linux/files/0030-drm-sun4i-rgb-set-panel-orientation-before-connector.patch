@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Mon, 28 Sep 2026 20:54:12 +0200
+Subject: [PATCH] drm/sun4i: rgb: set panel orientation before connector
+ registration
+
+panel-mipi set the orientation property from .get_modes, which runs after
+the connector is registered and trips WARNs in drm_mode_object_add and
+drm_object_attach_property. Set it at connector init from the panel's
+.get_orientation instead and drop the late call from panel-mipi.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/panel/panel-mipi.c | 6 ------
+ drivers/gpu/drm/sun4i/sun4i_rgb.c  | 4 ++++
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-mipi.c b/drivers/gpu/drm/panel/panel-mipi.c
+index 98603c700..19ed2e511 100644
+--- a/drivers/gpu/drm/panel/panel-mipi.c
++++ b/drivers/gpu/drm/panel/panel-mipi.c
+@@ -664,12 +664,6 @@ static int panel_mipi_get_modes(struct drm_panel *panel,
+ 	drm_display_info_set_bus_formats(&connector->display_info,
+ 					 &mipi->bus_format, 1);
+ 
+-	/*
+-	 * TODO: Remove once all drm drivers call
+-	 * drm_connector_set_orientation_from_panel()
+-	 */
+-	drm_connector_set_panel_orientation(connector, mipi->orientation);
+-
+ 	return count;
+ }
+ 
+diff --git a/drivers/gpu/drm/sun4i/sun4i_rgb.c b/drivers/gpu/drm/sun4i/sun4i_rgb.c
+index e29c40086..68a57a138 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_rgb.c
++++ b/drivers/gpu/drm/sun4i/sun4i_rgb.c
+@@ -230,6 +230,10 @@ int sun4i_rgb_init(struct drm_device *drm, struct sun4i_tcon *tcon)
+ 
+ 		drm_connector_attach_encoder(&rgb->connector,
+ 						  &rgb->encoder);
++
++		/* Must happen before the connector is registered */
++		drm_connector_set_orientation_from_panel(&rgb->connector,
++							 rgb->panel);
+ 	}
+ 
+ 	if (rgb->bridge) {
+-- 
+2.55.0
+

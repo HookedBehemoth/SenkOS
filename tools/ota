@@ -1,0 +1,25 @@
+#!/bin/sh
+# Flash a rootfs into the handheld's inactive A/B slot over USB, reboot into it and commit it
+# once ssh works. A slot that isn't committed within 120 s of booting (or doesn't boot) is
+# retried 3 times, then U-Boot falls back to the old one by itself.
+# usage: tools/ota [rootfs.squashfs-zst]      (default: latest anbernic-image build)
+set -e
+cd "$(dirname "$0")"
+img=${1:-/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp/anbernic-image-rg35xx-sp.rootfs.squashfs-zst}
+from=$(./ssh 'sed -n "s/.* ab=\([ab]\).*/\1/p" /proc/cmdline')
+echo "booted slot: $from, flashing $(readlink -f "$img")"
+./ssh -C 'ab flash' < "$img"
+./ssh reboot || true
+sleep 5
+for i in $(seq 300); do
+	if now=$(./ssh 'sed -n "s/.* ab=\([ab]\).*/\1/p" /proc/cmdline' 2>/dev/null); then
+		if [ "$now" != "$from" ]; then
+			./ssh 'ab commit && ab status'
+			echo "OK: running and committed slot $now"; exit 0
+		fi
+		./ssh 'ab status'
+		echo "FAILED: back on slot $now, the new slot didn't come up"; exit 1
+	fi
+	sleep 2
+done
+echo "handheld not reachable after 10 min"; exit 1

@@ -41,6 +41,9 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0027-0210-h616-cpu-opp-mark-480MHz-as-suspend-opp.patch \
     file://0028-0901-dts-rg35xx-2024-fix-led-1-color.patch \
     file://0029-arm64-dts-allwinner-add-RG35XX-SP-v2-panel-dts.patch \
+    file://0030-drm-sun4i-rgb-set-panel-orientation-before-connector.patch \
+    file://0031-arm64-dts-allwinner-h616-add-the-video-engine-Cedrus.patch \
+    file://0032-iommu-sun50i-only-translate-masters-that-are-IOMMU-c.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 

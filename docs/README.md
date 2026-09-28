@@ -7,6 +7,7 @@ Research dump + plan for a small, fast-booting OS for the Anbernic **RG35XX-SP**
 - [boot-analysis.md](boot-analysis.md) — where muOS spends its boot time (from dmesg)
 - [plan.md](plan.md) — the plan: mainline U-Boot + Linux 7.2 via Yocto
 - [yocto.md](yocto.md) — how to build and flash our image
+- [dev-workflow.md](dev-workflow.md) — USB link (ssh/serial), A/B slots, `tools/ota` updates without card swapping
 - [suspend.md](suspend.md) — why sleep is broken on custom firmware, stock vs muOS vs mainline, how we fix it
 - [fel.md](fel.md) — FEL USB boot mode: unbrickable recovery, boot U-Boot/kernel over USB
 

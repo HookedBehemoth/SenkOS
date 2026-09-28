@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Mon, 28 Sep 2026 22:47:11 +0200
+Subject: [PATCH] iommu: sun50i: only translate masters that are IOMMU clients
+
+Enabling the IOMMU cleared the whole bypass register, so every master
+got translated as soon as the first client attached. On the H616 the
+display engine is not described as an IOMMU client and keeps issuing
+physical addresses: once the video engine attached, each scanout read
+faulted ("Page fault ... master 0, dir rd") and the panel went blank.
+
+Record the master IDs seen in of_xlate and keep the others in bypass.
+
+Upstream-Status: Pending
+---
+ drivers/iommu/sun50i-iommu.c | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/iommu/sun50i-iommu.c b/drivers/iommu/sun50i-iommu.c
+index be3f1ce69..cf000119a 100644
+--- a/drivers/iommu/sun50i-iommu.c
++++ b/drivers/iommu/sun50i-iommu.c
+@@ -110,6 +110,9 @@ struct sun50i_iommu {
+ 
+ 	struct iommu_domain *domain;
+ 	struct kmem_cache *pt_pool;
++
++	/* Masters with an "iommus" reference; all others keep bypassing */
++	u32 masters;
+ };
+ 
+ struct sun50i_iommu_domain {
+@@ -452,7 +455,13 @@ static int sun50i_iommu_enable(struct sun50i_iommu *iommu)
+ 		    IOMMU_TLB_PREFETCH_MASTER_ENABLE(3) |
+ 		    IOMMU_TLB_PREFETCH_MASTER_ENABLE(4) |
+ 		    IOMMU_TLB_PREFETCH_MASTER_ENABLE(5));
+-	iommu_write(iommu, IOMMU_BYPASS_REG, 0);
++	/*
++	 * Only translate masters that are described as IOMMU clients. A
++	 * master without "iommus" (e.g. the H616 display engine) still
++	 * issues physical addresses and would fault on every access.
++	 */
++	iommu_write(iommu, IOMMU_BYPASS_REG,
++		    IOMMU_INT_MASTER_MASK & ~iommu->masters);
+ 	iommu_write(iommu, IOMMU_INT_ENABLE_REG, IOMMU_INT_MASK);
+ 	iommu_write(iommu, IOMMU_DM_AUT_CTRL_REG(SUN50I_IOMMU_ACI_NONE),
+ 		    IOMMU_DM_AUT_CTRL_RD_UNAVAIL(SUN50I_IOMMU_ACI_NONE, 0) |
+@@ -837,9 +846,18 @@ static int sun50i_iommu_of_xlate(struct device *dev,
+ 				 const struct of_phandle_args *args)
+ {
+ 	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
++	struct sun50i_iommu *iommu = platform_get_drvdata(iommu_pdev);
+ 	unsigned id = args->args[0];
++	unsigned long flags;
+ 
+-	dev_iommu_priv_set(dev, platform_get_drvdata(iommu_pdev));
++	dev_iommu_priv_set(dev, iommu);
++
++	spin_lock_irqsave(&iommu->iommu_lock, flags);
++	iommu->masters |= BIT(id);
++	if (iommu->domain)
++		iommu_write(iommu, IOMMU_BYPASS_REG,
++			    IOMMU_INT_MASTER_MASK & ~iommu->masters);
++	spin_unlock_irqrestore(&iommu->iommu_lock, flags);
+ 
+ 	put_device(&iommu_pdev->dev);
+ 
+-- 
+2.55.0
+

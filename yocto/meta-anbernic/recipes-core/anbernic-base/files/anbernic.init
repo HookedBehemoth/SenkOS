@@ -1,0 +1,53 @@
+#!/bin/sh
+# Watchdog, /uboot (A/B state), USB gadget: NCM ethernet (10.55.0.1, DHCP for the host)
+# + ACM serial (getty on ttyGS0, host sees /dev/ttyACM*).
+[ "$1" = start ] || exit 0
+
+# U-Boot armed the watchdog, sunxi_wdt disarmed it at probe; keep one running from here.
+# `ab suspend`-style callers must stop this first (SIGTERM = magic close).
+watchdog -T 16 -t 4 /dev/watchdog
+
+ab mount	# /uboot exists in the (read-only) image
+
+mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
+g=/sys/kernel/config/usb_gadget/g1
+if [ ! -d $g ]; then
+	mkdir $g
+	echo 0x1d6b > $g/idVendor	# Linux Foundation
+	echo 0x0104 > $g/idProduct	# Multifunction Composite Gadget
+	mkdir $g/strings/0x409 $g/configs/c.1 $g/functions/ncm.usb0 $g/functions/acm.usb0
+	echo SenkOS > $g/strings/0x409/manufacturer
+	echo RG35XX-SP > $g/strings/0x409/product
+	# fixed MACs: host keeps the same interface/connection across reboots
+	echo 02:35:58:00:00:01 > $g/functions/ncm.usb0/dev_addr
+	echo 02:35:58:00:00:02 > $g/functions/ncm.usb0/host_addr
+	ln -s $g/functions/ncm.usb0 $g/configs/c.1/
+	ln -s $g/functions/acm.usb0 $g/configs/c.1/
+	ls /sys/class/udc | head -n1 > $g/UDC
+fi
+ifc=$(cat $g/functions/ncm.usb0/ifname)
+ip addr add 10.55.0.1/24 dev $ifc
+ip link set $ifc up
+udhcpd -S /etc/udhcpd.conf
+
+# musb can come back from suspend detached from the host (ROCKNIX sleep.d/post/005-usbgadget):
+# cable powered but gadget "not attached" twice in a row -> rebind. Catches every resume path.
+udc=$(cat $g/UDC)
+(
+	stuck=0
+	while sleep 5; do
+		if [ "$(cat /sys/class/power_supply/axp20x-usb/online 2>/dev/null)" = 1 ] &&
+		   [ "$(cat /sys/class/udc/$udc/state)" = "not attached" ]; then
+			stuck=$((stuck + 1))
+		else
+			stuck=0
+		fi
+		[ $stuck -ge 2 ] || continue
+		echo "anbernic: USB gadget stuck detached, rebinding" > /dev/kmsg
+		echo > $g/UDC; sleep 1; echo $udc > $g/UDC
+		stuck=0
+	done
+) </dev/null >/dev/null 2>&1 &
+
+# lid close / power key -> suspend
+[ -x /usr/sbin/sleepd ] && sleepd > /dev/console 2>&1 &
