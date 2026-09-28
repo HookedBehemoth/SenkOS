@@ -3,6 +3,7 @@ LICENSE = "MIT"
 
 inherit image
 
+# libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 IMAGE_INSTALL = " \
     base-files \
     base-passwd \
@@ -32,6 +33,9 @@ IMAGE_INSTALL = " \
     wireless-regdb-static \
     liberation-fonts \
     ttf-bitstream-vera \
+    libasound \
+    libpng \
+    libzstd \
 "
 IMAGE_LINGUAS = ""
 # Weston is started by anbernic-base (root + seatd, kiosk shell)

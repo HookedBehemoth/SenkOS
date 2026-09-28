@@ -10,6 +10,7 @@
  */
 #include <dirent.h>
 #include <glob.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,11 +233,6 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
   switch (ev->type) {
   case SDL_QUIT:
     return false;
-  case SDL_JOYDEVICEADDED:
-    SDL_Log("joystick %d: %s, %s", ev->jdevice.which,
-            SDL_JoystickNameForIndex(ev->jdevice.which),
-            SDL_IsGameController(ev->jdevice.which) ? "gamepad" : "no mapping");
-    break;
   case SDL_CONTROLLERDEVICEADDED:
     SDL_GameControllerOpen(ev->cdevice.which);
     break;
@@ -255,8 +251,13 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
     }
     break;
   }
-  if (child != 0)
+  /* Menu quits whatever runs: SDL apps turn SIGTERM into SDL_QUIT and exit
+   * cleanly (mGBA flushes its save). setsid made the child a group leader. */
+  if (child != 0) {
+    if (button == SDL_CONTROLLER_BUTTON_GUIDE)
+      kill(-child, SIGTERM);
     return true;
+  }
   switch (button) {
   case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_move(ui, NAV_UP); break;
   case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_move(ui, NAV_DOWN); break;

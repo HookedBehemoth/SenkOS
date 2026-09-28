@@ -25,4 +25,4 @@ do_install() {
 }
 
 FILES:${PN} += "/uboot /data"
-RDEPENDS:${PN} = "busybox dropbear weston seatd launcher util-linux-sfdisk e2fsprogs-mke2fs"
+RDEPENDS:${PN} = "busybox dropbear weston seatd launcher util-linux-sfdisk e2fsprogs-mke2fs alsa-utils-amixer"

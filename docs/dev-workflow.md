@@ -60,8 +60,12 @@ The UI is [launcher/](../launcher) (SDL2 + HarfBuzz + fontconfig, immediate mode
 `/data/bin/launcher` if it exists, or else the image's `/usr/bin/launcher`. It restarts the launcher whenever it exits.
 - `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/bin`, and restarts it. You don't need to reflash.
 - `tools/ssh rm /data/bin/launcher`: goes back to the image's launcher.
-- Its Apps page lists every executable in `/data/apps`.
+- Its Apps page lists every executable in `/data/apps`. While one runs, Menu sends it SIGTERM (SDL apps quit cleanly).
 - On the desktop: `meson setup build launcher && ninja -C build && build/launcher` (arrows, Enter, PgUp/PgDn).
+
+mGBA (GBA) isn't in the image yet. Its recipe only deploys it: `kas build --target mgba`, then copy
+`deploy/images/rg35xx-sp/mgba/` to `/data/mgba` and run it from there: mGBA looks for `portable.ini` in
+the cwd and then keeps its config next to it. `config.ini` holds the gamepad bindings. Saves go next to the ROM (`/data/roms/gba`).
 
 ## Bootloader
 

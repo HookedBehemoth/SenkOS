@@ -49,5 +49,9 @@ udc=$(cat $g/UDC)
 	done
 ) </dev/null >/dev/null 2>&1 &
 
+# The codec boots muted with Line Out (the speaker amp's input) at 0; no alsa-state to restore
+amixer -q set 'Line Out' 70% unmute
+amixer -q set DAC unmute
+
 # lid close / power key -> suspend
 [ -x /usr/sbin/sleepd ] && sleepd > /dev/console 2>&1 &
