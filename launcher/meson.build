@@ -4,7 +4,7 @@ add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
 scanner = find_program(dependency('wayland-scanner', native: true)
   .get_variable(pkgconfig: 'wayland_scanner'))
-# From Weston 15 (protocol/), for the pause screen's capture
+# From Weston 15 (protocol/) plus our "thumbnail" source, for the pause screen
 capture_protocol = [
   custom_target('capture-header', input: 'weston-output-capture.xml',
     output: 'weston-output-capture-client-protocol.h',

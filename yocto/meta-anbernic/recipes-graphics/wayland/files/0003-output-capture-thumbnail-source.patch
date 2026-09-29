@@ -1,0 +1,194 @@
+From: SenkOS
+Subject: [PATCH] output-capture: thumbnail source, shrunk 4:1 on the GPU
+
+weston_capture_v1 source 4, "thumbnail": the framebuffer desktop area at a
+quarter of each side. The GL renderer blits it down (two 2:1 linear blits, a
+4x4 mean) and reads back only that, 1/16 of the frame, instead of the whole
+framebuffer through uncached memory (~85 ms on Panfrost for 640x480). The
+launcher's pause screen blurs it.
+
+Upstream-Status: Inappropriate [device policy]
+---
+--- a/libweston/output-capture.c
++++ b/libweston/output-capture.c
+@@ -665,6 +665,8 @@
+ 		return WESTON_OUTPUT_CAPTURE_SOURCE_FULL_FRAMEBUFFER;
+ 	case WESTON_CAPTURE_V1_SOURCE_BLENDING:
+ 		return WESTON_OUTPUT_CAPTURE_SOURCE_BLENDING;
++	case WESTON_CAPTURE_V1_SOURCE_THUMBNAIL:
++		return WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL;
+ 	default:
+ 		return -1;
+ 	}
+--- a/libweston/output-capture.h
++++ b/libweston/output-capture.h
+@@ -40,8 +40,11 @@
+ 
+ 	/** blending buffer, potentially light-linear */
+ 	WESTON_OUTPUT_CAPTURE_SOURCE_BLENDING,
++
++	/** framebuffer desktop area, shrunk 4:1 each way on the GPU */
++	WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL,
+ };
+-#define WESTON_OUTPUT_CAPTURE_SOURCE__COUNT (WESTON_OUTPUT_CAPTURE_SOURCE_BLENDING + 1)
++#define WESTON_OUTPUT_CAPTURE_SOURCE__COUNT (WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL + 1)
+ 
+ struct weston_output_capture_info;
+ 
+--- a/libweston/renderer-gl/gl-renderer.c
++++ b/libweston/renderer-gl/gl-renderer.c
+@@ -1265,11 +1265,49 @@
+ 		glPixelStorei(GL_PACK_REVERSE_ROW_ORDER_ANGLE, GL_FALSE);
+ }
+ 
++#define THUMBNAIL_SHRINK 4
++
++/* Shrinks `rect` of the bound framebuffer into a new one, left bound, with two
++ * 2:1 linear blits: each pixel is the mean of 4x4. Only that much is read
++ * back, instead of the whole frame through uncached memory. */
++static bool
++gl_renderer_shrink_for_capture(struct gl_renderer *gr,
++			       const struct weston_geometry *rect,
++			       GLuint *fb, GLuint *rb)
++{
++	int w = rect->width / 2, h = rect->height / 2;
++	GLint src;
++	GLuint half_fb, half_rb;
++
++	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &src);
++	if (!gl_fbo_init(gr, GL_RGBA8, w, h, &half_fb, &half_rb))
++		return false;
++	if (!gl_fbo_init(gr, GL_RGBA8, w / 2, h / 2, fb, rb)) {
++		gl_fbo_fini(&half_fb, &half_rb);
++		return false;
++	}
++
++	glBindFramebuffer(GL_READ_FRAMEBUFFER, src);
++	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, half_fb);
++	glBlitFramebuffer(rect->x, rect->y,
++			  rect->x + rect->width, rect->y + rect->height,
++			  0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
++	glBindFramebuffer(GL_READ_FRAMEBUFFER, half_fb);
++	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, *fb);
++	glBlitFramebuffer(0, 0, w, h, 0, 0, w / 2, h / 2,
++			  GL_COLOR_BUFFER_BIT, GL_LINEAR);
++	glBindFramebuffer(GL_FRAMEBUFFER, *fb);
++	gl_fbo_fini(&half_fb, &half_rb);
++	return true;
++}
++
+ static void
+ gl_renderer_do_capture_tasks(struct gl_renderer *gr,
+ 			     struct weston_output *output,
+ 			     enum weston_output_capture_source source)
+ {
++	GLint bound_fb;
++	int width, height;
+ 	struct gl_output_state *go = get_output_state(output);
+ 	const struct pixel_format_info *format;
+ 	struct weston_capture_task *ct;
+@@ -1277,6 +1315,7 @@
+ 
+ 	switch (source) {
+ 	case WESTON_OUTPUT_CAPTURE_SOURCE_FRAMEBUFFER:
++	case WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL:
+ 		format = output->compositor->read_format;
+ 		rect = go->area;
+ 		/* Because glReadPixels has bottom-left origin */
+@@ -1295,13 +1334,23 @@
+ 		return;
+ 	}
+ 
+-	while ((ct = weston_output_pull_capture_task(output, source, rect.width,
+-						     rect.height, format,
++	width = rect.width;
++	height = rect.height;
++	if (source == WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL) {
++		width /= THUMBNAIL_SHRINK;
++		height /= THUMBNAIL_SHRINK;
++	}
++	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &bound_fb);
++
++	while ((ct = weston_output_pull_capture_task(output, source, width,
++						     height, format,
+ 						     NULL))) {
+ 		struct weston_buffer *buffer = weston_capture_task_get_buffer(ct);
++		struct weston_geometry read = rect;
++		GLuint small_fb = 0, small_rb = 0;
+ 
+-		assert(buffer->width == rect.width);
+-		assert(buffer->height == rect.height);
++		assert(buffer->width == width);
++		assert(buffer->height == height);
+ 		assert(buffer->pixel_format->format == format->format);
+ 
+ 		if (buffer->type != WESTON_BUFFER_SHM ||
+@@ -1315,15 +1364,28 @@
+ 			continue;
+ 		}
+ 
+-		if (gl_features_has(gr, FEATURE_ASYNC_READBACK)) {
+-			gl_renderer_do_read_pixels_async(gr, go, output, ct, &rect);
+-			continue;
++		if (source == WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL) {
++			if (!gl_renderer_shrink_for_capture(gr, &rect,
++							    &small_fb,
++							    &small_rb)) {
++				weston_capture_task_retire_failed(ct, "GL: shrink failed");
++				continue;
++			}
++			read = (struct weston_geometry){ 0, 0, width, height };
+ 		}
+ 
+-		if (gl_renderer_do_capture(gr, go, buffer, &rect))
++		if (gl_features_has(gr, FEATURE_ASYNC_READBACK))
++			gl_renderer_do_read_pixels_async(gr, go, output, ct, &read);
++		else if (gl_renderer_do_capture(gr, go, buffer, &read))
+ 			weston_capture_task_retire_complete(ct);
+ 		else
+ 			weston_capture_task_retire_failed(ct, "GL: capture failed");
++
++		/* The readback holds on to what it reads until it is done */
++		if (small_fb) {
++			glBindFramebuffer(GL_FRAMEBUFFER, bound_fb);
++			gl_fbo_fini(&small_fb, &small_rb);
++		}
+ 	}
+ }
+ 
+@@ -2867,6 +2929,8 @@
+ 				     WESTON_OUTPUT_CAPTURE_SOURCE_FRAMEBUFFER);
+ 	gl_renderer_do_capture_tasks(gr, output,
+ 				     WESTON_OUTPUT_CAPTURE_SOURCE_FULL_FRAMEBUFFER);
++	gl_renderer_do_capture_tasks(gr, output,
++				     WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL);
+ 	wl_signal_emit(&output->frame_signal, output_damage);
+ 
+ 	timeline_end_render_query(gr);
+@@ -4403,6 +4467,15 @@
+ 					  output->compositor->read_format,
+ 					  NULL);
+ 
++	/* glBlitFramebuffer */
++	if (gr->gl_version >= gl_version(3, 0))
++		weston_output_update_capture_info(output,
++						  WESTON_OUTPUT_CAPTURE_SOURCE_THUMBNAIL,
++						  area->width / THUMBNAIL_SHRINK,
++						  area->height / THUMBNAIL_SHRINK,
++						  output->compositor->read_format,
++						  NULL);
++
+ 	/* Discard renderbuffers as a last step in order to emit discarded
+ 	 * callbacks once the renderer has correctly been updated. */
+ 	if (!gl_renderer_discard_renderbuffers(go, false))
+--- a/protocol/weston-output-capture.xml
++++ b/protocol/weston-output-capture.xml
+@@ -50,6 +50,8 @@
+       <entry name="full_framebuffer" value="2"
+              summary="copy whole framebuffer, including borders"/>
+       <entry name="blending" value="3" summary="copy from blending space"/>
++      <entry name="thumbnail" value="4"
++             summary="framebuffer desktop area at a quarter of each side"/>
+     </enum>
+ 
+     <request name="create">

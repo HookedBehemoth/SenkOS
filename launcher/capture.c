@@ -1,6 +1,7 @@
 /*
- * One frame of the output through weston_capture_v1, then shrunk and
- * box-blurred on the CPU: once per pause, so the GPU never spends a frame on it.
+ * One frame of the output through weston_capture_v1's "thumbnail" source (our
+ * Weston patch: shrunk 4:1 each way on the GPU, so only 1/16 of it is read
+ * back), then box-blurred on the CPU: once per pause.
  *
  * On a connection of its own: a wl_output bound on SDL's could not be released
  * (v1), and SDL's surface enter/leave handlers crash on the dead proxy.
@@ -104,7 +105,7 @@ static const struct weston_capture_source_v1_listener source_listener = {
     .failed = failed,
 };
 
-enum { SHRINK = 4, RADIUS = 2, PASSES = 3 };
+enum { RADIUS = 2, PASSES = 3 };
 
 /* One box pass along a line of `n` pixels `along` bytes apart, for `lines`
  * lines `across` bytes apart; edges clamp. A running sum: one add and one
@@ -126,29 +127,18 @@ static void box(const uint8_t *src, uint8_t *dst, int n, int lines,
     }
 }
 
-/* A quarter the size, then three box blurs each way, which is close to a
- * gaussian; linear filtering scales it back up. */
-static SDL_Texture *blur(SDL_Renderer *renderer, const uint8_t *src,
-                         int width, int height, Uint32 sdl_format) {
-  const int w = width / SHRINK, h = height / SHRINK;
+/* Three box blurs each way, in place, which is close to a gaussian; linear
+ * filtering scales it back up. */
+static SDL_Texture *blur(SDL_Renderer *renderer, uint8_t *a, int w, int h,
+                         Uint32 sdl_format) {
   const size_t stride = (size_t)w * 4;
-  uint8_t *a = malloc(stride * h), *b = malloc(stride * h);
+  uint8_t *b = malloc(stride * h);
   SDL_Texture *texture = NULL;
-  if (a == NULL || b == NULL || w == 0 || h == 0)
-    goto out;
+  if (b == NULL)
+    return NULL;
   /* Byte 3 is alpha in both formats: opaque, whatever the read back held */
-  for (int y = 0; y < h; y++)
-    for (int x = 0; x < w; x++) {
-      for (int ch = 0; ch < 3; ch++) {
-        unsigned sum = 0;
-        for (int dy = 0; dy < SHRINK; dy++)
-          for (int dx = 0; dx < SHRINK; dx++)
-            sum += src[((size_t)(y * SHRINK + dy) * width + x * SHRINK + dx) *
-                           4 + ch];
-        a[y * stride + x * 4 + ch] = sum / (SHRINK * SHRINK);
-      }
-      a[y * stride + x * 4 + 3] = b[y * stride + x * 4 + 3] = 255;
-    }
+  for (size_t i = 3; i < stride * h; i += 4)
+    a[i] = 255;
   for (int i = 0; i < PASSES; i++) {
     box(a, b, w, h, 4, stride);
     box(b, a, h, w, stride, 4);
@@ -160,8 +150,6 @@ static SDL_Texture *blur(SDL_Renderer *renderer, const uint8_t *src,
     SDL_SetTextureScaleMode(texture, SDL_ScaleModeLinear);
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
   }
-out:
-  free(a);
   free(b);
   return texture;
 }
@@ -183,7 +171,7 @@ SDL_Texture *capture_blurred(SDL_Renderer *renderer) {
   if (c.output == NULL || c.shm == NULL || c.capture == NULL)
     goto out;
   source = weston_capture_v1_create(c.capture, c.output,
-                                    WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER);
+                                    WESTON_CAPTURE_V1_SOURCE_THUMBNAIL);
   weston_capture_source_v1_add_listener(source, &source_listener, &c);
   wl_display_roundtrip(display);
   if (c.sdl_format == 0 || c.width <= 0 || c.height <= 0)

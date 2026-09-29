@@ -260,9 +260,8 @@ static void grab(bool on) {
 }
 
 /* setsid made the child a group leader: signals go to all it started. Stopped
- * first, so the frame blurred is the one it stays on. The capture is ~85 ms of
- * Panfrost reading the framebuffer back (glReadPixels in Weston), 10 ms blur.
- * The pad is grabbed once Menu is released (input). */
+ * first, so the frame blurred is the one it stays on. The pad is grabbed once
+ * Menu is released (input). */
 static void pause_child(nav *ui) {
   kill(-child, SIGSTOP);
   backdrop = capture_blurred(renderer);

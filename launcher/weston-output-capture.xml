@@ -50,6 +50,8 @@
       <entry name="full_framebuffer" value="2"
              summary="copy whole framebuffer, including borders"/>
       <entry name="blending" value="3" summary="copy from blending space"/>
+      <entry name="thumbnail" value="4"
+             summary="framebuffer desktop area at a quarter of each side"/>
     </enum>
 
     <request name="create">
