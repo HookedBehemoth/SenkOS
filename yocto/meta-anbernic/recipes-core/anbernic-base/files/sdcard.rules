@@ -1,0 +1,3 @@
+# TF2 (mmc1 alias; TF1 = mmcblk0 is the system card): mount any filesystem on it at /run/media/<dev>
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_USAGE}=="filesystem", RUN+="/bin/sh -c 'mkdir -p /run/media/%k && mount -o noatime /dev/%k /run/media/%k || rmdir /run/media/%k'"
+ACTION=="remove", SUBSYSTEM=="block", KERNEL=="mmcblk1*", RUN+="/bin/sh -c 'umount -l /run/media/%k && rmdir /run/media/%k'"

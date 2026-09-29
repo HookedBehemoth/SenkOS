@@ -6,9 +6,9 @@ inherit kernel
 
 COMPATIBLE_MACHINE = "rg35xx-sp"
 
-# Patches: ROCKNIX projects/ROCKNIX/devices/H700/patches/linux, refreshed for 7.2
-# (fuzz removed). Skipped 0140/0144/0150: need ROCKNIX's out-of-tree joypad driver,
-# we use mainline gpio-keys instead.
+# 0001-0029: ROCKNIX's H700 board patches (their number is the second one in the name),
+# minus their out-of-tree joypad driver: the buttons are mainline gpio-keys.
+# 0030-0032: ours. 0033-0036: Cedrus H616 + VP9 from LibreELEC.
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://defconfig \
     file://firmware \

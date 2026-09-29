@@ -41,8 +41,8 @@ Things that count as a failed try:
 The commit comes from the host. Once ssh into the new slot works, `tools/ota` runs `ab commit`.
 
 ```
-tools/ota                      # flash the latest build's rootfs.ext4 into the other slot, reboot, commit
-tools/ota path/to/rootfs.ext4
+tools/ota                      # flash the latest build's slot image into the other slot, reboot, commit
+tools/ota path/to/rootfs.squashfs-zst
 tools/ssh ab status
 ```
 
@@ -86,9 +86,19 @@ tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/rg35xx-s
 ```
 Recovery: flash the full `.wic.zst` from a PC (see [yocto.md](yocto.md)).
 
+## Logs
+
+`/var/log` is `/data/log/0` (this boot); `/data/log/1`..`4` are the boots before. syslogd/klogd write
+`messages`, plus `dmesg` (boot kernel log), `weston.log`, `launcher.log`. A hard panic doesn't reach the card:
+DRAM doesn't survive a reset on this board, so there's no ramoops.
+
+## SD card in TF2
+
+Any filesystem on it is mounted at `/run/media/mmcblk1pN` when it's inserted and unmounted when it's pulled.
+
 ## Kernel config iteration
 
-Every `defconfig` edit reruns `do_unpack`, and `kernel.bbclass` cleans `${B}` there, so bitbake rebuilds the kernel from scratch every time.
+bitbake rebuilds the kernel from scratch on every `defconfig` edit (`kernel.bbclass` cleans `${B}` in `do_unpack`).
 To iterate faster, build out of tree with host clang, then swap the Image into the current slot image:
 
 ```

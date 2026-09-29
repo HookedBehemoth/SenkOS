@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini"
+SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules"
 S = "${UNPACKDIR}"
 
 inherit allarch
@@ -15,6 +15,7 @@ do_install() {
     install -Dm0644 ${S}/wayland.sh ${D}${sysconfdir}/profile.d/wayland.sh
     install -Dm0755 ${S}/weston.init ${D}${sysconfdir}/init.d/weston
     install -Dm0644 ${S}/weston.ini ${D}${sysconfdir}/xdg/weston/weston.ini
+    install -Dm0644 ${S}/sdcard.rules ${D}${sysconfdir}/udev/rules.d/90-sdcard.rules
     install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot ${D}/data
     # after populate-volatile (S37); trial timer last, once everything else came up
     ln -s ../init.d/anbernic ${D}${sysconfdir}/rcS.d/S40anbernic
@@ -25,4 +26,4 @@ do_install() {
 }
 
 FILES:${PN} += "/uboot /data"
-RDEPENDS:${PN} = "busybox dropbear weston seatd launcher util-linux-sfdisk e2fsprogs-mke2fs alsa-utils-amixer weston-volume-osd"
+RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher util-linux-sfdisk e2fsprogs-mke2fs alsa-utils-amixer weston-volume-osd"

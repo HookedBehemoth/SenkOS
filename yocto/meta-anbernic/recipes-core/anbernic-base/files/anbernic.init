@@ -9,6 +9,15 @@ watchdog -T 16 -t 4 /dev/watchdog
 
 ab mount	# /uboot, /data: mount points exist in the (read-only) image
 
+# Persistent /var/log: the last 5 boots in /data/log/0..4, 0 = this one. Before this it's
+# tmpfs (dmesg.sh already wrote the boot's kernel log there: carry it over).
+l=/data/log
+rm -rf $l/4
+for i in 3 2 1 0; do [ -d $l/$i ] && mv $l/$i $l/$((i + 1)); done
+mkdir -p $l/0
+cp -a /var/volatile/log/. $l/0/
+mount --bind $l/0 /var/volatile/log
+
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 g=/sys/kernel/config/usb_gadget/g1
 if [ ! -d $g ]; then
@@ -30,8 +39,8 @@ ip addr add 10.55.0.1/24 dev $ifc
 ip link set $ifc up
 udhcpd -S /etc/udhcpd.conf
 
-# musb can come back from suspend detached from the host (ROCKNIX sleep.d/post/005-usbgadget):
-# cable powered but gadget "not attached" twice in a row -> rebind. Catches every resume path.
+# musb can come back from suspend detached from the host: cable powered but gadget
+# "not attached" twice in a row -> rebind. Polling catches every resume path.
 udc=$(cat $g/UDC)
 (
 	stuck=0

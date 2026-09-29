@@ -1,75 +1,53 @@
-# Suspend on the H700: why custom firmware gets it wrong
+# Suspend to RAM
 
-TL;DR: your observation is correct for mainline-based CFW (ROCKNIX, Knulli-mainline) **until 2026-09-17**. Mainline TF-A had no PSCI `SYSTEM_SUSPEND` for H616/H700, so "sleep" was fake. A fix landed in ROCKNIX `next` 11 days ago and is still young. BSP-based CFW (muOS) does real suspend via Anbernic's blobs but adds its own policy.
+Linux can't put DRAM into self-refresh itself (it runs from DRAM), and the H616/H700 has no management
+core for firmware like Crust. So the secure firmware does it: TF-A's PSCI `SYSTEM_SUSPEND` runs a small
+stub from SRAM that
+1. puts DRAM into self-refresh and stops the DRAM clocks,
+2. waits in `WFI` for a wake interrupt,
+3. retrains the DRAM controller without touching its contents and returns to Linux.
 
-## Why suspend is hard on this SoC
+Step 3 needs the exact DRAM parameters the SPL used, so the stub is built from U-Boot's own DRAM driver
+and our U-Boot defconfig ([TF-A bbappend](../yocto/meta-anbernic/recipes-bsp/trusted-firmware-a/trusted-firmware-a_%.bbappend)).
+BL31 refuses to suspend if the parameters don't match at runtime. The stub also pauses the watchdog.
 
-Linux can't put DRAM into self-refresh itself: code running *from* DRAM can't turn DRAM off. On arm64 that job belongs to the secure firmware (BL31) via PSCI `SYSTEM_SUSPEND`, which runs a small program from on-chip SRAM that:
-1. puts DRAM into self-refresh, stops DDR PLL/controller/PHY clocks,
-2. drops CPU clocks, waits in `WFI` for a wake IRQ (power key, lid/Hall, RTC),
-3. **re-initialises the DRAM controller without wiping contents** (retrains PHY) and returns to Linux.
+## Pieces
 
-Step 3 needs the same board-specific DRAM parameters the SPL used at boot. Older sunxi SoCs (A64, H6) do this with **Crust** firmware on the AR100 management core — **the H616/H700 has no AR100**, so Crust can't help and there was no mainline path at all.
-
-## Who does what
-
-| Firmware | Kernel | What "sleep" actually is | Drain |
-|---|---|---|---|
-| **Stock Anbernic** | BSP 4.9 | Real `mem` → vendor BL31 (`monitor.fex`) + SRAM standby program. Two modes: *Normal* (lid/key wake, WFI + DRAM self-refresh) and *Super* (additionally PMIC sleep, rails cut, **boot0 restores DRAM and jumps back into the retained Linux session** via an RTC marker). | lowest (Super), unmeasured publicly |
-| **muOS** (your card) | same BSP 4.9 + same vendor BL31 | Real `mem` (`/opt/muos/config/danger/state = mem`), but wrapped in a 618-line shell script ([raw/muos-init/suspend.sh](raw/muos-init/suspend.sh)): stops network + BT, **unloads/reloads kernel modules** (wifi, mali), rebinds input drivers, then **after `settings/power/shutdown = 600` s asleep it RTC-wakes and powers off**. Never sets the stock `os_sleep` knob → never reaches *Super* standby. | Normal-standby level, then off after 10 min |
-| **ROCKNIX / Knulli (mainline) before 2026-09-17** | 6.x/7.x | Kernel offers only **s2idle** ("freeze"): CPUs idle, every rail/clock/DRAM stays up. For a while H700 even forced `suspendmode off` + ignored the power key (fake suspend = screen off, emulator paused). | **~3.5 %/h** → dead in ~a day |
-| **ROCKNIX `next` since 2026-09-17** (commit `fca6ac51`) | 7.2 | Real `deep`: patched TF-A 2.15 + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (by kailashrs) in SRAM A1: LPDDR4/LPDDR3 self-refresh, WFI, DRAM re-init from U-Boot's own `dram_sun50i_h616.c`. Plus kernel PM fixes (display pipeline, codec, LCD pads, USB PHY clock, power-key wake event, MMC). | **~3 %/h** (commit message) |
-
-## Why "only the official firmware does it right"
-
-1. **Mainline had no deep sleep at all** (no AR100 → no Crust; TF-A lacked H616 `SYSTEM_SUSPEND`). This is the big one.
-2. **Even the new mainline port is not OEM "Super standby".** The kailashrs analysis of stock boot0/BL31 ([OEM_STANDBY.md](https://github.com/kailashrs/H700_rocknix_enhancement/blob/main/docs/OEM_STANDBY.md)) shows OEM Super mode also cuts PMIC rails (AXP717 regs `0x25`, `0x28..0x2a`) and has **boot0 resume retained RAM** after a PMIC-level sleep. That's why stock drains less. Not ported yet; it would need SPL changes too.
-3. **Peripheral PM on mainline was incomplete**: display pipeline/LCD pads not gated, codec not suspended, a leaked USB PHY clock, the wake keypress re-triggering sleep (logind), `rtw88` SDIO Wi-Fi flaky after resume.
-4. **Userspace policy fights**: fake-suspend daemons + real logind suspend running at once (UI freeze / no sound — documented in kailashrs' [VALIDATION.md](https://github.com/kailashrs/H700_rocknix_enhancement/blob/main/docs/VALIDATION.md)); muOS's auto-shutdown after 10 min.
-
-## Status of the new port (honest limits, from its own docs)
-
-- Tested on RG35XX H and RG34XX/RG34XX-SP (LPDDR4); **not RG35XX-SP specifically**. LPDDR3 stub built but never run on hardware (TF-A refuses suspend rather than risk it).
-- No overnight qualification, no measured stock-vs-port drain comparison.
-- Occasional Wi-Fi not reconnecting after resume.
-- It implements OEM *Normal* standby behaviour, not *Super*.
-
-## What this means for our OS
-
-Our kernel already carries the kernel half (patches `0157`–`0163`, `0210` from ROCKNIX). Missing is the firmware half:
-
-1. Bump TF-A to 2.15.0 (bbappend) and add ROCKNIX `atf/patches/H700/001-allwinner-h616-psci-system-suspend.patch` + `000-use-gcc-for-asm.patch`.
-2. New recipe `h700-suspend-stub`: build against our U-Boot source tree + defconfig (`anbernic_rg35xx_h700_defconfig`, LPDDR4) → `suspend_stub_lpddr4.bin`; TF-A built with `SUNXI_SYSTEM_SUSPEND=1 SUNXI_SUSPEND_STUB=<path>`.
-3. Userspace: no logind/fake-suspend daemon. Our launcher writes `mem` to `/sys/power/state` on lid-close / power key; enable wake on power key, Hall and RTC; drop the rtw88 interface before sleep and bring it back after.
-4. Verify: `cat /sys/power/mem_sleep` shows `s2idle [deep]`; `dmesg | grep "PM: suspend entry (deep)"`; measure drain overnight with `/sys/class/power_supply/*/capacity`.
-5. Stretch goal: OEM Super standby (PMIC sleep + SPL retained-RAM resume). This is the only route to stock-level drain and nobody has done it in open source yet.
-
-Sources: ROCKNIX commit [`fca6ac51` "H700: firmware deep sleep"](https://github.com/ROCKNIX/distribution/commit/fca6ac51),
-[h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub),
-[kailashrs/H700_rocknix_enhancement](https://github.com/kailashrs/H700_rocknix_enhancement) (DESIGN/OEM_STANDBY/VALIDATION docs),
-[MustardOS suspend.sh](https://github.com/MustardOS/internal/blob/main/script/system/suspend.sh), muOS config on the card.
-
-## Stock "Super standby": what boot0 does on wake (reverse engineered)
-
-From the boot0 in the reference image (`RG35XXSP-V1.1.5-BASE-…img`, eGON.BT0 at 8 KiB, AArch32 Thumb, loaded at `0x20000`; `llvm-objdump --triple=thumbv7a`):
-
-| RTC register (`0x07000000 +`) | Meaning in boot0 |
+| Where | What |
 |---|---|
-| `0x1f8` bit 16 | **super standby flag**: printed as "rtc standby flag is 0x%x, super standby flag is 0x%x", then the register is cleared |
+| TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4) |
+| Kernel | PM fixes for the power-key wake event, MMC, the TF2 slot power, the USB PHY clock, the display pipeline and LCD pads, the codec, and a suspend OPP (patches 0018-0024, 0027) |
+| `sleepd` | lid close or power key → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it. Reacts only to events, so a misread lid at boot can't suspend |
+| `anbernic.init` | rebinds the USB gadget when musb comes back detached |
+
+Wake sources: power key (PMIC), lid (Hall GPIO), RTC.
+
+Check: `cat /sys/power/mem_sleep` shows `[deep]`, and `dmesg` has `PM: suspend entry (deep)`.
+
+## Later: Super standby (PMIC-level)
+
+The stock firmware has a deeper mode: the AXP717 cuts every rail except DRAM (regs `0x25`, `0x28`..`0x2a`)
+and the **SoC really powers off**. Wake-up is a cold boot through the BROM; boot0 re-inits DRAM without
+clearing it, checks a RAM sum and jumps back into BL31, which restores the SoC and returns to Linux.
+It draws less than our deep sleep.
+
+What the stock boot0 (eGON.BT0 at 8 KiB, AArch32 Thumb, loaded at `0x20000`) reads on wake:
+
+| RTC register (`0x07000000 +`) | Meaning |
+|---|---|
+| `0x1f8` bit 16 | super standby flag; boot0 clears the register |
 | `0x100` (GP0) | `0x7654321x`: magic in the upper 28 bits, low nibble = mode |
-| `0x118`/`0x11c` (GP6/GP7) | start / length of a DRAM range that boot0 sums (32-bit word sum) after DRAM init |
-| `0x10c` (GP3) | expected sum; mismatch → "dram crc error" and **hang** |
-| `0x1fc` | resume address: "find standby flag, jump to addr 0x%x", boot0 jumps there instead of loading U-Boot |
+| `0x118`/`0x11c` (GP6/GP7) | start / length of a DRAM range boot0 sums (32-bit words) after DRAM init |
+| `0x10c` (GP3) | expected sum; a mismatch hangs ("dram crc error") |
+| `0x1fc` | resume address, jumped to instead of loading U-Boot |
 | `0x1f4` bit 0 | DRAM pad hold (retention); our suspend stub releases it on resume too |
-| `0x108` (GP2) | not standby: `0x5AA5A55A` = "eraly jump fel", `0x5AA55AA5` = crashdump → FEL |
+| `0x108` (GP2) | not standby: `0x5AA5A55A` = early jump to FEL, `0x5AA55AA5` = crashdump → FEL |
 
-So in Super standby the **SoC really powers off**: the AXP717 cuts every rail except DRAM, and wake-up is a cold boot through the BROM. boot0 re-inits DRAM without clearing it ("donot select dram_para when wakeup from standby"), checks the RAM sum, and jumps back into the vendor BL31, which restores the SoC and returns to Linux.
-
-Porting that to our stack would take three pieces:
-1. **SPL**: flag check, DRAM init in resume mode (the stub's `dram-resume.patch` already has that path), jump to the BL31 warm entry.
+Doing it on our stack takes three pieces:
+1. **SPL**: flag check, DRAM init in resume mode (the stub's `dram-resume.patch` has that path), jump to the BL31 warm entry.
 2. **TF-A**: the stub ends with an AXP717 power-down instead of WFI.
-3. **Linux**: every driver has to survive a full SoC power loss (CCU, pinctrl, GIC and so on get reset). Mainline sunxi drivers mostly don't save and restore that state. The BSP kernel's own standby code does.
+3. **Linux**: every driver has to survive a full SoC power loss (CCU, pinctrl, GIC and so on get reset).
+   Mainline sunxi drivers mostly don't save and restore that state.
 
-Also, only PMIC-side events can wake it: the power key and VBUS. The lid Hall sensor is on a SoC GPIO (PE7), so it **can't wake the device from Super standby**.
-
-Order of work: get normal deep sleep (TF-A stub) working and measure its drain first; then decide whether Super is worth the kernel-wide effort.
+Only PMIC events can wake it: the power key and VBUS. The lid Hall sensor is on a SoC GPIO (PE7), so the
+lid can't. Measure deep sleep drain first to see whether it's worth the kernel-wide effort.

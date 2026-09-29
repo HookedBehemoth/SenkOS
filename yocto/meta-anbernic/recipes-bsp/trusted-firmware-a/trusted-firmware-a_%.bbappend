@@ -2,7 +2,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 COMPATIBLE_MACHINE:rg35xx-sp = "rg35xx-sp"
 
-# PSCI SYSTEM_SUSPEND ("deep" sleep) for the H616/H700, from ROCKNIX (kailashrs): BL31 runs an
+# PSCI SYSTEM_SUSPEND ("deep" sleep) for the H616/H700 (patch from ROCKNIX): BL31 runs an
 # SRAM stub that puts DRAM into self-refresh, WFIs for the wake IRQ, and re-initialises DRAM.
 # The stub is built from U-Boot's own DRAM driver + our U-Boot defconfig, so it trains DRAM
 # with the exact parameters our SPL uses. BL31 refuses suspend if they don't match at runtime.
