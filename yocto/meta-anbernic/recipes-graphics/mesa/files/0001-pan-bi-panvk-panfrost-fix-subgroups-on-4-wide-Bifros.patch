@@ -1,0 +1,322 @@
+From b50d90ceff379874f1cf26fd84466eb517723dc8 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Tue, 29 Sep 2026 23:01:57 +0200
+Subject: [PATCH] pan/bi,panvk,panfrost: fix subgroups on 4-wide Bifrost
+ (G31/G51/G71/G72)
+
+The v7.0 cores (Mali-G31/G51) are v7, but like v6 they have 4-wide warps,
+only the limited CLPER encoding (BIFROST_LIMITED_CLPER) and no WMASK. We
+advertised 8-wide subgroups for all of v7 and emitted the full CLPER and
+WMASK for read_invocation and ballot, which fault with INSTR_INVALID_ENC on
+Mali-G31, so every shader using subgroup operations fails or hangs there.
+v6 got the right size already, but the same invalid encodings.
+
+Arm's driver reports subgroupSize 4 on G71/G72/G31/G51 and 8 on G52/G76,
+which is exactly the split of the BIFROST_LIMITED_CLPER quirk. Add
+pan_gpu_subgroup_size(), which returns 4 for those GPUs, and use it
+everywhere the size is exposed or compiled in (Bifrost NIR lowering and
+backend, PanVK properties, gallium compute caps). On these GPUs,
+read_invocation now uses CLPER_OLD and ballot is built from four CLPER_OLD
+reads.
+
+Tested on Mali-G31 (Anbernic RG35XX-SP, H700) with VK-CTS 1.4.6.2 under
+PANVK_DEBUG=sync: the subgroup tests of a 1/100 sample of vk-main go from
+68 faulting to all passing. Not tested on G51/G71/G72.
+
+Upstream-Status: Pending [not yet submitted to Mesa]
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gallium/drivers/panfrost/pan_screen.c     |  2 +-
+ src/gallium/drivers/panfrost/pan_shader.c     |  2 +-
+ src/panfrost/compiler/bifrost/bi_quirks.h     |  4 +-
+ .../compiler/bifrost/bifrost_compile.c        | 43 ++++++++++++++++---
+ src/panfrost/compiler/bifrost/bifrost_nir.c   | 11 +++--
+ src/panfrost/compiler/pan_compiler.h          | 17 ++++++++
+ .../vulkan/panvk_vX_physical_device.c         | 12 +++---
+ src/panfrost/vulkan/panvk_vX_shader.c         | 12 ++++--
+ 8 files changed, 78 insertions(+), 25 deletions(-)
+
+diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
+index 1e2f250..aa4f35b 100644
+--- a/src/gallium/drivers/panfrost/pan_screen.c
++++ b/src/gallium/drivers/panfrost/pan_screen.c
+@@ -667,7 +667,7 @@ panfrost_init_compute_caps(struct panfrost_screen *screen)
+    caps->max_local_size = 32768;
+    caps->max_clock_frequency = 800; /* MHz -- TODO */
+    caps->max_compute_units = dev->core_count;
+-   caps->subgroup_sizes = pan_subgroup_size(dev->arch);
++   caps->subgroup_sizes = pan_gpu_subgroup_size(panfrost_device_gpu_id(dev));
+    caps->max_variable_threads_per_block = 1024; // TODO
+ }
+ 
+diff --git a/src/gallium/drivers/panfrost/pan_shader.c b/src/gallium/drivers/panfrost/pan_shader.c
+index 4ab7e9e..4b7f615 100644
+--- a/src/gallium/drivers/panfrost/pan_shader.c
++++ b/src/gallium/drivers/panfrost/pan_shader.c
+@@ -750,7 +750,7 @@ panfrost_get_compute_state_info(struct pipe_context *pipe, void *cso,
+    info->max_threads = pan_compute_max_thread_count(&dev->kmod.dev->props,
+                                                     cs->info.work_reg_count);
+    info->private_memory = cs->info.tls_size;
+-   info->simd_sizes = pan_subgroup_size(dev->arch);
++   info->simd_sizes = pan_gpu_subgroup_size(panfrost_device_gpu_id(dev));
+    info->preferred_simd_size = info->simd_sizes;
+ }
+ 
+diff --git a/src/panfrost/compiler/bifrost/bi_quirks.h b/src/panfrost/compiler/bifrost/bi_quirks.h
+index 5305db6..d289412 100644
+--- a/src/panfrost/compiler/bifrost/bi_quirks.h
++++ b/src/panfrost/compiler/bifrost/bi_quirks.h
+@@ -21,7 +21,9 @@
+  * These GPUs use a simple encoding of CLPER that does not support
+  * inactive_result, subgroup_size, or lane_op. Using those features requires
+  * lowering to additional ALU instructions. The encoding forces inactive_result
+- * = zero, subgroup_size = subgroup4, and lane_op = none. */
++ * = zero, subgroup_size = subgroup4, and lane_op = none. These GPUs have
++ * 4-wide warps (see pan_gpu_subgroup_size) and no WMASK either: both fault
++ * with INSTR_INVALID_ENC on Mali-G31. */
+ 
+ #define BIFROST_LIMITED_CLPER (1 << 1)
+ 
+diff --git a/src/panfrost/compiler/bifrost/bifrost_compile.c b/src/panfrost/compiler/bifrost/bifrost_compile.c
+index beb50b4..d9f660a 100644
+--- a/src/panfrost/compiler/bifrost/bifrost_compile.c
++++ b/src/panfrost/compiler/bifrost/bifrost_compile.c
+@@ -1986,8 +1986,27 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
+    case nir_intrinsic_ballot_relaxed: {
+       assert(instr->src[0].ssa->bit_size == 32);
+       enum bi_subgroup subgroup =
+-         bi_subgroup_from_cluster_size(pan_subgroup_size(b->shader->arch));
+-      bi_wmask_to(b, dst, bi_src_index(&instr->src[0]), subgroup, 0);
++         bi_subgroup_from_cluster_size(
++            pan_gpu_subgroup_size(b->shader->inputs->gpu_id));
++
++      if (b->shader->quirks & BIFROST_LIMITED_CLPER) {
++         /* No WMASK: gather bit 0 of each of the 4 lanes with CLPER_OLD, which
++          * reads zero from inactive lanes. */
++         assert(subgroup == BI_SUBGROUP_SUBGROUP4);
++         bi_index src = bi_src_index(&instr->src[0]);
++         bi_index mask = bi_imm_u32(0);
++
++         for (unsigned i = 0; i < 4; ++i) {
++            bi_index lane = bi_clper_old_i32(b, src, bi_imm_u8(i));
++            bi_index bit =
++               bi_lshift_and_i32(b, lane, bi_imm_u32(1), bi_imm_u8(0));
++            mask = bi_lshift_or_i32(b, bit, mask, bi_imm_u8(i));
++         }
++
++         bi_mov_i32_to(b, dst, mask);
++      } else {
++         bi_wmask_to(b, dst, bi_src_index(&instr->src[0]), subgroup, 0);
++      }
+       break;
+    }
+ 
+@@ -1996,11 +2015,21 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
+       enum bi_inactive_result inactive_result = BI_INACTIVE_RESULT_ZERO;
+       enum bi_lane_op lane_op = BI_LANE_OP_NONE;
+       enum bi_subgroup subgroup =
+-         bi_subgroup_from_cluster_size(pan_subgroup_size(b->shader->arch));
+-      bi_clper_i32_to(b, dst,
+-                      bi_src_index(&instr->src[0]),
+-                      bi_byte(bi_src_index(&instr->src[1]), 0),
+-                      inactive_result, lane_op, subgroup);
++         bi_subgroup_from_cluster_size(
++            pan_gpu_subgroup_size(b->shader->inputs->gpu_id));
++
++      if (b->shader->quirks & BIFROST_LIMITED_CLPER) {
++         /* Implicitly inactive_result = zero, lane_op = none, subgroup4, which
++          * is what we ask for with the 4-wide subgroups of these GPUs. */
++         assert(subgroup == BI_SUBGROUP_SUBGROUP4);
++         bi_clper_old_i32_to(b, dst, bi_src_index(&instr->src[0]),
++                             bi_byte(bi_src_index(&instr->src[1]), 0));
++      } else {
++         bi_clper_i32_to(b, dst,
++                         bi_src_index(&instr->src[0]),
++                         bi_byte(bi_src_index(&instr->src[1]), 0),
++                         inactive_result, lane_op, subgroup);
++      }
+       break;
+    }
+ 
+diff --git a/src/panfrost/compiler/bifrost/bifrost_nir.c b/src/panfrost/compiler/bifrost/bifrost_nir.c
+index 58c8333..6fa5dfc 100644
+--- a/src/panfrost/compiler/bifrost/bifrost_nir.c
++++ b/src/panfrost/compiler/bifrost/bifrost_nir.c
+@@ -403,7 +403,7 @@ bi_optimize_late(nir_shader *nir, uint64_t gpu_id,
+    if (any_indirects) {
+       nir_divergence_analysis(nir);
+       NIR_PASS(_, nir, bi_lower_divergent_indirects,
+-               pan_subgroup_size(pan_arch(gpu_id)));
++               pan_gpu_subgroup_size(gpu_id));
+    }
+ }
+ 
+@@ -446,7 +446,6 @@ static bool
+ bi_lower_subgroups(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+ {
+    uint64_t gpu_id = *(uint64_t *)data;
+-   unsigned int arch = pan_arch(gpu_id);
+ 
+    b->cursor = nir_before_instr(&intr->instr);
+ 
+@@ -478,16 +477,16 @@ bi_lower_subgroups(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+        * nir_udiv_imm with a power of two divisor, which pan_subgroup_size is,
+        * will construct a right shift instead of an udiv.
+        */
+-      val = nir_udiv_imm(b, flat_local_id, pan_subgroup_size(arch));
++      val = nir_udiv_imm(b, flat_local_id, pan_gpu_subgroup_size(gpu_id));
+       break;
+    }
+ 
+    case nir_intrinsic_load_subgroup_size:
+-      val = nir_imm_int(b, pan_subgroup_size(arch));
++      val = nir_imm_int(b, pan_gpu_subgroup_size(gpu_id));
+       break;
+ 
+    case nir_intrinsic_load_num_subgroups: {
+-      uint32_t subgroup_size = pan_subgroup_size(arch);
++      uint32_t subgroup_size = pan_gpu_subgroup_size(gpu_id);
+       assert(!b->shader->info.workgroup_size_variable);
+       uint32_t workgroup_size =
+          b->shader->info.workgroup_size[0] *
+@@ -999,7 +998,7 @@ bifrost_postprocess_nir(nir_shader *nir,
+     * to scalar first.
+     */
+    const nir_lower_subgroups_options lower_subgroup_opts = {
+-      .subgroup_size = pan_subgroup_size(gpu_arch),
++      .subgroup_size = pan_gpu_subgroup_size(gpu_id),
+       .ballot_bit_size = 32,
+       .ballot_components = 1,
+       .lower_to_scalar = true,
+diff --git a/src/panfrost/compiler/pan_compiler.h b/src/panfrost/compiler/pan_compiler.h
+index ffbbc21..9c4e67c 100644
+--- a/src/panfrost/compiler/pan_compiler.h
++++ b/src/panfrost/compiler/pan_compiler.h
+@@ -16,6 +16,7 @@
+ #include "util/u_dynarray.h"
+ #include "util/format/u_formats.h"
+ #include "util/shader_stats.h"
++#include "panfrost/compiler/bifrost/bi_quirks.h"
+ 
+ struct pan_shader_info;
+ 
+@@ -590,6 +591,22 @@ pan_subgroup_size(unsigned arch)
+       return 1;
+ }
+ 
++/*
++ * Subgroup size of a specific GPU. Within v7, the v7.0 cores (Mali-G31/G51)
++ * have 4-wide warps like v6, while v7.2 (Mali-G52/G76) has 8-wide warps. The
++ * 4-wide cores are exactly the ones with the limited CLPER.
++ */
++static inline unsigned
++pan_gpu_subgroup_size(uint64_t gpu_id)
++{
++   unsigned arch = pan_arch(gpu_id);
++
++   if (arch <= 7 && (bifrost_get_quirks(gpu_id) & BIFROST_LIMITED_CLPER))
++      return 4;
++
++   return pan_subgroup_size(arch);
++}
++
+ /*
+  * Helper returning the maximum offset in bytes (exclusive) that a LD_VAR_BUF*
+  * instruction can use.
+diff --git a/src/panfrost/vulkan/panvk_vX_physical_device.c b/src/panfrost/vulkan/panvk_vX_physical_device.c
+index a442d7c..7a78ed1 100644
+--- a/src/panfrost/vulkan/panvk_vX_physical_device.c
++++ b/src/panfrost/vulkan/panvk_vX_physical_device.c
+@@ -823,6 +823,8 @@ panvk_per_arch(get_physical_device_properties)(
+    os_get_page_size(&os_page_size);
+ 
+    const bool has_disk_cache = device->vk.disk_cache != NULL;
++   const unsigned subgroup_size =
++      pan_gpu_subgroup_size(device->kmod.dev->props.gpu_id);
+ 
+    /* Ensure that the max threads count per workgroup is valid for Bifrost */
+    assert(PAN_ARCH > 8 || device->kmod.dev->props.max_threads_per_wg <= 1024);
+@@ -1030,7 +1032,7 @@ panvk_per_arch(get_physical_device_properties)(
+       .sparseResidencyStandard3DBlockShape = false,
+ 
+       /* Vulkan 1.1 properties */
+-      .subgroupSize = pan_subgroup_size(PAN_ARCH),
++      .subgroupSize = subgroup_size,
+       /* We only support VS, FS, and CS.
+        *
+        * The HW may spawn VS invocations for non-existing indices, which could
+@@ -1144,11 +1146,11 @@ panvk_per_arch(get_physical_device_properties)(
+       .framebufferIntegerColorSampleCounts = sample_counts,
+ 
+       /* Vulkan 1.3 properties */
+-      .minSubgroupSize = pan_subgroup_size(PAN_ARCH),
+-      .maxSubgroupSize = pan_subgroup_size(PAN_ARCH),
++      .minSubgroupSize = subgroup_size,
++      .maxSubgroupSize = subgroup_size,
+       .maxComputeWorkgroupSubgroups =
+          device->kmod.dev->props.max_threads_per_wg /
+-         pan_subgroup_size(PAN_ARCH),
++         subgroup_size,
+       .requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT,
+       .maxInlineUniformBlockSize = MAX_INLINE_UNIFORM_BLOCK_SIZE,
+       .maxPerStageDescriptorInlineUniformBlocks =
+@@ -1316,7 +1318,7 @@ panvk_per_arch(get_physical_device_properties)(
+       .shaderCoreMask = device->kmod.dev->props.shader_present,
+       .shaderCoreCount = util_bitcount(device->kmod.dev->props.shader_present),
+       .shaderWarpsPerCore = device->kmod.dev->props.max_threads_per_core /
+-                            (pan_subgroup_size(PAN_ARCH) * 2),
++                            (subgroup_size * 2),
+ 
+       /* VK_ARM_scheduling_controls */
+       .schedulingControlsFlags =
+diff --git a/src/panfrost/vulkan/panvk_vX_shader.c b/src/panfrost/vulkan/panvk_vX_shader.c
+index 678462e..e7df9ba 100644
+--- a/src/panfrost/vulkan/panvk_vX_shader.c
++++ b/src/panfrost/vulkan/panvk_vX_shader.c
+@@ -838,8 +838,10 @@ panvk_lower_nir(struct panvk_device *dev, nir_shader *nir,
+    /* Run before descriptor and explicit-IO lowering so the memory derefs this
+     * pass emits get lowered by them.
+     */
++   const struct panvk_physical_device *pdev =
++      to_panvk_physical_device(dev->vk.physical);
+    NIR_PASS(_, nir, panvk_nir_lower_cooperative_matrix,
+-            pan_subgroup_size(PAN_ARCH));
++            pan_gpu_subgroup_size(pdev->kmod.dev->props.gpu_id));
+ 
+    const nir_opt_access_options access_options = {
+       .is_vulkan = true,
+@@ -2082,9 +2084,11 @@ panvk_shader_serialize(struct vk_device *vk_dev,
+ 
+ static VkResult
+ panvk_shader_get_executable_properties(
+-   UNUSED struct vk_device *device, const struct vk_shader *vk_shader,
++   struct vk_device *device, const struct vk_shader *vk_shader,
+    uint32_t *executable_count, VkPipelineExecutablePropertiesKHR *properties)
+ {
++   const unsigned subgroup_size = pan_gpu_subgroup_size(
++      to_panvk_physical_device(device->physical)->kmod.dev->props.gpu_id);
+    struct panvk_shader *shader =
+       container_of(vk_shader, struct panvk_shader, vk);
+ 
+@@ -2102,7 +2106,7 @@ panvk_shader_get_executable_properties(
+       vk_outarray_append_typed(VkPipelineExecutablePropertiesKHR, &out, props)
+       {
+          props->stages = mesa_to_vk_shader_stage(shader->vk.stage);
+-         props->subgroupSize = pan_subgroup_size(PAN_ARCH);
++         props->subgroupSize = subgroup_size;
+ 
+          if (variant_name != NULL) {
+             VK_PRINT_STR(props->name, "%s %s", variant_name, stage_name);
+@@ -2120,7 +2124,7 @@ panvk_shader_get_executable_properties(
+                                   props)
+          {
+             props->stages = mesa_to_vk_shader_stage(shader->vk.stage);
+-            props->subgroupSize = pan_subgroup_size(PAN_ARCH);
++            props->subgroupSize = subgroup_size;
+ 
+             if (variant_name != NULL) {
+                VK_PRINT_STR(props->name, "%s %s varying", variant_name,
+-- 
+2.55.0
+
