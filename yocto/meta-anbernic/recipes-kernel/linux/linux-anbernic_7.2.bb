@@ -44,6 +44,10 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0030-drm-sun4i-rgb-set-panel-orientation-before-connector.patch \
     file://0031-arm64-dts-allwinner-h616-add-the-video-engine-Cedrus.patch \
     file://0032-iommu-sun50i-only-translate-masters-that-are-IOMMU-c.patch \
+    file://0033-drivers-staging-media-sunxi-cedrus-add-H616-variant.patch \
+    file://0034-media-cedrus-Don-t-CPU-map-source-buffers.patch \
+    file://0035-media-cedrus-Add-VP9-decoding-support.patch \
+    file://0036-media-cedrus-Select-V4L2_VP9-for-the-VP9-helpers.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 
