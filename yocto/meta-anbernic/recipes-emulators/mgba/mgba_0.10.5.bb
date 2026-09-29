@@ -1,4 +1,4 @@
-SUMMARY = "mGBA Game Boy Advance emulator, SDL2 frontend"
+SUMMARY = "mGBA Game Boy Advance emulator, SDL2 frontend + libretro core"
 LICENSE = "MPL-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=815ca599c9df247a0c7f619bab123dad"
 # Not in the image yet: deployed as a directory, copied to /data/mgba. Run it from there:
@@ -19,7 +19,8 @@ EXTRA_OECMAKE = "-DBUILD_QT=OFF -DBUILD_SDL=ON -DBUILD_STATIC=ON -DBUILD_SHARED=
     -DBUILD_GL=OFF -DBUILD_GLES2=OFF -DBUILD_GLES3=OFF -DUSE_EPOXY=OFF \
     -DUSE_FFMPEG=OFF -DUSE_LIBZIP=OFF -DUSE_MINIZIP=OFF -DUSE_SQLITE3=OFF -DUSE_LUA=OFF \
     -DENABLE_SCRIPTING=OFF -DUSE_ELF=OFF -DUSE_EDITLINE=OFF -DUSE_DEBUGGERS=OFF -DUSE_GDB_STUB=OFF \
-    -DUSE_DISCORD_RPC=OFF -DSKIP_GIT=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+    -DUSE_DISCORD_RPC=OFF -DSKIP_GIT=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DBUILD_LIBRETRO=ON -DLIBRETRO_LIBDIR=${libdir}/libretro"
 
 do_deploy() {
 	install -d ${DEPLOYDIR}/mgba
@@ -27,6 +28,11 @@ do_deploy() {
 	install -m 0644 ${UNPACKDIR}/config.ini ${DEPLOYDIR}/mgba/config.ini
 	# portable.ini in the cwd: mGBA keeps config, saves and states in its own directory
 	touch ${DEPLOYDIR}/mgba/portable.ini
+	# The RetroArch core (see the retroarch recipe)
+	install -d ${DEPLOYDIR}/retroarch-data/retroarch/cores
+	${STRIP} -o ${DEPLOYDIR}/retroarch-data/retroarch/cores/mgba_libretro.so ${B}/mgba_libretro.so
 }
 addtask deploy after do_compile before do_build
 FILES:${PN} += "${datadir}/icons"
+PACKAGES =+ "${PN}-libretro"
+FILES:${PN}-libretro = "${libdir}/libretro"

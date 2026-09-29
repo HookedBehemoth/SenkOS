@@ -5,6 +5,7 @@ inherit image
 
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
+# libav*, libgomp: RetroArch and its cores in /data (retroarch recipe); vulkan-loader, xkbcommon etc. come anyway
 IMAGE_INSTALL = " \
     base-files \
     base-passwd \
@@ -42,6 +43,8 @@ IMAGE_INSTALL = " \
     libjpeg-turbo \
     libcurl \
     libcrypto \
+    libavcodec libavformat libavdevice libavfilter libavutil libswresample libswscale \
+    libgomp \
 "
 IMAGE_LINGUAS = ""
 # Weston is started by anbernic-base (root + seatd, kiosk shell)

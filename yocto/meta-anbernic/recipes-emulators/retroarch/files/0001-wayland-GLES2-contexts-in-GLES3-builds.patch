@@ -1,0 +1,36 @@
+From: SenkOS
+Subject: [PATCH] wayland: GLES2 contexts in GLES3 builds
+
+A GLES3 build defines HAVE_OPENGLES3 but not HAVE_OPENGLES2, so a GLES 2.0 context
+(the "gl" driver, or a core asking for one) got no EGL config attributes, and
+egl_init_context() dereferenced the NULL list.
+
+Upstream-Status: Pending
+---
+--- a/gfx/drivers_context/wayland_ctx.c	2026-09-29 02:49:20.966916956 +0200
++++ b/gfx/drivers_context/wayland_ctx.c	2026-09-29 02:49:21.013273719 +0200
+@@ -175,13 +175,11 @@
+    };
+ 
+ #ifdef HAVE_OPENGLES
+-#ifdef HAVE_OPENGLES2
+    static const EGLint egl_attribs_gles[] = {
+       WL_EGL_ATTRIBS_BASE,
+       EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+       EGL_NONE,
+    };
+-#endif
+ 
+ #ifdef HAVE_OPENGLES3
+ #ifdef EGL_KHR_create_context
+@@ -221,10 +219,8 @@
+          else
+ #endif
+ #endif
+-#ifdef HAVE_OPENGLES2
+             attrib_ptr = egl_attribs_gles;
+ #endif
+-#endif
+          break;
+       case GFX_CTX_OPENVG_API:
+ #ifdef HAVE_VG

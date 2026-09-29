@@ -71,6 +71,13 @@ SuperTuxKart works the same way: `kas build --target supertuxkart`, copy `deploy
 for a slot) to `/data/supertuxkart`. It finds `data/` next to the binary and keeps its config in `$HOME/.config` (`/data`).
 Its shared libs (OpenAL Soft, vorbis, curl, ...) are in the image.
 
+RetroArch is also on `/data` (only its libraries, e.g. libav*, are in the image). `kas build --target retroarch`
+builds RetroArch, the cores and the menu assets into `deploy/images/rg35xx-sp/retroarch-data/`, laid out like
+`/data`: `retroarch/` (binary, `cores/`, `info/`, `assets/`, `autoconfig/`, the skeleton `retroarch.cfg`) and
+`bios/PPSSPP`. Copy it over: `tar cf - -C …/retroarch-data . | tools/ssh tar xf - -C /data`.
+The first start copies `retroarch.cfg` to `/data/.config/retroarch/`; delete that to reset.
+In game: hold Select + X for the menu, + L1/R1 load/save state, + R2 fast forward; Menu quits.
+
 ## Bootloader
 
 SPL/U-Boot/TF-A at 8 KiB is shared by both slots. Updating it is the one step that can still need the card reader:
