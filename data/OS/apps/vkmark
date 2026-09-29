@@ -1,0 +1,4 @@
+#!/bin/sh
+# vkmark on PanVK with Mesa's Vulkan HUD; the score lands in /var/log (/data/log/0)
+export VK_INSTANCE_LAYERS=VK_LAYER_MESA_overlay
+exec vkmark --winsys wayland --fullscreen > /var/log/vkmark.log 2>&1

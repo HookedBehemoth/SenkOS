@@ -36,7 +36,7 @@ recipes-kernel/linux/              Linux 7.2 + patches, savedefconfig, built-in 
 recipes-core/images/               anbernic-image
 recipes-core/anbernic-base/        init glue: USB gadget, A/B slots + /data, logs, watchdog, Weston, SD automount
 recipes-core/sleepd/               suspend on lid / power key
-recipes-graphics/                  launcher, Weston trims + volume OSD module, SDL2/vulkan-tools tweaks
+recipes-graphics/                  launcher, Weston trims + kiosk-shell OSD layer, volume keys module, SDL2/vulkan-tools tweaks
 recipes-emulators/, recipes-games/ RetroArch + cores, mGBA, SuperTuxKart: deployed to /data, not in the image
 ```
 

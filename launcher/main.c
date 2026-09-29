@@ -4,13 +4,22 @@
  *
  * D-pad moves (left/right past the menu, or L1/R1, change page), A launches.
  * What it launched owns the screen (Weston kiosk shell) until it exits; the
- * gamepad is read straight from evdev, so input is ignored meanwhile.
+ * gamepad is read straight from evdev, so input is ignored meanwhile, but for
+ * Menu: that stops the app and shows Resume/Quit over a blur of its last frame.
+ *
+ * A second window, "osd", shows the volume whenever the mixer changes; the
+ * patched kiosk shell keeps it on top of everything without focus.
  *
  * Apps page: built-ins, then every executable in /data/OS/apps.
  */
+#include <alsa/asoundlib.h>
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <glob.h>
+#include <linux/input.h>
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,17 +29,21 @@
 
 #include <SDL.h>
 
+#include "capture.h"
 #include "nav.h"
 #include "text.h"
 
 #define APPS_DIR "/data/OS/apps"
 
 enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, MARGIN = 12 };
+enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
 
 static const SDL_Color BG = {0x14, 0x14, 0x18, 0xff};
 static const SDL_Color FG = {0xee, 0xee, 0xee, 0xff};
 static const SDL_Color DIM = {0x55, 0x55, 0x5c, 0xff};
 static const SDL_Color FOCUS = {0x2a, 0x2e, 0x3a, 0xff};
+/* Over the paused app's blurred frame */
+static const SDL_Color SCRIM = {0x14, 0x14, 0x18, 0xb0};
 static const SDL_Color LOW = {0xe0, 0x40, 0x40, 0xff};
 static const SDL_Color CHARGING = {0x50, 0xc8, 0x60, 0xff};
 static const ui_color RING = {0x6a, 0x9c, 0xff, 0xff};
@@ -44,6 +57,9 @@ typedef struct {
 static const entry builtin_apps[] = {
     {"Vulkan cube", "vkcube --wsi wayland"},
 };
+/* Told apart by address */
+static const entry paused_entries[] = {{"Resume", ""}, {"Quit", ""}};
+static const size_t paused_count = SDL_arraysize(paused_entries);
 static const entry system_entries[] = {
     {"Sleep", "/usr/sbin/suspend"},
     {"Reboot", "reboot"},
@@ -69,9 +85,16 @@ typedef struct {
   int wifi; /* bars 0-4, -1 without a wireless interface */
 } status;
 
-static SDL_Renderer *renderer;
+static SDL_Window *window, *osd;
+static SDL_Renderer *renderer, *osd_renderer;
 static ui_context ctx;
 static pid_t child;
+static char child_label[64];
+/* SIGSTOPped under the pause screen; quitting: SIGTERM sent, not reaped yet */
+static bool paused, quitting;
+static SDL_Texture *backdrop;
+static Uint64 osd_until;
+static Uint32 volume_event;
 
 static int by_label(const void *a, const void *b) {
   return strcmp(((const entry *)a)->label, ((const entry *)b)->label);
@@ -100,18 +123,211 @@ static void scan_apps(void) {
   qsort(apps + first, app_count - first, sizeof(*apps), by_label);
 }
 
-static void launch(const char *command) {
+/* In every app's environment, with its label: a launcher that restarts finds
+ * the app the last one left running (adopt). */
+#define APP_ENV "LAUNCHER_APP="
+
+extern char **environ;
+
+static void launch(const entry *e) {
+  const char *command = e->command;
+  /* Built before fork: the child of a threaded process should not malloc */
+  size_t n = 0;
+  while (environ[n] != NULL)
+    n++;
+  char **env = malloc((n + 2) * sizeof(*env));
+  char marker[sizeof(APP_ENV) + sizeof(e->label)];
+  if (env == NULL)
+    return;
+  snprintf(marker, sizeof(marker), APP_ENV "%s", e->label);
+  memcpy(env, environ, n * sizeof(*env));
+  env[n] = marker;
+  env[n + 1] = NULL;
   const pid_t pid = fork();
   if (pid == 0) {
     setsid();
     if (command[0] == '/')
-      execl(command, command, (char *)NULL);
+      execle(command, command, (char *)NULL, env);
     else
-      execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+      execle("/bin/sh", "sh", "-c", command, (char *)NULL, env);
     _exit(127);
   }
-  if (pid > 0)
+  free(env);
+  if (pid > 0) {
     child = pid;
+    snprintf(child_label, sizeof(child_label), "%s", e->label);
+  }
+}
+
+static int read_line(const char *path, char *out, size_t size);
+
+/* The app a previous launcher left behind: the session leader (setsid) with
+ * APP_ENV. Continued, in case it was left under the pause screen. */
+static void adopt(void) {
+  DIR *proc = opendir("/proc");
+  if (proc == NULL)
+    return;
+  struct dirent *d;
+  while (child == 0 && (d = readdir(proc)) != NULL) {
+    const pid_t pid = atoi(d->d_name);
+    char path[64], buf[4096];
+    if (pid <= 0)
+      continue;
+    /* "pid (comm) state ppid pgrp session ...": comm may hold anything */
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    int session = 0;
+    if (read_line(path, buf, sizeof(buf)) != 0 || strrchr(buf, ')') == NULL ||
+        sscanf(strrchr(buf, ')') + 1, " %*c %*d %*d %d", &session) != 1 ||
+        session != pid)
+      continue;
+    snprintf(path, sizeof(path), "/proc/%d/environ", pid);
+    FILE *f = fopen(path, "r");
+    if (f == NULL)
+      continue;
+    const size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[len] = '\0';
+    /* NUL-separated; ponytail: only the first 4 KiB */
+    for (const char *v = buf; v < buf + len; v += strlen(v) + 1)
+      if (strncmp(v, APP_ENV, strlen(APP_ENV)) == 0) {
+        child = pid;
+        snprintf(child_label, sizeof(child_label), "%s", v + strlen(APP_ENV));
+        kill(-pid, SIGCONT);
+        break;
+      }
+  }
+  closedir(proc);
+}
+
+/* An adopted app is init's to reap: it is gone when it no longer exists. */
+static bool child_exited(void) {
+  return waitpid(child, NULL, WNOHANG) == child ||
+         (kill(child, 0) != 0 && errno == ESRCH);
+}
+
+/* The built-in pad, opened a second time: EVIOCGRAB on it while the app is
+ * stopped keeps the presses for the pause screen out of the app's queue, where
+ * it would find them on SIGCONT. The grab starves SDL's fd too, so this thread
+ * turns them into controller events meanwhile. Menu always comes from here:
+ * SDL holds a Guide release back until 250 ms after the press.
+ * ponytail: the first pad only, raw codes as the built-in pad labels them. */
+static int pad_fd = -1;
+static SDL_atomic_t grabbed;
+#define PAD_THREAD -1 /* its events' `which` */
+
+static int pad_thread(void *data) {
+  (void)data;
+  struct input_event e;
+  while (read(pad_fd, &e, sizeof(e)) == sizeof(e)) {
+    if (e.type != EV_KEY || e.value == 2 ||
+        (e.code != BTN_MODE && !SDL_AtomicGet(&grabbed)))
+      continue;
+    int button;
+    switch (e.code) {
+    case BTN_DPAD_UP: button = SDL_CONTROLLER_BUTTON_DPAD_UP; break;
+    case BTN_DPAD_DOWN: button = SDL_CONTROLLER_BUTTON_DPAD_DOWN; break;
+    case BTN_EAST: button = SDL_CONTROLLER_BUTTON_A; break;
+    case BTN_SOUTH: button = SDL_CONTROLLER_BUTTON_B; break;
+    case BTN_MODE: button = SDL_CONTROLLER_BUTTON_GUIDE; break;
+    default: continue;
+    }
+    SDL_Event ev = {.cbutton = {.type = e.value ? SDL_CONTROLLERBUTTONDOWN
+                                                : SDL_CONTROLLERBUTTONUP,
+                                .which = PAD_THREAD,
+                                .button = (Uint8)button}};
+    SDL_PushEvent(&ev);
+  }
+  return 0;
+}
+
+static void open_pad(int index) {
+  SDL_GameController *pad = SDL_GameControllerOpen(index);
+  const char *path = pad ? SDL_GameControllerPath(pad) : NULL;
+  if (pad_fd >= 0 || path == NULL ||
+      (pad_fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+    return;
+  SDL_DetachThread(SDL_CreateThread(pad_thread, "pad", NULL));
+}
+
+static void grab(bool on) {
+  if (pad_fd < 0)
+    return;
+  if (on)
+    ioctl(pad_fd, EVIOCGRAB, 1);
+  SDL_AtomicSet(&grabbed, on);
+  if (!on)
+    ioctl(pad_fd, EVIOCGRAB, 0);
+}
+
+/* setsid made the child a group leader: signals go to all it started. Stopped
+ * first, so the frame blurred is the one it stays on. The capture is ~85 ms of
+ * Panfrost reading the framebuffer back (glReadPixels in Weston), 10 ms blur.
+ * The pad is grabbed once Menu is released (input). */
+static void pause_child(nav *ui) {
+  kill(-child, SIGSTOP);
+  backdrop = capture_blurred(renderer);
+  paused = true;
+  nav_focus(ui, 0);
+  /* kiosk-shell puts a toplevel on top when it maps: map again */
+  SDL_HideWindow(window);
+  SDL_ShowWindow(window);
+}
+
+static void resume_child(void) {
+  paused = false;
+  grab(false);
+  SDL_HideWindow(window);
+  kill(-child, SIGCONT);
+}
+
+/* SDL apps turn SIGTERM into SDL_QUIT and exit cleanly (mGBA flushes its
+ * save). The pause screen stays up over the app until it has exited. */
+static void quit_child(void) {
+  paused = false;
+  quitting = true;
+  grab(false);
+  kill(-child, SIGTERM);
+  kill(-child, SIGCONT);
+}
+
+/* Line Out on hw:0, which weston's volume-keys module sets. Posts the level in
+ * percent, 0 when muted, whenever it changes. */
+static int volume_thread(void *data) {
+  (void)data;
+  snd_mixer_t *mixer;
+  snd_mixer_selem_id_t *id;
+  snd_mixer_selem_id_alloca(&id);
+  snd_mixer_selem_id_set_name(id, "Line Out");
+  snd_mixer_elem_t *elem;
+  long min, max;
+  if (snd_mixer_open(&mixer, 0) < 0)
+    return 0;
+  if (snd_mixer_attach(mixer, "hw:0") < 0 ||
+      snd_mixer_selem_register(mixer, NULL, NULL) < 0 ||
+      snd_mixer_load(mixer) < 0 ||
+      (elem = snd_mixer_find_selem(mixer, id)) == NULL ||
+      snd_mixer_selem_get_playback_volume_range(elem, &min, &max) < 0 ||
+      max <= min) {
+    snd_mixer_close(mixer);
+    return 0;
+  }
+  int last = -1;
+  for (;;) {
+    long raw = min;
+    int on = 1;
+    snd_mixer_selem_get_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT, &raw);
+    snd_mixer_selem_get_playback_switch(elem, SND_MIXER_SCHN_FRONT_LEFT, &on);
+    const int percent = on ? (int)((raw - min) * 100 / (max - min)) : 0;
+    if (last >= 0 && percent != last) {
+      SDL_Event ev = {.user = {.type = volume_event, .code = percent}};
+      SDL_PushEvent(&ev);
+    }
+    last = percent;
+    if (snd_mixer_wait(mixer, -1) < 0 || snd_mixer_handle_events(mixer) < 0)
+      break;
+  }
+  snd_mixer_close(mixer);
+  return 0;
 }
 
 static int read_line(const char *path, char *out, size_t size) {
@@ -155,6 +371,33 @@ static void read_status(status *s) {
 static void fill(float x, float y, float w, float h, SDL_Color c) {
   SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
   SDL_RenderFillRectF(renderer, &(SDL_FRect){x, y, w, h});
+}
+
+/* Speaker, then the level as a bar. Its own renderer, so no text. */
+static void show_volume(int percent) {
+  if (osd_renderer == NULL)
+    return;
+  SDL_ShowWindow(osd);
+  SDL_Renderer *r = osd_renderer;
+  /* Wayland wants premultiplied alpha */
+  SDL_SetRenderDrawColor(r, BG.r * SCRIM.a / 255, BG.g * SCRIM.a / 255,
+                         BG.b * SCRIM.a / 255, SCRIM.a);
+  SDL_RenderClear(r);
+  SDL_SetRenderDrawColor(r, FG.r, FG.g, FG.b, FG.a);
+  SDL_RenderFillRectF(r, &(SDL_FRect){MARGIN, OSD_H / 2 - 5, 6, 10});
+  const float x0 = MARGIN + 6, x1 = x0 + 8, y = OSD_H / 2;
+  const SDL_Vertex cone[] = {
+      {{x0, y - 5}, FG, {0, 0}}, {{x1, y - 11}, FG, {0, 0}}, {{x1, y + 11}, FG, {0, 0}},
+      {{x0, y - 5}, FG, {0, 0}}, {{x1, y + 11}, FG, {0, 0}}, {{x0, y + 5}, FG, {0, 0}},
+  };
+  SDL_RenderGeometry(r, NULL, cone, SDL_arraysize(cone), NULL, 0);
+  const float bx = x1 + MARGIN, bw = OSD_W - bx - MARGIN * 1.5f;
+  SDL_SetRenderDrawColor(r, DIM.r, DIM.g, DIM.b, DIM.a);
+  SDL_RenderFillRectF(r, &(SDL_FRect){bx, y - 3, bw, 6});
+  SDL_SetRenderDrawColor(r, FG.r, FG.g, FG.b, FG.a);
+  SDL_RenderFillRectF(r, &(SDL_FRect){bx, y - 3, bw * percent / 100, 6});
+  SDL_RenderPresent(r);
+  osd_until = SDL_GetTicks64() + OSD_MS;
 }
 
 /* "[time]      [page]         [wifi bars][battery%][battery symbol]" */
@@ -230,13 +473,34 @@ static void turn_page(size_t *page, int by) {
 
 static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
   int button = -1;
+  if (ev->type == volume_event) {
+    show_volume(ev->user.code);
+    return true;
+  }
   switch (ev->type) {
   case SDL_QUIT:
     return false;
   case SDL_CONTROLLERDEVICEADDED:
-    SDL_GameControllerOpen(ev->cdevice.which);
+    open_pad(ev->cdevice.which);
     break;
+  /* Menu's release, which reaches the app queue first: it sees the whole
+   * press, and nothing after it until it is resumed. */
+  case SDL_CONTROLLERBUTTONUP:
+    if (ev->cbutton.which == PAD_THREAD &&
+        ev->cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE && paused)
+      grab(true);
+    return true;
   case SDL_CONTROLLERBUTTONDOWN:
+    /* Menu toggles the pause screen, on the press */
+    if (ev->cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) {
+      if (ev->cbutton.which == PAD_THREAD && child != 0 && !quitting) {
+        if (paused)
+          resume_child();
+        else
+          pause_child(ui);
+      }
+      return true;
+    }
     button = ev->cbutton.button;
     break;
   case SDL_KEYDOWN: /* a keyboard, or the desktop */
@@ -251,26 +515,31 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
     }
     break;
   }
-  /* Menu quits whatever runs: SDL apps turn SIGTERM into SDL_QUIT and exit
-   * cleanly (mGBA flushes its save). setsid made the child a group leader. */
-  if (child != 0) {
-    if (button == SDL_CONTROLLER_BUTTON_GUIDE)
-      kill(-child, SIGTERM);
+  if (child != 0 && !paused)
+    return true;
+  if (paused && button == SDL_CONTROLLER_BUTTON_B) {
+    resume_child();
     return true;
   }
   switch (button) {
   case SDL_CONTROLLER_BUTTON_DPAD_UP: nav_move(ui, NAV_UP); break;
   case SDL_CONTROLLER_BUTTON_DPAD_DOWN: nav_move(ui, NAV_DOWN); break;
   case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-    if (!nav_move(ui, NAV_LEFT))
+    if (!nav_move(ui, NAV_LEFT) && !paused)
       turn_page(page, -1);
     break;
   case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-    if (!nav_move(ui, NAV_RIGHT))
+    if (!nav_move(ui, NAV_RIGHT) && !paused)
       turn_page(page, 1);
     break;
-  case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: turn_page(page, -1); break;
-  case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: turn_page(page, 1); break;
+  case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+    if (!paused)
+      turn_page(page, -1);
+    break;
+  case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+    if (!paused)
+      turn_page(page, 1);
+    break;
   /* A by label: SDL_GAMECONTROLLERCONFIG (/etc/profile.d/wayland.sh) maps the pad */
   case SDL_CONTROLLER_BUTTON_A: nav_activate(ui); break;
   }
@@ -281,22 +550,42 @@ int main(void) {
   /* Weston hands keyboard focus to whatever it launched, but the gamepad is
    * evdev: keep listening, and ignore it while a child runs. */
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+  /* An alpha channel for the OSD, and no opaque region */
+  SDL_SetHint(SDL_HINT_VIDEO_EGL_ALLOW_TRANSPARENCY, "1");
+  /* The kiosk shell knows the OSD by app_id and title; apps get their own */
+  SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "launcher", 1);
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
     SDL_Log("SDL_Init: %s", SDL_GetError());
     return 1;
   }
-  SDL_Window *window =
-      SDL_CreateWindow("Launcher", SDL_WINDOWPOS_UNDEFINED,
-                       SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_RESIZABLE);
-  renderer = window ? SDL_CreateRenderer(window, -1,
-                                         SDL_RENDERER_ACCELERATED |
-                                             SDL_RENDERER_PRESENTVSYNC)
+  unsetenv("SDL_VIDEO_WAYLAND_WMCLASS");
+  window = SDL_CreateWindow("Launcher", SDL_WINDOWPOS_UNDEFINED,
+                            SDL_WINDOWPOS_UNDEFINED, 640, 480,
+                            SDL_WINDOW_RESIZABLE);
+  /* No vsync: Mesa waits for the last frame's callback before the next
+   * swap, and a window hidden right after a frame (Resume) may never get it.
+   * Weston composites on vblank anyway; the loop paces animation. */
+  renderer = window ? SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED)
                     : NULL;
   if (renderer == NULL || !text_init(renderer, "sans-serif")) {
     SDL_Log("launcher: %s", SDL_GetError());
     return 1;
   }
   ctx.renderer = renderer;
+  /* The window has alpha now: blend, so it stays opaque under the scrim */
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+  /* Hidden until there is something to show */
+  osd = SDL_CreateWindow("osd", SDL_WINDOWPOS_UNDEFINED,
+                         SDL_WINDOWPOS_UNDEFINED, OSD_W, OSD_H,
+                         SDL_WINDOW_HIDDEN);
+  osd_renderer =
+      osd ? SDL_CreateRenderer(osd, -1, SDL_RENDERER_ACCELERATED) : NULL;
+  volume_event = SDL_RegisterEvents(1);
+  /* Mapping put this window over the adopted app: give it back the screen */
+  adopt();
+  if (child != 0)
+    SDL_HideWindow(window);
+  SDL_DetachThread(SDL_CreateThread(volume_thread, "volume", NULL));
   static nav ui = {.animate = true, .duration = 150};
   size_t page = 0;
   scan_apps();
@@ -307,24 +596,39 @@ int main(void) {
 
   for (;;) {
     SDL_Event ev;
-    /* Idle: wake once a second for the clock and the status. */
-    if (SDL_WaitEventTimeout(&ev, animating ? 0 : 1000)) {
+    /* A frame's time while animating. Idle: wake once a second for the
+     * clock and the status, and to hide the OSD. */
+    Uint64 wait = animating ? 16 : 1000;
+    if (osd_until != 0)
+      wait = SDL_min(wait, osd_until - SDL_min(osd_until, SDL_GetTicks64()));
+    if (SDL_WaitEventTimeout(&ev, (int)wait)) {
       do
         if (!input(&ui, &ev, &page))
           return 0;
       while (SDL_PollEvent(&ev));
       animating = true;
     }
-    if (child != 0 && waitpid(child, NULL, WNOHANG) == child) {
+    if (child != 0 && child_exited()) {
+      if (paused)
+        grab(false);
       child = 0;
+      paused = quitting = false;
+      SDL_DestroyTexture(backdrop);
+      backdrop = NULL;
+      SDL_ShowWindow(window);
       scan_apps();
     }
     const Uint64 now = SDL_GetTicks64();
+    if (osd_until != 0 && now >= osd_until) {
+      SDL_HideWindow(osd);
+      osd_until = 0;
+    }
     if (now - status_at >= 1000) {
       read_status(&st);
       status_at = now;
     }
-    if (child != 0) {
+    /* Under the app, or hidden: nothing would show */
+    if (child != 0 && !paused) {
       animating = false;
       continue;
     }
@@ -333,16 +637,32 @@ int main(void) {
     SDL_GetRendererOutputSize(renderer, &w, &h);
     SDL_SetRenderDrawColor(renderer, BG.r, BG.g, BG.b, BG.a);
     SDL_RenderClear(renderer);
+    if (paused && backdrop != NULL) {
+      SDL_RenderCopy(renderer, backdrop, NULL, NULL);
+      fill(0, 0, w, h, SCRIM);
+    }
     nav_begin(&ui, &ctx, now);
-    top_bar(w, pages[page].name, &st);
     const entry *chosen = NULL;
-    NAV_SCOPE(&ui, nav_int(page)) {
-      chosen = menu(&ui, pages[page].entries, *pages[page].count,
-                    (ui_rect){0, BAR + 1, w, h - BAR - 1});
+    if (paused) {
+      top_bar(w, child_label, &st);
+      NAV_SCOPE(&ui, nav_str("paused")) {
+        chosen = menu(&ui, paused_entries, paused_count,
+                      (ui_rect){0, BAR + 1, w, h - BAR - 1});
+      }
+    } else {
+      top_bar(w, pages[page].name, &st);
+      NAV_SCOPE(&ui, nav_int(page)) {
+        chosen = menu(&ui, pages[page].entries, *pages[page].count,
+                      (ui_rect){0, BAR + 1, w, h - BAR - 1});
+      }
     }
     animating = nav_end(&ui, RING, 2);
     SDL_RenderPresent(renderer);
-    if (chosen != NULL)
-      launch(chosen->command);
+    if (chosen == &paused_entries[0])
+      resume_child();
+    else if (chosen == &paused_entries[1])
+      quit_child();
+    else if (chosen != NULL)
+      launch(chosen);
   }
 }

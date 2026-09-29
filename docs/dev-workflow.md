@@ -69,7 +69,12 @@ The UI is [launcher/](../launcher) (SDL2 + HarfBuzz + fontconfig, immediate mode
 `/data/OS/launcher` if it exists, or else the image's `/usr/bin/launcher`. It restarts the launcher whenever it exits.
 - `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/OS/launcher`, and restarts it. You don't need to reflash.
 - `tools/ssh rm /data/OS/launcher`: goes back to the image's launcher.
-- Its Apps page lists every executable in `/data/OS/apps`. While one runs, Menu sends it SIGTERM (SDL apps quit cleanly).
+- Its Apps page lists every executable in `/data/OS/apps`. While one runs, Menu pauses it (SIGSTOP) and shows Resume/Quit over a blur of its last frame. Quit sends SIGTERM (SDL apps quit cleanly). Menu or B resumes. While paused, the launcher grabs the pad (EVIOCGRAB), so the app never sees those presses.
+- Apps carry `LAUNCHER_APP=<label>` in their environment. A launcher that (re)starts adopts an app the previous one left running (a session leader with that variable) and continues it if it was paused. Restarting the launcher (`tools/deploy-launcher`, a crash) doesn't end the game.
+- Volume keys: Weston's `volume-keys.so` sets Line Out, and the launcher's `osd` window shows the level. The patched kiosk shell keeps that window on top without focus.
+- [data/](../data) holds `/data` files that live in this repo: `tar cf - -C data . | tools/ssh tar xf - -C /data`. They include the
+  GPU benchmarks (glmark2, vkmark), which show Mesa's HUD (`GALLIUM_HUD`, `VK_LAYER_MESA_overlay`)
+  and write their scores to `/var/log`.
 - On the desktop: `meson setup build launcher && ninja -C build && build/launcher` (arrows, Enter, PgUp/PgDn).
 
 mGBA (GBA) isn't in the image yet. Its recipe only deploys it: `kas build --target mgba`, then copy
@@ -85,7 +90,7 @@ builds RetroArch, the cores and the menu assets into `deploy/images/rg35xx-sp/re
 `/data`: `retroarch/` (binary, `cores/`, `info/`, `assets/`, `autoconfig/`, the skeleton `retroarch.cfg`) and
 `bios/PPSSPP`. Copy it over: `tar cf - -C …/retroarch-data . | tools/ssh tar xf - -C /data`.
 The first start copies `retroarch.cfg` to `/data/.config/retroarch/`; delete that to reset.
-In game: hold Select + X for the menu, + L1/R1 load/save state, + R2 fast forward; Menu quits.
+In game: hold Select + X for the menu, + L1/R1 load/save state, + R2 fast forward; Menu pauses.
 
 ## Bootloader
 

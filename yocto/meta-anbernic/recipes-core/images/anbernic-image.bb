@@ -24,6 +24,8 @@ IMAGE_INSTALL = " \
     mesa-vulkan-drivers \
     vulkan-loader \
     vulkan-tools \
+    glmark2 \
+    vkmark \
     gstreamer1.0 \
     gstreamer1.0-plugins-bad-v4l2codecs \
     gstreamer1.0-plugins-bad-kms \
