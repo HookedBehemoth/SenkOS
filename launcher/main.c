@@ -6,7 +6,7 @@
  * What it launched owns the screen (Weston kiosk shell) until it exits; the
  * gamepad is read straight from evdev, so input is ignored meanwhile.
  *
- * Apps page: built-ins, then every executable in /data/apps.
+ * Apps page: built-ins, then every executable in /data/OS/apps.
  */
 #include <dirent.h>
 #include <glob.h>
@@ -23,7 +23,7 @@
 #include "nav.h"
 #include "text.h"
 
-#define APPS_DIR "/data/apps"
+#define APPS_DIR "/data/OS/apps"
 
 enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, MARGIN = 12 };
 

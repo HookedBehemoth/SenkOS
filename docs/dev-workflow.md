@@ -56,11 +56,20 @@ Device side: [ab](../yocto/meta-anbernic/recipes-core/anbernic-base/files/ab) wi
 - It formats p4 only while `/uboot/data-new` marks the partition as just created by it.
 - It mounts p4 at `/data`.
 
+The OS's own overrides live in `/data/OS/` (`SD:/OS/`). Everything else on `/data` belongs to the user.
+
+| Path | Used by |
+|---|---|
+| `OS/launcher` | `/etc/init.d/weston` runs it instead of the image's launcher |
+| `OS/apps/` | the launcher's Apps page |
+| `OS/init.d/S*` | `/etc/init.d/data-init` (rcS S41: after `/data` is mounted, before seatd, dropbear and Weston) runs each executable one with `start`, in order. To fix a config on the read-only rootfs, bind-mount a file from `/data` over it. `touch /uboot/no-data-init` (FAT, editable from any PC) skips them all |
+| `OS/profile.d/*.sh` | sourced last by `/etc/profile` and by `weston.init`: environment overrides (`VK_DRIVER_FILES`, `PANVK_DEBUG`, `MESA_*`) reach Weston, the launcher, apps and ssh shells |
+
 The UI is [launcher/](../launcher) (SDL2 + HarfBuzz + fontconfig, immediate mode). `/etc/init.d/weston` runs
-`/data/bin/launcher` if it exists, or else the image's `/usr/bin/launcher`. It restarts the launcher whenever it exits.
-- `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/bin`, and restarts it. You don't need to reflash.
-- `tools/ssh rm /data/bin/launcher`: goes back to the image's launcher.
-- Its Apps page lists every executable in `/data/apps`. While one runs, Menu sends it SIGTERM (SDL apps quit cleanly).
+`/data/OS/launcher` if it exists, or else the image's `/usr/bin/launcher`. It restarts the launcher whenever it exits.
+- `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/OS/launcher`, and restarts it. You don't need to reflash.
+- `tools/ssh rm /data/OS/launcher`: goes back to the image's launcher.
+- Its Apps page lists every executable in `/data/OS/apps`. While one runs, Menu sends it SIGTERM (SDL apps quit cleanly).
 - On the desktop: `meson setup build launcher && ninja -C build && build/launcher` (arrows, Enter, PgUp/PgDn).
 
 mGBA (GBA) isn't in the image yet. Its recipe only deploys it: `kas build --target mgba`, then copy

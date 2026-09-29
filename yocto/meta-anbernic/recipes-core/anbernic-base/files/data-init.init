@@ -1,0 +1,10 @@
+#!/bin/sh
+# User init scripts from /data/OS/init.d: executable S* files, run in order with "start", right
+# after /data is mounted and before seatd/dropbear/weston (rc5.d). The rootfs is read-only:
+# fix a config by bind-mounting a file from /data over it; start daemons in the background.
+# A script that breaks boot: create /uboot/no-data-init (FAT, any PC can) to skip them all.
+[ "$1" = start ] || exit 0
+[ -e /uboot/no-data-init ] && exit 0
+for s in /data/OS/init.d/S*; do
+	[ -x "$s" ] && "$s" start
+done
