@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://usb-gadget.rules file://data-init.init file://zz-data.sh"
+SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://usb-gadget.rules file://data-init.init file://zz-data.sh"
 S = "${UNPACKDIR}"
 
 inherit allarch
@@ -11,6 +11,7 @@ do_install() {
     install -Dm0755 ${S}/anbernic.init ${D}${sysconfdir}/init.d/anbernic
     install -Dm0755 ${S}/ab ${D}${sbindir}/ab
     install -Dm0755 ${S}/usb-gadget-check ${D}${sbindir}/usb-gadget-check
+    install -Dm0755 ${S}/stop-all ${D}${sbindir}/stop-all
     install -Dm0755 ${S}/data-init.init ${D}${sysconfdir}/init.d/data-init
     install -Dm0644 ${S}/udhcpd.conf ${D}${sysconfdir}/udhcpd.conf
     install -Dm0644 ${S}/panvk.sh ${D}${sysconfdir}/profile.d/panvk.sh

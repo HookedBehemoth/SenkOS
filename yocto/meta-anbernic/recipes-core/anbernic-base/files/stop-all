@@ -1,0 +1,16 @@
+#!/bin/sh
+# First shutdown step (inittab): SIGTERM to every process, then up to 1 s for them to exit.
+# Games save on SIGTERM, and /data is still writable: init unmounts only after this. What is
+# left gets SIGKILL from init.
+kill -TERM -1
+i=0
+while [ $i -lt 100 ]; do
+	left=
+	for p in /proc/[0-9]*; do
+		# Kernel threads and zombies have no exe
+		case ${p#/proc/} in 1|$$) ;; *) [ -e $p/exe ] && left=1 && break ;; esac
+	done
+	[ -z "$left" ] && exit 0
+	usleep 10000
+	i=$((i + 1))
+done

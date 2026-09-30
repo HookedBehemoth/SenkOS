@@ -1,0 +1,31 @@
+From: SenkOS
+Subject: [PATCH] init: no fixed sleeps on shutdown
+
+init waited 1 s after SIGTERM to all processes and 1 s more before
+reboot(2), for the last message to reach a serial console. Here a
+::shutdown action (stop-all) already sends SIGTERM and waits until
+everything has exited, before `umount -a -r`: the sleeps only add 2 s
+to every reboot and power-off.
+
+Upstream-Status: Inappropriate [boot-time tuning for one board]
+---
+--- a/init/init.c	2026-09-30 23:21:15.270808157 +0200
++++ b/init/init.c	2026-09-30 23:21:15.282145106 +0200
+@@ -735,9 +735,6 @@
+ {
+ 	pid_t pid;
+ 
+-	/* Allow time for last message to reach serial console, etc */
+-	sleep1();
+-
+ 	/* We have to fork here, since the kernel calls do_exit(EXIT_SUCCESS)
+ 	 * in linux/kernel/sys.c, which can cause the machine to panic when
+ 	 * the init process exits... */
+@@ -768,7 +765,6 @@
+ 	kill(-1, SIGTERM);
+ 	message(L_CONSOLE, "Sent SIG%s to all processes", "TERM");
+ 	sync();
+-	sleep1();
+ 
+ 	kill(-1, SIGKILL);
+ 	message(L_CONSOLE, "Sent SIG%s to all processes", "KILL");
