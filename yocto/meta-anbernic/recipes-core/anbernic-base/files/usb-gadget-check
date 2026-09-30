@@ -1,0 +1,16 @@
+#!/bin/sh
+# musb can come back detached from the host (boot, resume, replug): cable powered but the
+# gadget "not attached" 5 and 10 s later -> rebind. One-shot, nothing polls: run at boot
+# (/etc/init.d/anbernic), after resume (/usr/sbin/suspend) and on USB power changes (udev).
+exec 9> /run/usb-gadget-check.lock
+flock -n 9 || exit 0
+g=/sys/kernel/config/usb_gadget/g1
+read udc < $g/UDC && [ -n "$udc" ] || exit 0
+stuck() {
+	read online < /sys/class/power_supply/axp20x-usb/online && [ "$online" = 1 ] &&
+		read state < /sys/class/udc/$udc/state && [ "$state" = "not attached" ]
+}
+sleep 5; stuck || exit 0
+sleep 5; stuck || exit 0
+echo "anbernic: USB gadget stuck detached, rebinding" > /dev/kmsg
+echo > $g/UDC; sleep 1; echo $udc > $g/UDC

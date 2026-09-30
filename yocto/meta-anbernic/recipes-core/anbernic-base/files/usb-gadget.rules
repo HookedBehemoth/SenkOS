@@ -1,0 +1,2 @@
+# Cable plugged or unplugged: see whether the gadget attaches (usb-gadget-check)
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="axp20x-usb", RUN+="/bin/sh -c '/usr/sbin/usb-gadget-check </dev/null >/dev/null 2>&1 &'"
