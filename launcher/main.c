@@ -6,6 +6,8 @@
  * What it launched owns the screen (Weston kiosk shell) until it exits; the
  * gamepad is read straight from evdev, so input is ignored meanwhile, but for
  * Menu: that stops the app and shows Resume/Quit over a blur of its last frame.
+ * Meanwhile the launcher sleeps: no timeouts, no polling, only the pad's Menu,
+ * the mixer and the app's exit wake it.
  *
  * A second window, "osd", shows the volume whenever the mixer changes; the
  * patched kiosk shell keeps it on top of everything without focus.
@@ -18,8 +20,11 @@
 #include <fcntl.h>
 #include <glob.h>
 #include <linux/input.h>
+#include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <sys/ioctl.h>
+#include <sys/pidfd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,7 +99,7 @@ static char child_label[64];
 static bool paused, quitting;
 static SDL_Texture *backdrop;
 static Uint64 osd_until;
-static Uint32 volume_event;
+static Uint32 volume_event, exit_event;
 
 static int by_label(const void *a, const void *b) {
   return strcmp(((const entry *)a)->label, ((const entry *)b)->label);
@@ -122,6 +127,31 @@ static void scan_apps(void) {
   closedir(dir);
   qsort(apps + first, app_count - first, sizeof(*apps), by_label);
 }
+
+/* Posts exit_event (code: the pid) once the app is gone: waiting on its pidfd
+ * works for an adopted app too, which isn't ours to waitpid. Ours can't be
+ * reaped before the event is handled, so the pid stays valid until then. */
+static int exit_thread(void *data) {
+  const pid_t pid = (pid_t)(intptr_t)data;
+  const int fd = pidfd_open(pid, 0);
+  if (fd >= 0) {
+    struct pollfd p = {.fd = fd, .events = POLLIN};
+    while (poll(&p, 1, -1) < 0 && errno == EINTR)
+      ;
+    close(fd);
+  } else if (errno != ESRCH) {
+    SDL_Log("pidfd_open: %s", strerror(errno));
+  }
+  SDL_Event ev = {.user = {.type = exit_event, .code = pid}};
+  SDL_PushEvent(&ev);
+  return 0;
+}
+
+static void watch_child(void) {
+  SDL_DetachThread(SDL_CreateThread(exit_thread, "exit", (void *)(intptr_t)child));
+}
+
+static void set_listening(bool on);
 
 /* In every app's environment, with its label: a launcher that restarts finds
  * the app the last one left running (adopt). */
@@ -156,6 +186,8 @@ static void launch(const entry *e) {
   if (pid > 0) {
     child = pid;
     snprintf(child_label, sizeof(child_label), "%s", e->label);
+    set_listening(false);
+    watch_child();
   }
 }
 
@@ -199,33 +231,33 @@ static void adopt(void) {
   closedir(proc);
 }
 
-/* An adopted app is init's to reap: it is gone when it no longer exists. */
-static bool child_exited(void) {
-  return waitpid(child, NULL, WNOHANG) == child ||
-         (kill(child, 0) != 0 && errno == ESRCH);
-}
-
-/* The built-in pad, opened a second time: EVIOCGRAB on it while the app is
- * stopped keeps the presses for the pause screen out of the app's queue, where
- * it would find them on SIGCONT. The grab starves SDL's fd too, so this thread
- * turns them into controller events meanwhile. Menu always comes from here:
- * SDL holds a Guide release back until 250 ms after the press.
- * ponytail: the first pad only, raw codes as the built-in pad labels them. */
+/* The built-in pad, read by this thread and turned into controller events.
+ * Not SDL's game controller: with a joystick open, SDL_WaitEvent polls every
+ * millisecond. While the app has the screen only Menu gets through. EVIOCGRAB
+ * while the app is stopped keeps the presses for the pause screen out of its
+ * queue, where it would find them on SIGCONT.
+ * ponytail: the built-in pad only, raw codes as it labels them. */
+#define PAD_NAME "gpio-keys-gamepad"
 static int pad_fd = -1;
-static SDL_atomic_t grabbed;
-#define PAD_THREAD -1 /* its events' `which` */
+static SDL_atomic_t listening;
+
+static void set_listening(bool on) { SDL_AtomicSet(&listening, on); }
 
 static int pad_thread(void *data) {
   (void)data;
   struct input_event e;
   while (read(pad_fd, &e, sizeof(e)) == sizeof(e)) {
     if (e.type != EV_KEY || e.value == 2 ||
-        (e.code != BTN_MODE && !SDL_AtomicGet(&grabbed)))
+        (e.code != BTN_MODE && !SDL_AtomicGet(&listening)))
       continue;
     int button;
     switch (e.code) {
     case BTN_DPAD_UP: button = SDL_CONTROLLER_BUTTON_DPAD_UP; break;
     case BTN_DPAD_DOWN: button = SDL_CONTROLLER_BUTTON_DPAD_DOWN; break;
+    case BTN_DPAD_LEFT: button = SDL_CONTROLLER_BUTTON_DPAD_LEFT; break;
+    case BTN_DPAD_RIGHT: button = SDL_CONTROLLER_BUTTON_DPAD_RIGHT; break;
+    case BTN_TL: button = SDL_CONTROLLER_BUTTON_LEFTSHOULDER; break;
+    case BTN_TR: button = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER; break;
     case BTN_EAST: button = SDL_CONTROLLER_BUTTON_A; break;
     case BTN_SOUTH: button = SDL_CONTROLLER_BUTTON_B; break;
     case BTN_MODE: button = SDL_CONTROLLER_BUTTON_GUIDE; break;
@@ -233,30 +265,34 @@ static int pad_thread(void *data) {
     }
     SDL_Event ev = {.cbutton = {.type = e.value ? SDL_CONTROLLERBUTTONDOWN
                                                 : SDL_CONTROLLERBUTTONUP,
-                                .which = PAD_THREAD,
                                 .button = (Uint8)button}};
     SDL_PushEvent(&ev);
   }
   return 0;
 }
 
-static void open_pad(int index) {
-  SDL_GameController *pad = SDL_GameControllerOpen(index);
-  const char *path = pad ? SDL_GameControllerPath(pad) : NULL;
-  if (pad_fd >= 0 || path == NULL ||
-      (pad_fd = open(path, O_RDONLY | O_CLOEXEC)) < 0)
+static void open_pad(void) {
+  glob_t g;
+  if (glob("/sys/class/input/event*/device/name", 0, NULL, &g) != 0)
     return;
-  SDL_DetachThread(SDL_CreateThread(pad_thread, "pad", NULL));
+  for (size_t i = 0; i < g.gl_pathc && pad_fd < 0; i++) {
+    char name[64], path[64];
+    if (read_line(g.gl_pathv[i], name, sizeof(name)) != 0 ||
+        strncmp(name, PAD_NAME "\n", sizeof(PAD_NAME)) != 0)
+      continue;
+    /* /sys/class/input/eventN/device/name -> /dev/input/eventN */
+    const char *ev = strstr(g.gl_pathv[i], "event");
+    snprintf(path, sizeof(path), "/dev/input/%.*s", (int)strcspn(ev, "/"), ev);
+    pad_fd = open(path, O_RDONLY | O_CLOEXEC);
+  }
+  globfree(&g);
+  if (pad_fd >= 0)
+    SDL_DetachThread(SDL_CreateThread(pad_thread, "pad", NULL));
 }
 
 static void grab(bool on) {
-  if (pad_fd < 0)
-    return;
-  if (on)
-    ioctl(pad_fd, EVIOCGRAB, 1);
-  SDL_AtomicSet(&grabbed, on);
-  if (!on)
-    ioctl(pad_fd, EVIOCGRAB, 0);
+  if (pad_fd >= 0)
+    ioctl(pad_fd, EVIOCGRAB, on);
 }
 
 /* setsid made the child a group leader: signals go to all it started. Stopped
@@ -266,6 +302,7 @@ static void pause_child(nav *ui) {
   kill(-child, SIGSTOP);
   backdrop = capture_blurred(renderer);
   paused = true;
+  set_listening(true);
   nav_focus(ui, 0);
   /* kiosk-shell puts a toplevel on top when it maps: map again */
   SDL_HideWindow(window);
@@ -274,6 +311,7 @@ static void pause_child(nav *ui) {
 
 static void resume_child(void) {
   paused = false;
+  set_listening(false);
   grab(false);
   SDL_HideWindow(window);
   kill(-child, SIGCONT);
@@ -284,6 +322,7 @@ static void resume_child(void) {
 static void quit_child(void) {
   paused = false;
   quitting = true;
+  set_listening(false);
   grab(false);
   kill(-child, SIGTERM);
   kill(-child, SIGCONT);
@@ -470,29 +509,44 @@ static void turn_page(size_t *page, int by) {
     scan_apps();
 }
 
+/* Back to the menu. Reaped here if it is ours; an adopted one is init's. */
+static void child_exited(void) {
+  waitpid(child, NULL, WNOHANG);
+  if (paused)
+    grab(false);
+  child = 0;
+  paused = quitting = false;
+  set_listening(true);
+  SDL_DestroyTexture(backdrop);
+  backdrop = NULL;
+  SDL_ShowWindow(window);
+  scan_apps();
+}
+
 static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
   int button = -1;
   if (ev->type == volume_event) {
     show_volume(ev->user.code);
     return true;
   }
+  if (ev->type == exit_event) {
+    if (ev->user.code == child)
+      child_exited();
+    return true;
+  }
   switch (ev->type) {
   case SDL_QUIT:
     return false;
-  case SDL_CONTROLLERDEVICEADDED:
-    open_pad(ev->cdevice.which);
-    break;
   /* Menu's release, which reaches the app queue first: it sees the whole
    * press, and nothing after it until it is resumed. */
   case SDL_CONTROLLERBUTTONUP:
-    if (ev->cbutton.which == PAD_THREAD &&
-        ev->cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE && paused)
+    if (ev->cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE && paused)
       grab(true);
     return true;
   case SDL_CONTROLLERBUTTONDOWN:
     /* Menu toggles the pause screen, on the press */
     if (ev->cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) {
-      if (ev->cbutton.which == PAD_THREAD && child != 0 && !quitting) {
+      if (child != 0 && !quitting) {
         if (paused)
           resume_child();
         else
@@ -546,14 +600,11 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
 }
 
 int main(void) {
-  /* Weston hands keyboard focus to whatever it launched, but the gamepad is
-   * evdev: keep listening, and ignore it while a child runs. */
-  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   /* An alpha channel for the OSD, and no opaque region */
   SDL_SetHint(SDL_HINT_VIDEO_EGL_ALLOW_TRANSPARENCY, "1");
   /* The kiosk shell knows the OSD by app_id and title; apps get their own */
   SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "launcher", 1);
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+  if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     SDL_Log("SDL_Init: %s", SDL_GetError());
     return 1;
   }
@@ -579,11 +630,17 @@ int main(void) {
                          SDL_WINDOW_HIDDEN);
   osd_renderer =
       osd ? SDL_CreateRenderer(osd, -1, SDL_RENDERER_ACCELERATED) : NULL;
-  volume_event = SDL_RegisterEvents(1);
+  volume_event = SDL_RegisterEvents(2);
+  exit_event = volume_event + 1;
+  set_listening(true);
+  open_pad();
   /* Mapping put this window over the adopted app: give it back the screen */
   adopt();
-  if (child != 0)
+  if (child != 0) {
+    set_listening(false);
+    watch_child();
     SDL_HideWindow(window);
+  }
   SDL_DetachThread(SDL_CreateThread(volume_thread, "volume", NULL));
   static nav ui = {.animate = true, .duration = 150};
   size_t page = 0;
@@ -596,40 +653,33 @@ int main(void) {
   for (;;) {
     SDL_Event ev;
     /* A frame's time while animating. Idle: wake once a second for the
-     * clock and the status, and to hide the OSD. */
-    Uint64 wait = animating ? 16 : 1000;
-    if (osd_until != 0)
-      wait = SDL_min(wait, osd_until - SDL_min(osd_until, SDL_GetTicks64()));
-    if (SDL_WaitEventTimeout(&ev, (int)wait)) {
+     * clock and the status. Under the app: only events. And to hide the OSD. */
+    int wait = child != 0 && !paused ? -1 : animating ? 16 : 1000;
+    if (osd_until != 0) {
+      const int left = (int)(osd_until - SDL_min(osd_until, SDL_GetTicks64()));
+      if (wait < 0 || left < wait)
+        wait = left;
+    }
+    if (SDL_WaitEventTimeout(&ev, wait)) {
       do
         if (!input(&ui, &ev, &page))
           return 0;
       while (SDL_PollEvent(&ev));
       animating = true;
     }
-    if (child != 0 && child_exited()) {
-      if (paused)
-        grab(false);
-      child = 0;
-      paused = quitting = false;
-      SDL_DestroyTexture(backdrop);
-      backdrop = NULL;
-      SDL_ShowWindow(window);
-      scan_apps();
-    }
     const Uint64 now = SDL_GetTicks64();
     if (osd_until != 0 && now >= osd_until) {
       SDL_HideWindow(osd);
       osd_until = 0;
     }
-    if (now - status_at >= 1000) {
-      read_status(&st);
-      status_at = now;
-    }
     /* Under the app, or hidden: nothing would show */
     if (child != 0 && !paused) {
       animating = false;
       continue;
+    }
+    if (now - status_at >= 1000) {
+      read_status(&st);
+      status_at = now;
     }
 
     int w, h;
