@@ -85,6 +85,9 @@ SuperTuxKart works the same way: `kas build --target supertuxkart`, copy `deploy
 for a slot) to `/data/supertuxkart`. It finds `data/` next to the binary and keeps its config in `$HOME/.config` (`/data`).
 Its shared libs (OpenAL Soft, vorbis, curl, ...) are in the image.
 
+The [bindless-vk](../demos/bindless) Vulkan demo (1000 rects, textures from a descriptor-indexed sampler array) too:
+`kas build --target bindless-demo`, copy `deploy/images/rg35xx-sp/bindless/` to `/data/bindless`.
+
 RetroArch is also on `/data` (only its libraries, e.g. libav*, are in the image). `kas build --target retroarch`
 builds RetroArch, the cores and the menu assets into `deploy/images/rg35xx-sp/retroarch-data/`, laid out like
 `/data`: `retroarch/` (binary, `cores/`, `info/`, `assets/`, `autoconfig/`, the skeleton `retroarch.cfg`) and
