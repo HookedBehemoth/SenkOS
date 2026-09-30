@@ -1,0 +1,33 @@
+From: SenkOS
+Subject: [PATCH] libpan: skip indexed indirect draws with no indices
+
+An indexed draw with indexCount == 0 is valid and draws nothing. The
+Bifrost draw helper only turns a draw into NULL jobs when vertex_range
+or instanceCount is 0, but for indexed draws vertex_range comes from the
+index min/max search, which finds nothing and wraps (max - min + 1 != 0).
+The helper then packs index_count = 0 into the tiler PRIMITIVE
+descriptor: the shader assert fires, or the job faults
+(DATA_INVALID_FAULT) and the device is lost. vkQuake's GPU-culled world
+draws hit this every frame.
+
+Upstream-Status: Pending
+---
+ src/panfrost/libpan/draw_helper.cl | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+--- a/src/panfrost/libpan/draw_helper.cl
++++ b/src/panfrost/libpan/draw_helper.cl
+@@ -403,8 +403,11 @@
+ static void
+ panlib_patch_draw(struct panlib_draw_info *draw)
+ {
+-   /* First of all, we need to ensure each jobs have the proper header */
+-   bool is_null_job = draw->vertex_range == 0 || draw->instance.count == 0;
++   /* First of all, we need to ensure each jobs have the proper header.
++    * vertex_range alone misses indexed draws with indexCount == 0: the
++    * min/max search finds no index then, and max - min + 1 wraps. */
++   bool is_null_job = draw->vertex_range == 0 || draw->vertex.count == 0 ||
++                      draw->instance.count == 0;
+ 
+    if (draw->idvs_job != NULL) {
+       panlib_patch_job_type_header(
