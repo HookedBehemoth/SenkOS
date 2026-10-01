@@ -59,6 +59,8 @@ bool text_init(SDL_Renderer *r, const char *pattern) {
   return FT_Init_FreeType(&library) == 0 && skyline_init(&atlas, 512);
 }
 
+static const glyph *glyph_for(sized_font *f, unsigned gid);
+
 static sized_font *font_for(int px) {
   for (size_t i = 0; i < size_count; i++)
     if (sizes[i].px == px)
@@ -74,6 +76,11 @@ static sized_font *font_for(int px) {
   f->hb = hb_ft_font_create_referenced(f->face);
   f->px = px;
   size_count++;
+  /* Printable ASCII up front, so a frame uploads the atlas once instead of
+   * after each string with new glyphs: the texture is in use by then, and
+   * Mesa copies all of it for every such update. */
+  for (FT_ULong c = ' '; c <= '~'; c++)
+    glyph_for(f, FT_Get_Char_Index(f->face, c));
   return f;
 }
 

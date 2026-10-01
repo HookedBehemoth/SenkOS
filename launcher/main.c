@@ -39,6 +39,8 @@
 #include "text.h"
 
 #define APPS_DIR "/data/OS/apps"
+/* weston.init's cgroup for apps: memory and CPU limits that keep the UI usable */
+#define APPS_CGROUP "/sys/fs/cgroup/session/apps/cgroup.procs"
 
 enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, MARGIN = 12 };
 enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
@@ -65,10 +67,11 @@ static const entry builtin_apps[] = {
 /* Told apart by address */
 static const entry paused_entries[] = {{"Resume", ""}, {"Quit", ""}};
 static const size_t paused_count = SDL_arraysize(paused_entries);
+/* sleepd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
-    {"Sleep", "/usr/sbin/suspend"},
-    {"Reboot", "reboot"},
-    {"Power off", "poweroff"},
+    {"Sleep", "echo suspend > /run/power"},
+    {"Reboot", "echo reboot > /run/power"},
+    {"Power off", "echo poweroff > /run/power"},
 };
 static entry apps[64];
 static size_t app_count;
@@ -176,6 +179,12 @@ static void launch(const entry *e) {
   const pid_t pid = fork();
   if (pid == 0) {
     setsid();
+    /* Without the cgroup the app runs as it is, unlimited */
+    const int cg = open(APPS_CGROUP, O_WRONLY | O_CLOEXEC);
+    if (cg >= 0) {
+      (void)!write(cg, "0", 1);
+      close(cg);
+    }
     if (command[0] == '/')
       execle(command, command, (char *)NULL, env);
     else
@@ -411,8 +420,15 @@ static void fill(float x, float y, float w, float h, SDL_Color c) {
   SDL_RenderFillRectF(renderer, &(SDL_FRect){x, y, w, h});
 }
 
-/* Speaker, then the level as a bar. Its own renderer, so no text. */
+/* Speaker, then the level as a bar. Its own renderer, so no text. Created on
+ * first use: a second GL context at startup delays the first frame. */
 static void show_volume(int percent) {
+  if (osd == NULL)
+    osd = SDL_CreateWindow("osd", SDL_WINDOWPOS_UNDEFINED,
+                           SDL_WINDOWPOS_UNDEFINED, OSD_W, OSD_H,
+                           SDL_WINDOW_HIDDEN);
+  if (osd != NULL && osd_renderer == NULL)
+    osd_renderer = SDL_CreateRenderer(osd, -1, SDL_RENDERER_ACCELERATED);
   if (osd_renderer == NULL)
     return;
   SDL_ShowWindow(osd);
@@ -624,12 +640,6 @@ int main(void) {
   ctx.renderer = renderer;
   /* The window has alpha now: blend, so it stays opaque under the scrim */
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-  /* Hidden until there is something to show */
-  osd = SDL_CreateWindow("osd", SDL_WINDOWPOS_UNDEFINED,
-                         SDL_WINDOWPOS_UNDEFINED, OSD_W, OSD_H,
-                         SDL_WINDOW_HIDDEN);
-  osd_renderer =
-      osd ? SDL_CreateRenderer(osd, -1, SDL_RENDERER_ACCELERATED) : NULL;
   volume_event = SDL_RegisterEvents(2);
   exit_event = volume_event + 1;
   set_listening(true);

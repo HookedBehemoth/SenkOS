@@ -48,7 +48,7 @@ IMAGE_INSTALL = " \
     libgomp \
 "
 IMAGE_LINGUAS = ""
-# Weston is started by anbernic-base (root + seatd, kiosk shell)
+# Weston is started by anbernic-base (as player, via seatd; kiosk shell)
 BAD_RECOMMENDATIONS += "weston-init"
 # Bring-up only: passwordless root on the LCD, serial and USB (ssh) consoles. Remove before anything ships.
 IMAGE_FEATURES = "empty-root-password allow-empty-password allow-root-login"

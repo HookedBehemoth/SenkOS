@@ -3,6 +3,8 @@
  * sleepd: suspend on lid close or power-key press, stay asleep while the lid is closed.
  * Only reacts to events, never to the state at startup, so a misread lid can't
  * put the handheld to sleep at boot. The actual suspend is /usr/sbin/suspend.
+ * Also the unprivileged launcher's way to suspend, reboot or power off: a line
+ * "suspend", "reboot" or "poweroff" written to the FIFO /run/power (anbernic.init).
  */
 #include <fcntl.h>
 #include <glob.h>
@@ -10,6 +12,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
@@ -34,7 +37,7 @@ static double now(void)
 
 int main(void)
 {
-	struct pollfd pfd[MAXDEV];
+	struct pollfd pfd[MAXDEV + 1];
 	int n = 0, lid = -1;
 	double quiet_until = 0;
 	glob_t g;
@@ -64,6 +67,10 @@ int main(void)
 		fprintf(stderr, "sleepd: no lid switch or power key found\n");
 		return 1;
 	}
+	/* O_RDWR: a writer closing it doesn't leave the FIFO at EOF */
+	int power = open("/run/power", O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	if (power >= 0)
+		pfd[n] = (struct pollfd){ .fd = power, .events = POLLIN };
 	printf("sleepd: lid is %s\n", lid < 0 ? "absent" : lid_closed(lid) ? "closed" : "open");
 	fflush(stdout);
 
@@ -71,8 +78,19 @@ int main(void)
 		struct input_event ev;
 		int sleep_now = 0;
 
-		if (poll(pfd, n, -1) < 0)
+		if (poll(pfd, n + (power >= 0), -1) < 0)
 			continue;
+		char req[64];
+		ssize_t len;
+		while (power >= 0 && (len = read(power, req, sizeof(req) - 1)) > 0) {
+			req[len] = '\0';
+			if (strncmp(req, "suspend", 7) == 0)
+				sleep_now = 1;
+			else if (strncmp(req, "reboot", 6) == 0)
+				system("reboot");
+			else if (strncmp(req, "poweroff", 8) == 0)
+				system("poweroff");
+		}
 		for (int i = 0; i < n; i++)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
 				if (ev.type == EV_SW && ev.code == SW_LID && ev.value == 1)

@@ -17,7 +17,7 @@ BL31 refuses to suspend if the parameters don't match at runtime. The stub also 
 |---|---|
 | TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4) |
 | Kernel | PM fixes for the power-key wake event, MMC, the TF2 slot power, the USB PHY clock, the display pipeline and LCD pads, the codec, and a suspend OPP (patches 0018-0024, 0027) |
-| `sleepd` | lid close or power key → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it. Reacts only to events, so a misread lid at boot can't suspend |
+| `sleepd` | lid close, power key or `suspend` written to `/run/power` (the launcher's Sleep; `reboot`, `poweroff` too) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it. Reacts only to events, so a misread lid at boot can't suspend |
 | `anbernic.init` | rebinds the USB gadget when musb comes back detached |
 
 Wake sources: power key (PMIC), lid (Hall GPIO), RTC.

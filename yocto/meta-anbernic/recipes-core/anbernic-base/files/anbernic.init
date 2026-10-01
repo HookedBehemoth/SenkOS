@@ -37,5 +37,6 @@ usb-gadget-check </dev/null >/dev/null 2>&1 &
 amixer -q set 'Line Out' 70% unmute
 amixer -q set DAC unmute
 
-# lid close / power key -> suspend
+# lid close / power key -> suspend; /run/power: the launcher's (player's) suspend, reboot, poweroff
+mkfifo -m 0620 /run/power && chgrp player /run/power
 [ -x /usr/sbin/sleepd ] && sleepd > /dev/console 2>&1 &

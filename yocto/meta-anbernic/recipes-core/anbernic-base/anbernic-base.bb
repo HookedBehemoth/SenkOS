@@ -5,7 +5,13 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://usb-gadget.rules file://data-init.init file://zz-data.sh"
 S = "${UNPACKDIR}"
 
-inherit allarch
+inherit allarch useradd
+
+# Weston, the launcher and the apps it starts run as player: uid 1000, as files tar'ed in from a
+# host usually are. HOME is /data. seat: seatd's socket (seatd's recipe makes the group too).
+USERADD_PACKAGES = "${PN}"
+GROUPADD_PARAM:${PN} = "-r seat"
+USERADD_PARAM:${PN} = "-u 1000 -U -d /data -M -s /bin/sh -G video,input,audio,seat player"
 
 do_install() {
     install -Dm0755 ${S}/anbernic.init ${D}${sysconfdir}/init.d/anbernic

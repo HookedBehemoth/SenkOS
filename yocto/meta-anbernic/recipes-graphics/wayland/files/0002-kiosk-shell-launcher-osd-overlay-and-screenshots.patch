@@ -79,7 +79,7 @@ Upstream-Status: Inappropriate [device policy]
  	free(shell);
  }
  
-+/* Every client runs as root on the handheld: the launcher's pause screen
++/* Every client is the player's on the handheld: the launcher's pause screen
 + * captures the app it covers. */
 +static void
 +kiosk_shell_authorize_screenshot(struct wl_listener *l,

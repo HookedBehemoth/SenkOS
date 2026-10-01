@@ -2,31 +2,10 @@
 # The UI as early as boot allows (rcS S01), in the background while the rest of rcS runs: udev
 # coldplug included, libinput adds input devices as udev gets to them.
 # /data first: logs, user init scripts and HOME (fontconfig, Mesa's shader cache) live there.
-# Then seatd, Weston on the LCD (DRM backend, kiosk shell: every client fullscreen), and the
-# launcher: /data/OS/launcher when there is one (tools/deploy-launcher), else the image's.
-# The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
-[ "$1" = start ] || exit 0
-
-ab mount	# /uboot, /data: mount points exist in the (read-only) image
-
-# Persistent /var/log: the last 5 boots in /data/log/0..4, 0 = this one
-l=/data/log
-rm -rf $l/4
-for i in 3 2 1 0; do [ -d $l/$i ] && mv $l/$i $l/$((i + 1)); done
-mkdir -p $l/0 /var/volatile/log
-mount --bind $l/0 /var/volatile/log
-mkdir -p -m 1777 /var/volatile/tmp
-
-/etc/init.d/data-init start
-
-export HOME=/data
-. /etc/profile.d/wayland.sh
-. /etc/profile.d/panvk.sh
-. /etc/profile.d/zz-data.sh
-mkdir -p -m 0700 $XDG_RUNTIME_DIR
-(
-	seatd -g seat </dev/null >/dev/null 2>&1 &
-	while [ ! -S /run/seatd.sock ]; do usleep 5000; done
+# Then seatd, and as player (`session`): Weston on the LCD (DRM backend, kiosk shell: every
+# client fullscreen) and the launcher: /data/OS/launcher when there is one (tools/deploy-launcher),
+# else the image's. The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
+if [ "$1" = session ]; then
 	weston --backend=drm --shell=kiosk --modules=volume-keys.so --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1 &
 	while :; do
@@ -37,4 +16,55 @@ mkdir -p -m 0700 $XDG_RUNTIME_DIR
 		$launcher
 		sleep 1
 	done
+fi
+[ "$1" = start ] || exit 0
+
+# Mesa in one sequential read, from the start: Weston's GL init page-faulting it in from squashfs
+# took ~400 ms more than with a warm cache. Launcher up at 1.80 s instead of 1.92 s with this
+# started right before Weston: reading it slows everything below, but less than it saves.
+cat /usr/lib/libgallium-*.so >/dev/null &
+
+# cgroup v2: the UI (seatd, Weston, launcher) and the apps the launcher starts. Apps get all the
+# RAM but 160 MB, and run out of it on their own: the OOM kill takes the whole app. The UI wins
+# CPU contention 10:1 and keeps its pages (Mesa included) when memory gets tight. The player may
+# move its processes between the two (the launcher moves each app), the limits are root's.
+c=/sys/fs/cgroup/session
+mount -t cgroup2 none /sys/fs/cgroup
+echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
+mkdir $c $c/ui $c/apps
+echo "+cpu +memory +pids" > $c/cgroup.subtree_control
+echo 1000 > $c/ui/cpu.weight
+echo 64M > $c/ui/memory.low
+echo $(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024 - 160))M > $c/apps/memory.max
+echo 1 > $c/apps/memory.oom.group
+echo 1024 > $c/apps/pids.max
+chown player:player $c/cgroup.procs $c/ui/cgroup.procs $c/apps/cgroup.procs
+
+ab mount	# /uboot, /data: mount points exist in the (read-only) image
+# HOME. ponytail: the player owns /data, so it could swap /data/OS/init.d (run as root below);
+# this guards against mistakes, not a hostile app. A root-owned /data with HOME in it would.
+chown player:player /data
+
+# Persistent /var/log: the last 5 boots in /data/log/0..4, 0 = this one. Apps log there too.
+l=/data/log
+rm -rf $l/4
+for i in 3 2 1 0; do [ -d $l/$i ] && mv $l/$i $l/$((i + 1)); done
+mkdir -p $l/0 /var/volatile/log
+chown player:player $l/0
+mount --bind $l/0 /var/volatile/log
+mkdir -p -m 1777 /var/volatile/tmp
+
+/etc/init.d/data-init start
+
+export HOME=/data
+. /etc/profile.d/wayland.sh
+. /etc/profile.d/panvk.sh
+. /etc/profile.d/zz-data.sh
+mkdir -p -m 0700 $XDG_RUNTIME_DIR
+chown player:player $XDG_RUNTIME_DIR
+(
+	echo 0 > $c/ui/cgroup.procs
+	seatd -g seat </dev/null >/dev/null 2>&1 &
+	while [ ! -S /run/seatd.sock ]; do usleep 5000; done
+	exec su -p -s /bin/sh player -c "$0 session"
 ) </dev/null >/var/log/launcher.log 2>&1 &
