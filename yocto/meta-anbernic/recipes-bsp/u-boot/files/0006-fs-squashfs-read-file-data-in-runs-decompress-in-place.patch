@@ -1,0 +1,153 @@
+Subject: [PATCH] fs/squashfs: read file data in runs, decompress into the destination
+
+A file's data blocks are contiguous on disk. One disk read per block meant ~90 reads (one SD command
+each) for a 12 MB file, plus a malloc/free, and each block was decompressed into a bounce buffer and
+copied out. Read up to 8 MB of blocks at once, and decompress full blocks straight into the caller's
+buffer.
+
+Upstream-Status: Pending
+---
+diff --git a/fs/squashfs/sqfs.c b/fs/squashfs/sqfs.c
+index 0768fc4..7b61736 100644
+--- a/fs/squashfs/sqfs.c
++++ b/fs/squashfs/sqfs.c
+@@ -29,6 +29,9 @@
+ static struct squashfs_ctxt ctxt;
+ static int symlinknest;
+ 
++/* Largest single disk read for file data (from the malloc pool) */
++#define SQFS_READ_RUN	(8 << 20)
++
+ static int sqfs_readdir_nest(struct fs_dir_stream *fs_dirs, struct fs_dirent **dentp);
+ 
+ static int sqfs_disk_read(__u32 block, __u32 nr_blocks, void *buf)
+@@ -1509,24 +1512,29 @@ static int sqfs_read_nest(const char *filename, void *buf, loff_t offset,
+ 		}
+ 	}
+ 
+-	for (j = 0; j < datablk_count; j++) {
+-		char *data_buffer;
++	/*
++	 * A file's data blocks are contiguous: read them in runs of up to SQFS_READ_RUN bytes
++	 * with one disk read each, and decompress full blocks straight into buf.
++	 */
++	for (j = 0; j < datablk_count && *actread < len;) {
++		char *data_buffer = NULL;
++		u64 run = 0;
++		int k;
++
++		for (k = j; k < datablk_count; k++) {
++			u64 sz = SQFS_BLOCK_SIZE(finfo.blk_sizes[k]);
++
++			if (k > j && run + sz > SQFS_READ_RUN)
++				break;
++			run += sz;
++		}
+ 
+ 		start = lldiv(data_offset, ctxt.cur_dev->blksz);
+-		table_size = SQFS_BLOCK_SIZE(finfo.blk_sizes[j]);
+ 		table_offset = data_offset - (start * ctxt.cur_dev->blksz);
+-		n_blks = DIV_ROUND_UP(table_size + table_offset,
+-				      ctxt.cur_dev->blksz);
+-
+-		/* Don't load any data for sparse blocks */
+-		if (finfo.blk_sizes[j] == 0) {
+-			n_blks = 0;
+-			table_offset = 0;
+-			data_buffer = NULL;
+-			data = NULL;
+-		} else {
++		n_blks = DIV_ROUND_UP(run + table_offset, ctxt.cur_dev->blksz);
++		data = NULL;
++		if (run) {
+ 			data_buffer = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
+-
+ 			if (!data_buffer) {
+ 				ret = -ENOMEM;
+ 				goto out;
+@@ -1534,48 +1542,53 @@ static int sqfs_read_nest(const char *filename, void *buf, loff_t offset,
+ 
+ 			ret = sqfs_disk_read(start, n_blks, data_buffer);
+ 			if (ret < 0) {
+-				/*
+-				 * Possible causes: too many data blocks or too large
+-				 * SquashFS block size. Tip: re-compile the SquashFS
+-				 * image with mksquashfs's -b <block_size> option.
+-				 */
+ 				printf("Error: too many data blocks to be read.\n");
++				free(data_buffer);
+ 				goto out;
+ 			}
+ 
+ 			data = data_buffer + table_offset;
+ 		}
+ 
+-		/* Load the data */
+-		if (finfo.blk_sizes[j] == 0) {
+-			/* This is a sparse block */
+-			sparse_size = get_unaligned_le32(&sblk->block_size);
+-			if ((*actread + sparse_size) > len)
+-				sparse_size = len - *actread;
+-			memset(buf + *actread, 0, sparse_size);
+-			*actread += sparse_size;
+-		} else if (SQFS_COMPRESSED_BLOCK(finfo.blk_sizes[j])) {
+-			dest_len = get_unaligned_le32(&sblk->block_size);
+-			ret = sqfs_decompress(&ctxt, datablock, &dest_len,
+-					      data, table_size);
+-			if (ret)
+-				goto out;
++		for (; j < k && *actread < len; j++) {
++			table_size = SQFS_BLOCK_SIZE(finfo.blk_sizes[j]);
++
++			if (finfo.blk_sizes[j] == 0) {
++				/* This is a sparse block */
++				sparse_size = get_unaligned_le32(&sblk->block_size);
++				if ((*actread + sparse_size) > len)
++					sparse_size = len - *actread;
++				memset(buf + *actread, 0, sparse_size);
++				*actread += sparse_size;
++			} else if (SQFS_COMPRESSED_BLOCK(finfo.blk_sizes[j])) {
++				char *dst = datablock;
++
++				dest_len = get_unaligned_le32(&sblk->block_size);
++				if (len - *actread >= dest_len)
++					dst = buf + *actread;
++				ret = sqfs_decompress(&ctxt, dst, &dest_len,
++						      data, table_size);
++				if (ret) {
++					free(data_buffer);
++					goto out;
++				}
++
++				if ((*actread + dest_len) > len)
++					dest_len = len - *actread;
++				if (dst == datablock)
++					memcpy(buf + *actread, datablock, dest_len);
++				*actread += dest_len;
++			} else {
++				if ((*actread + table_size) > len)
++					table_size = len - *actread;
++				memcpy(buf + *actread, data, table_size);
++				*actread += table_size;
++			}
+ 
+-			if ((*actread + dest_len) > len)
+-				dest_len = len - *actread;
+-			memcpy(buf + *actread, datablock, dest_len);
+-			*actread += dest_len;
+-		} else {
+-			if ((*actread + table_size) > len)
+-				table_size = len - *actread;
+-			memcpy(buf + *actread, data, table_size);
+-			*actread += table_size;
++			data += SQFS_BLOCK_SIZE(finfo.blk_sizes[j]);
++			data_offset += SQFS_BLOCK_SIZE(finfo.blk_sizes[j]);
+ 		}
+-
+-		data_offset += table_size;
+ 		free(data_buffer);
+-		if (*actread >= len)
+-			break;
+ 	}
+ 
+ 	/*

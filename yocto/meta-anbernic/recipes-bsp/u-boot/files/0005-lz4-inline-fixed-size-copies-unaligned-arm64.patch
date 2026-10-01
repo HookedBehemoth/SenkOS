@@ -1,0 +1,51 @@
+Subject: [PATCH] lz4: inline the fixed-size copies, allow unaligned access on arm64
+
+U-Boot builds with -ffreestanding -fno-builtin, so lz4's 8/16-byte copies were calls to the generic
+memcpy, and arm64's global -mstrict-align turned the unaligned 8-byte copies into byte loops. U-Boot
+proper runs with the MMU on, so unaligned access is fine there (not in SPL). On the H700 at 1008 MHz
+an 11.6 MB kernel decompresses in ~47 ms instead of ~210 ms. squashfs uses the same decoder.
+
+Upstream-Status: Pending
+---
+diff --git a/lib/Makefile b/lib/Makefile
+index d0ffabc..01ac927 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -92,6 +92,11 @@ obj-$(CONFIG_$(PHASE_)GZIP) += gunzip.o
+ obj-$(CONFIG_$(PHASE_)LZO) += lzo/
+ obj-$(CONFIG_$(PHASE_)LZMA) += lzma/
+ obj-$(CONFIG_$(PHASE_)LZ4) += lz4_wrapper.o
++# U-Boot proper runs with the MMU on: unaligned accesses are fine, and lz4's 8-byte copies would
++# otherwise be done a byte at a time (-mstrict-align from arch/arm/cpu/armv8/config.mk)
++ifeq ($(CONFIG_ARM64)$(CONFIG_XPL_BUILD),y)
++CFLAGS_lz4_wrapper.o += -mno-strict-align
++endif
+ 
+ obj-$(CONFIG_$(PHASE_)LIB_RATIONAL) += rational.o
+ 
+diff --git a/lib/lz4.c b/lib/lz4.c
+index 11b4a4d..646857a 100644
+--- a/lib/lz4.c
++++ b/lib/lz4.c
+@@ -226,7 +226,7 @@ __rcode static FORCE_INLINE int LZ4_decompress_generic(
+ 		   && likely((endOnInput ? ip < shortiend : 1) &
+ 			     (op <= shortoend))) {
+ 			/* Copy the literals */
+-			memcpy(op, ip, endOnInput ? 16 : 8);
++			__builtin_memcpy(op, ip, endOnInput ? 16 : 8);
+ 			op += length; ip += length;
+ 
+ 			/*
+@@ -245,9 +245,9 @@ __rcode static FORCE_INLINE int LZ4_decompress_generic(
+ 			    (offset >= 8) &&
+ 			    (dict == withPrefix64k || match >= lowPrefix)) {
+ 				/* Copy the match. */
+-				memcpy(op + 0, match + 0, 8);
+-				memcpy(op + 8, match + 8, 8);
+-				memcpy(op + 16, match + 16, 2);
++				__builtin_memcpy(op + 0, match + 0, 8);
++				__builtin_memcpy(op + 8, match + 8, 8);
++				__builtin_memcpy(op + 16, match + 16, 2);
+ 				op += length + MINMATCH;
+ 				/* Both stages worked, load the next token. */
+ 				continue;
