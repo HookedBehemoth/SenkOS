@@ -25,6 +25,11 @@ part uuid ${devtype} ${devnum}:${rootpart} rootuuid
 setenv kernel_addr_r 0x40200000
 load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/sun50i-h700-anbernic-rg35xx-sp.dtb
+# fbdev (kernel console on the LCD) only with /uboot/fbdev present: lighting the panel for fbcon
+# (~300 ms of init sleeps) holds up every later probe and the root mount. Without it, Weston's first
+# modeset lights the panel, before the launcher's first frame.
+setenv fbdev 0
+if test -e ${devtype} ${devnum}:${distro_bootpart} fbdev; then setenv fbdev 1; fi
 # ro: slots are squashfs (an ext4 slot still works, init remounts it rw)
-setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 ab=${bslot}
+setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 drm_kms_helper.fbdev_emulation=${fbdev} ab=${bslot}
 booti ${kernel_addr_r} - ${fdt_addr_r}

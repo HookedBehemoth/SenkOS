@@ -34,6 +34,8 @@ It reads `ab.txt`:
 
 After 3 failed tries, U-Boot boots `slot` again and drops `tryslot`.
 
+`touch /uboot/fbdev` turns on the kernel console on the LCD (fbdev emulation). It's off by default because it costs ~190 ms of boot.
+
 Things that count as a failed try:
 - A hang in U-Boot or the early kernel: the U-Boot-armed SoC watchdog (16 s) resets the board.
 - A kernel panic: `panic=10` reboots.
