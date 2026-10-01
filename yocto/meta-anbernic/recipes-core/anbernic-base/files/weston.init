@@ -1,21 +1,37 @@
 #!/bin/sh
-# Weston on the LCD: DRM backend, kiosk shell (every client fullscreen). seatd (rc5.d S09)
-# hands it the DRM/input devices. Clients: see /etc/profile.d/wayland.sh.
-# Then the UI: /data/OS/launcher when there is one (tools/deploy-launcher), else the image's.
-# Restarted whenever it exits, so a deploy only has to kill the old one.
+# The UI as early as boot allows (rcS S01), in the background while the rest of rcS runs: udev
+# coldplug included, libinput adds input devices as udev gets to them.
+# /data first: logs, user init scripts and HOME (fontconfig, Mesa's shader cache) live there.
+# Then seatd, Weston on the LCD (DRM backend, kiosk shell: every client fullscreen), and the
+# launcher: /data/OS/launcher when there is one (tools/deploy-launcher), else the image's.
+# The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
 [ "$1" = start ] || exit 0
+
+ab mount	# /uboot, /data: mount points exist in the (read-only) image
+
+# Persistent /var/log: the last 5 boots in /data/log/0..4, 0 = this one
+l=/data/log
+rm -rf $l/4
+for i in 3 2 1 0; do [ -d $l/$i ] && mv $l/$i $l/$((i + 1)); done
+mkdir -p $l/0 /var/volatile/log
+mount --bind $l/0 /var/volatile/log
+mkdir -p -m 1777 /var/volatile/tmp
+
+/etc/init.d/data-init start
+
+export HOME=/data
 . /etc/profile.d/wayland.sh
 . /etc/profile.d/panvk.sh
 . /etc/profile.d/zz-data.sh
 mkdir -p -m 0700 $XDG_RUNTIME_DIR
-weston --backend=drm --shell=kiosk --modules=volume-keys.so --socket=$WAYLAND_DISPLAY --log=/var/log/weston.log \
-	</dev/null >/dev/null 2>&1 &
-# HOME on /data: fontconfig and Mesa's shader cache need somewhere writable, and it persists
 (
-	export HOME=/data
+	seatd -g seat </dev/null >/dev/null 2>&1 &
+	while [ ! -S /run/seatd.sock ]; do usleep 5000; done
+	weston --backend=drm --shell=kiosk --modules=volume-keys.so --socket=$WAYLAND_DISPLAY \
+		--log=/var/log/weston.log </dev/null >/dev/null 2>&1 &
 	while :; do
 		# SDL gives up on wayland if the socket isn't there yet
-		while [ ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]; do sleep 0.02; done
+		while [ ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]; do usleep 20000; done
 		launcher=/data/OS/launcher
 		[ -x $launcher ] || launcher=/usr/bin/launcher
 		$launcher

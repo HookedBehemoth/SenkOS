@@ -21,6 +21,8 @@ if test -n "${tryslot}"; then
 fi
 if test "${bslot}" = b; then setenv rootpart 3; else setenv rootpart 2; fi
 part uuid ${devtype} ${devnum}:${rootpart} rootuuid
+# 2 MB aligned, where booti wants the kernel: from the default 0x40080000 it moves all of it there
+setenv kernel_addr_r 0x40200000
 load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/sun50i-h700-anbernic-rg35xx-sp.dtb
 # ro: slots are squashfs (an ext4 slot still works, init remounts it rw)

@@ -1,0 +1,20 @@
+Subject: [PATCH] sunxi: FIT with external, sector-aligned data
+
+SPL reads the whole embedded-data FIT, then copies each image out of it
+with caches off (~2 MB/s): ~410 ms on H700. With external data aligned to
+the MMC block size it reads the FIT header, then each image in place.
+
+Upstream-Status: Pending
+---
+--- a/arch/arm/dts/sunxi-u-boot.dtsi	2026-07-07 01:50:43.000000000 +0200
++++ b/arch/arm/dts/sunxi-u-boot.dtsi	2026-10-01 00:17:06.319202909 +0200
+@@ -45,6 +45,9 @@
+ 			description = "Configuration to load U-Boot and firmware";
+ 			#address-cells = <1>;
+ 			fit,fdt-list = "of-list";
++			/* Sector-aligned external data: SPL reads each image straight to its load address */
++			fit,external-offset = <0>;
++			fit,align = <512>;
+ 
+ 			images {
+ 				uboot {

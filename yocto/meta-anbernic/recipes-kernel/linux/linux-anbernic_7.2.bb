@@ -8,7 +8,7 @@ COMPATIBLE_MACHINE = "rg35xx-sp"
 
 # 0001-0029: ROCKNIX's H700 board patches (their number is the second one in the name),
 # minus their out-of-tree joypad driver: the buttons are mainline gpio-keys.
-# 0030-0032: ours. 0033-0036: Cedrus H616 + VP9 from LibreELEC.
+# 0030-0032, 0037: ours. 0033-0036: Cedrus H616 + VP9 from LibreELEC.
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://defconfig \
     file://firmware \
@@ -48,6 +48,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0034-media-cedrus-Don-t-CPU-map-source-buffers.patch \
     file://0035-media-cedrus-Add-VP9-decoding-support.patch \
     file://0036-media-cedrus-Select-V4L2_VP9-for-the-VP9-helpers.patch \
+    file://0037-Bluetooth-hci_h5-register-from-a-work-item.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 

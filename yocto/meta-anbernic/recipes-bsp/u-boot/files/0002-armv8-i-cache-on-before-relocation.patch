@@ -1,0 +1,63 @@
+Subject: [PATCH] armv8: i-cache on before relocation (sunxi SPL and U-Boot)
+
+With the MMU off every instruction fetch goes to SRAM/DRAM uncached.
+SCTLR.I alone makes fetches cacheable without page tables. Invalidate
+after relocation even with the d-cache off, and before entering TF-A.
+
+Upstream-Status: Pending
+---
+--- a/arch/arm/lib/relocate_64.S
++++ b/arch/arm/lib/relocate_64.S
+@@ -84,11 +84,11 @@
+ 2:	mrs	x0, sctlr_el2
+ 	b	0f
+ 1:	mrs	x0, sctlr_el1
+-0:	tbz	w0, #2, 5f	/* skip flushing cache if disabled */
+-	tbz	w0, #12, 4f	/* skip invalidating i-cache if disabled */
++0:	tbz	w0, #12, 4f	/* skip invalidating i-cache if disabled */
+ 	ic	iallu		/* i-cache invalidate all */
+ 	isb	sy
+-4:	ldp	x0, x1, [sp, #16]
++4:	tbz	w0, #2, 5f	/* skip flushing cache if disabled */
++	ldp	x0, x1, [sp, #16]
+ 	bl	__asm_flush_dcache_range
+ 	bl     __asm_flush_l3_dcache
+ 5:	ldp	x29, x30, [sp],#32
+--- a/arch/arm/mach-sunxi/board.c
++++ b/arch/arm/mach-sunxi/board.c
+@@ -471,6 +471,9 @@
+ 
+ void board_init_f(ulong dummy)
+ {
++	if (IS_ENABLED(CONFIG_ARM64))
++		icache_enable();
++
+ 	sunxi_sram_init();
+ 
+ 	/* Enable non-secure access to some peripherals */
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -1032,6 +1032,10 @@
+ {
+ 	struct board_f boardf;
+ 
++	/* Pre-relocation code runs from DRAM with the MMU off: uncached fetches otherwise */
++	if (IS_ENABLED(CONFIG_ARM64) && !IS_ENABLED(CONFIG_SYS_ICACHE_OFF))
++		icache_enable();
++
+ 	gd->flags = boot_flags;
+ 	gd->flags &= ~GD_FLG_HAVE_CONSOLE;
+ 	gd->boardf = &boardf;
+--- a/common/spl/spl_atf.c
++++ b/common/spl/spl_atf.c
+@@ -194,6 +194,10 @@
+ 	atf_entry_t  atf_entry = (atf_entry_t)bl31_entry;
+ 	void *bl31_params;
+ 
++	/* The images were written with the i-cache on: drop any stale lines */
++	icache_disable();
++	invalidate_icache_all();
++
+ 	if (CONFIG_IS_ENABLED(ATF_LOAD_IMAGE_V2))
+ 		bl31_params = bl2_plat_get_bl31_params_v2(bl32_entry,
+ 							  bl33_entry,

@@ -1,0 +1,12 @@
+Subject: [PATCH] sunxi: silent console by default
+
+Every character costs ~87 us at 115200 baud once the UART FIFO is full, and
+nobody is listening on this handheld's serial port. 'setenv silent' from the
+console brings it back.
+
+Upstream-Status: Inappropriate [board policy]
+---
+--- /dev/null
++++ b/board/sunxi/sunxi.env
+@@ -0,0 +1 @@
++silent=1

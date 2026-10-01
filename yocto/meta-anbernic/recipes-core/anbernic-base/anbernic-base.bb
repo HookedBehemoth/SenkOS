@@ -22,13 +22,13 @@ do_install() {
     install -Dm0644 ${S}/sdcard.rules ${D}${sysconfdir}/udev/rules.d/90-sdcard.rules
     install -Dm0644 ${S}/usb-gadget.rules ${D}${sysconfdir}/udev/rules.d/90-usb-gadget.rules
     install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot ${D}/data
-    # after populate-volatile (S37); trial timer last, once everything else came up
+    # The UI first (mounts /data, runs data-init, starts seatd itself); the rest after
+    # populate-volatile (S37); trial timer last, once everything else came up
+    ln -s ../init.d/weston ${D}${sysconfdir}/rcS.d/S01weston
     ln -s ../init.d/anbernic ${D}${sysconfdir}/rcS.d/S40anbernic
-    ln -s ../init.d/data-init ${D}${sysconfdir}/rcS.d/S41data-init
     printf '#!/bin/sh\n[ "$1" = start ] && exec %s/ab boot\n' ${sbindir} > ${D}${sysconfdir}/init.d/ab-boot
     chmod 0755 ${D}${sysconfdir}/init.d/ab-boot
     ln -s ../init.d/ab-boot ${D}${sysconfdir}/rc5.d/S99ab-boot
-    ln -s ../init.d/weston ${D}${sysconfdir}/rc5.d/S20weston
 }
 
 FILES:${PN} += "/uboot /data"

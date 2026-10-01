@@ -26,7 +26,9 @@ p3 squashfs 512M slot b: same
 p4 ext4  rest    /data, read-write; made by the first boot (`ab mount`), survives slot updates
 ```
 
-`boot.scr` ([boot.cmd](../yocto/meta-anbernic/recipes-bsp/u-boot/files/boot.cmd)) reads `ab.txt`:
+`boot.scr` ([boot.cmd](../yocto/meta-anbernic/recipes-bsp/u-boot/files/boot.cmd)) isn't part of a slot, so an OTA doesn't update it:
+`tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/rg35xx-sp/boot.scr`.
+It reads `ab.txt`:
 - `slot=a|b` is the last known good slot.
 - After an update, `tryslot=` and `tries=` are also set. `tryslot` gets 3 boots, and U-Boot writes the counter back to FAT before each one.
 
@@ -42,7 +44,7 @@ The commit comes from the host. Once ssh into the new slot works, `tools/ota` ru
 
 ```
 tools/ota                      # flash the latest build's slot image into the other slot, reboot, commit
-tools/ota path/to/rootfs.squashfs-zst
+tools/ota path/to/rootfs.squashfs-lz4
 tools/ssh ab status
 ```
 
@@ -62,7 +64,7 @@ The OS's own overrides live in `/data/OS/` (`SD:/OS/`). Everything else on `/dat
 |---|---|
 | `OS/launcher` | `/etc/init.d/weston` runs it instead of the image's launcher |
 | `OS/apps/` | the launcher's Apps page |
-| `OS/init.d/S*` | `/etc/init.d/data-init` (rcS S41: after `/data` is mounted, before seatd, dropbear and Weston) runs each executable one with `start`, in order. To fix a config on the read-only rootfs, bind-mount a file from `/data` over it. `touch /uboot/no-data-init` (FAT, editable from any PC) skips them all |
+| `OS/init.d/S*` | `/etc/init.d/data-init` (run by `/etc/init.d/weston`, rcS S01: after `/data` is mounted, before seatd and Weston) runs each executable one with `start`, in order. To fix a config on the read-only rootfs, bind-mount a file from `/data` over it. `touch /uboot/no-data-init` (FAT, editable from any PC) skips them all |
 | `OS/profile.d/*.sh` | sourced last by `/etc/profile` and by `weston.init`: environment overrides (`VK_DRIVER_FILES`, `PANVK_DEBUG`, `MESA_*`) reach Weston, the launcher, apps and ssh shells |
 
 The UI is [launcher/](../launcher) (SDL2 + HarfBuzz + fontconfig, immediate mode). `/etc/init.d/weston` runs
@@ -122,7 +124,7 @@ To iterate faster, build out of tree with host clang, then swap the Image into t
 K=/mnt/multimedia/anbernic-yocto/kernel-dev    # src/ = patched source, out/ = build, bin/bc = Yocto's bc (host has none)
 cp yocto/meta-anbernic/recipes-kernel/linux/files/defconfig $K/out/.config
 (cd $K/src && PATH=$K/bin:$PATH make O=$K/out ARCH=arm64 LLVM=1 olddefconfig Image -j16)   # incremental
-cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-zst> && cp ../out/arch/arm64/boot/Image root/boot/Image-7.2.0 && mksquashfs root t.sqfs -comp zstd -noappend'
+cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-lz4> && cp ../out/arch/arm64/boot/Image root/boot/Image-7.2.0 && mksquashfs root t.sqfs -comp lz4 -Xhc -noappend'
 tools/ota $K/test/t.sqfs
 ```
 

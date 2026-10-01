@@ -1,0 +1,84 @@
+From: SenkOS
+Subject: [PATCH] Bluetooth: hci_h5: register from a work item
+
+Opening an RTL controller powers it up with 600 ms of sleeps. In probe, that
+delays everything waiting for probing to finish, including the root mount.
+
+Upstream-Status: Pending
+---
+--- a/drivers/bluetooth/hci_h5.c
++++ b/drivers/bluetooth/hci_h5.c
+@@ -15,6 +15,7 @@
+ #include <linux/of.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/serdev.h>
++#include <linux/workqueue.h>
+ #include <linux/skbuff.h>
+ 
+ #include <net/bluetooth/bluetooth.h>
+@@ -102,6 +103,9 @@
+ 
+ 	struct gpio_desc *enable_gpio;
+ 	struct gpio_desc *device_wake_gpio;
++
++	struct work_struct register_work;
++	bool registered;
+ };
+ 
+ enum h5_driver_info {
+@@ -852,6 +856,24 @@
+ 	.flush		= h5_flush,
+ };
+ 
++/*
++ * Opening the controller powers it up, which takes the RTL parts 600 ms of sleeps.
++ * Done in probe, that holds back everything that waits for probing to finish
++ * (the root mount): register from a work item instead.
++ */
++static void h5_register_work(struct work_struct *work)
++{
++	struct h5 *h5 = container_of(work, struct h5, register_work);
++	int err;
++
++	err = hci_uart_register_device_priv(&h5->serdev_hu, &h5p,
++					    h5->vnd->sizeof_priv);
++	if (err)
++		dev_err(&h5->hu->serdev->dev, "registration failed: %d\n", err);
++	else
++		h5->registered = true;
++}
++
+ static int h5_serdev_probe(struct serdev_device *serdev)
+ {
+ 	struct device *dev = &serdev->dev;
+@@ -900,15 +922,19 @@
+ 	if (IS_ERR(h5->device_wake_gpio))
+ 		return PTR_ERR(h5->device_wake_gpio);
+ 
+-	return hci_uart_register_device_priv(&h5->serdev_hu, &h5p,
+-					     h5->vnd->sizeof_priv);
++	INIT_WORK(&h5->register_work, h5_register_work);
++	schedule_work(&h5->register_work);
++
++	return 0;
+ }
+ 
+ static void h5_serdev_remove(struct serdev_device *serdev)
+ {
+ 	struct h5 *h5 = serdev_device_get_drvdata(serdev);
+ 
+-	hci_uart_unregister_device(&h5->serdev_hu);
++	cancel_work_sync(&h5->register_work);
++	if (h5->registered)
++		hci_uart_unregister_device(&h5->serdev_hu);
+ }
+ 
+ static int __maybe_unused h5_serdev_suspend(struct device *dev)
+@@ -916,6 +942,7 @@
+ 	struct h5 *h5 = dev_get_drvdata(dev);
+ 	int ret = 0;
+ 
++	flush_work(&h5->register_work);
+ 	if (h5->vnd && h5->vnd->suspend)
+ 		ret = h5->vnd->suspend(h5);
+ 

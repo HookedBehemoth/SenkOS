@@ -16,7 +16,7 @@ runs out of metadata space under Yocto's many small files.
 
 Output in `build/tmp/deploy/images/rg35xx-sp/`:
 - `anbernic-image-rg35xx-sp.rootfs.wic.zst` (+ `.wic.bmap`): a whole card
-- `anbernic-image-rg35xx-sp.rootfs.squashfs-zst`: one slot, what `tools/ota` flashes
+- `anbernic-image-rg35xx-sp.rootfs.squashfs-lz4`: one slot, what `tools/ota` flashes
 
 ## Layers
 

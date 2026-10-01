@@ -34,7 +34,6 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-good-isomp4 \
     gstreamer1.0-plugins-good-matroska \
     gstreamer1.0-plugins-base-videoconvertscale \
-    wireless-regdb-static \
     liberation-fonts \
     ttf-bitstream-vera \
     libasound \
@@ -53,7 +52,7 @@ IMAGE_LINGUAS = ""
 BAD_RECOMMENDATIONS += "weston-init"
 # Bring-up only: passwordless root on the LCD, serial and USB (ssh) consoles. Remove before anything ships.
 IMAGE_FEATURES = "empty-root-password allow-empty-password allow-root-login"
-# Slots are squashfs (zstd): smaller, and decompressing beats the SD card's read speed.
+# Slots are squashfs (lz4): cheap to decompress for U-Boot (the kernel) and Linux alike.
 # Writable: /var/volatile (tmpfs), /uboot (FAT, A/B state), /data (ext4, rest of the card, see `ab`).
 IMAGE_FEATURES += "read-only-rootfs"
 
@@ -65,4 +64,11 @@ ROOTFS_BOOTSTRAP_INSTALL = ""
 ROOTFS_POSTPROCESS_COMMAND:append = " dropbear_key_on_data"
 dropbear_key_on_data () {
 	sed -i 's#^DROPBEAR_RSAKEY_DIR=.*#DROPBEAR_RSAKEY_DIR=/data/dropbear#' ${IMAGE_ROOTFS}/etc/default/dropbear
+}
+
+# /etc/init.d/weston (anbernic-base) starts seatd right before Weston; its own script would
+# start a second one later (and sleeps 0.1 s doing it)
+ROOTFS_POSTPROCESS_COMMAND:append = " no_seatd_initscript"
+no_seatd_initscript () {
+	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??seatd
 }

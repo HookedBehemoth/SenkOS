@@ -1,0 +1,37 @@
+Subject: [PATCH] board_f: no pre-relocation serial probe with a silent console
+
+The probe costs ~60 ms on H700 with the caches off, for output that is
+thrown away. board_init_r() still brings up the console.
+
+Upstream-Status: Pending
+---
+--- a/common/board_f.c	2026-10-01 00:28:17.641825828 +0200
++++ b/common/board_f.c	2026-10-01 00:28:17.652822578 +0200
+@@ -876,6 +876,18 @@
+ 	return 0;
+ }
+ 
++/*
++ * A silent console prints nothing before relocation, and the serial port is
++ * probed again in board_init_r() with the caches on: skip the uncached probe.
++ */
++static int serial_init_f(void)
++{
++	if (IS_ENABLED(CONFIG_SILENT_CONSOLE) && env_get("silent"))
++		return 0;
++
++	return serial_init();
++}
++
+ static void initcall_run_f(void)
+ {
+ 	/*
+@@ -918,7 +930,7 @@
+ #endif
+ 	INITCALL(env_init);		/* initialize environment */
+ 	INITCALL(init_baud_rate);	/* initialze baudrate settings */
+-	INITCALL(serial_init);		/* serial communications setup */
++	INITCALL(serial_init_f);	/* serial communications setup */
+ 	INITCALL(console_init_f);	/* stage 1 init of console */
+ 	INITCALL(display_options);	/* say that we are here */
+ 	INITCALL(display_text_info);	/* show debugging info if required */

@@ -1,0 +1,156 @@
+Subject: [PATCH] bootstage marks for boot-time measurement (UBOOT_BOOTSTAGE)
+
+Upstream-Status: Inappropriate [measurement only; the bootstage_unstash() name index fix is upstreamable]
+---
+--- a/boot/image-fdt.c
++++ b/boot/image-fdt.c
+@@ -699,7 +699,7 @@
+ 	if (CONFIG_IS_ENABLED(LMB) && lmb)
+ 		lmb_free(map_to_sysmem(blob), fdt_totalsize(blob), LMB_NONE);
+ 
+-	ret = fdt_shrink_to_minimum(blob, 0);
++	ret = fdt_shrink_to_minimum(blob, 0x2000);
+ 	if (ret < 0)
+ 		goto err;
+ 	of_size = ret;
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -915,6 +915,7 @@
+ 	INITCALL(arch_cpu_init);	/* basic arch cpu dependent setup */
+ 	INITCALL(mach_cpu_init);	/* SoC/machine dependent CPU setup */
+ 	INITCALL(initf_dm);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "f_dm");
+ #if CONFIG_IS_ENABLED(BOARD_EARLY_INIT_F)
+ 	INITCALL(board_early_init_f);
+ #endif
+@@ -931,6 +932,7 @@
+ 	INITCALL(env_init);		/* initialize environment */
+ 	INITCALL(init_baud_rate);	/* initialze baudrate settings */
+ 	INITCALL(serial_init_f);	/* serial communications setup */
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "f_serial");
+ 	INITCALL(console_init_f);	/* stage 1 init of console */
+ 	INITCALL(display_options);	/* say that we are here */
+ 	INITCALL(display_text_info);	/* show debugging info if required */
+@@ -947,6 +949,7 @@
+ #endif
+ #if CONFIG_IS_ENABLED(DISPLAY_BOARDINFO)
+ 	INITCALL(show_board_info);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "f_board_info");
+ #endif
+ 	WATCHDOG_INIT();
+ 	INITCALL_EVT(EVT_MISC_INIT_F);
+@@ -956,6 +959,7 @@
+ #endif
+ 	INITCALL(announce_dram_init);
+ 	INITCALL(dram_init);		/* configure available RAM banks */
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "f_dram");
+ #if CONFIG_IS_ENABLED(POST)
+ 	INITCALL(post_init_f);
+ #endif
+@@ -1025,6 +1029,7 @@
+ 	INITCALL(do_elf_reloc_fixups);
+ #endif
+ 	INITCALL(clear_bss);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "f_end");
+ 	/*
+ 	 * Deregister all cyclic functions before relocation, so that
+ 	 * gd->cyclic_list does not contain any references to pre-relocation
+--- a/common/bootstage.c
++++ b/common/bootstage.c
+@@ -478,7 +478,7 @@
+ 
+ 	/* Read the name strings */
+ 	ptr += rec_size;
+-	for (rec = data->record + data->next_id, i = 0; i < hdr->count;
++	for (rec = data->record + data->rec_count, i = 0; i < hdr->count;
+ 	     i++, rec++) {
+ 		rec->name = ptr;
+ 		if (xpl_phase() == PHASE_SPL)
+--- a/common/spl/spl_fit.c
++++ b/common/spl/spl_fit.c
+@@ -4,6 +4,7 @@
+  * Written by Simon Glass <sjg@chromium.org>
+  */
+ 
++#include <bootstage.h>
+ #include <errno.h>
+ #include <fpga.h>
+ #include <gzip.h>
+@@ -805,6 +806,7 @@
+ 	int firmware_node;
+ 
+ 	ret = spl_simple_fit_read(&ctx, info, offset, fit);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "fit_read");
+ 	if (ret < 0)
+ 		return ret;
+ 
+@@ -815,6 +817,7 @@
+ 	ctx.fit = spl_load_simple_fit_fix_load(ctx.fit);
+ 
+ 	ret = spl_simple_fit_parse(&ctx);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "fit_parse");
+ 	if (ret < 0)
+ 		return ret;
+ 
+@@ -850,6 +853,7 @@
+ 
+ 	/* Load the image and set up the spl_image structure */
+ 	ret = load_simple_fit(info, offset, &ctx, node, spl_image);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "fit_firmware");
+ 	if (ret)
+ 		return ret;
+ 
+@@ -868,6 +872,7 @@
+ 	 */
+ 	if (os_takes_devicetree(spl_image->os)) {
+ 		ret = spl_fit_append_fdt(spl_image, info, offset, &ctx);
++		bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "fit_fdt");
+ 		if (ret < 0 && spl_image->os != IH_OS_U_BOOT)
+ 			return ret;
+ 	}
+@@ -891,6 +896,7 @@
+ 
+ 		image_info.load_addr = 0;
+ 		ret = load_simple_fit(info, offset, &ctx, node, &image_info);
++		bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "fit_loadable");
+ 		if (ret < 0 && ret != -EBADSLT) {
+ 			printf("%s: can't load image loadables index %d (ret = %d)\n",
+ 			       __func__, index, ret);
+--- a/common/spl/spl_mmc.c
++++ b/common/spl/spl_mmc.c
+@@ -8,6 +8,7 @@
+ #include <dm.h>
+ #include <log.h>
+ #include <part.h>
++#include <bootstage.h>
+ #include <spl.h>
+ #include <spl_load.h>
+ #include <linux/compiler.h>
+@@ -386,7 +387,9 @@
+ 		if (ret)
+ 			return ret;
+ 
++		bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "mmc_found");
+ 		ret = mmc_init(mmc);
++		bootstage_mark_name(BOOTSTAGE_ID_ALLOC, "mmc_init");
+ 		if (ret) {
+ 			mmc = NULL;
+ 			printf("spl: mmc init failed with error: %d\n", ret);
+--- a/fs/fs.c
++++ b/fs/fs.c
+@@ -5,6 +5,7 @@
+ 
+ #define LOG_CATEGORY LOGC_CORE
+ 
++#include <bootstage.h>
+ #include <command.h>
+ #include <config.h>
+ #include <display_options.h>
+@@ -844,6 +845,7 @@
+ 	time = get_timer(0);
+ 	ret = _fs_read(filename, addr, pos, bytes, 1, &len_read);
+ 	time = get_timer(time);
++	bootstage_mark_name(BOOTSTAGE_ID_ALLOC, strdup(filename));
+ 	if (ret < 0) {
+ 		log_err("Failed to load '%s'\n", filename);
+ 		return 1;

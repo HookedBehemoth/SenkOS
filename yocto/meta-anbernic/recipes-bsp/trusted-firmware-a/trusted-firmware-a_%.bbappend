@@ -28,3 +28,5 @@ do_compile:prepend:rg35xx-sp() {
         OUT=suspend_stub_lpddr4.bin CROSS_COMPILE=${TARGET_PREFIX}
 }
 EXTRA_OEMAKE:append:rg35xx-sp = " SUNXI_SYSTEM_SUSPEND=1 SUNXI_SUSPEND_STUB=${STUB_DIR}/suspend_stub_lpddr4.bin"
+# Errors only: each NOTICE line costs ~4 ms at 115200 baud on every boot
+EXTRA_OEMAKE:append:rg35xx-sp = " LOG_LEVEL=10"
