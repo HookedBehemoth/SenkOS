@@ -1,0 +1,557 @@
+From 58e79ea004eecf5ae82a1945b2fa534727ddefd3 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Thu, 1 Oct 2026 02:42:34 +0200
+Subject: [PATCH] panfrost, panvk: build only the archs in -Dpanfrost-archs
+
+Every Mali architecture version is a full copy of the per-arch code and its
+precompiled shaders: libgallium and libvulkan_panfrost carry ten of them.
+A device with one GPU needs one. The default stays all of them.
+
+Per-arch libraries follow the option; the dispatch switches only reference
+the versions built (PAN_BUILD_V<n>), and panvk refuses a GPU it wasn't built
+for instead of reaching UNREACHABLE.
+
+Upstream-Status: Pending
+---
+ meson.build                                 |   4 +
+ meson.options                               |   9 ++
+ src/gallium/drivers/panfrost/meson.build    |   2 +-
+ src/gallium/drivers/panfrost/pan_screen.c   |  20 ++++
+ src/panfrost/genxml/decode_common.c         |  50 ++++++++++
+ src/panfrost/genxml/meson.build             |   2 +-
+ src/panfrost/lib/meson.build                |   2 +-
+ src/panfrost/lib/pan_mod.h                  |  20 ++++
+ src/panfrost/libpan/meson.build             |   2 +-
+ src/panfrost/vulkan/meson.build             |   3 +
+ src/panfrost/vulkan/panvk_macros.h          | 105 +++++++++++---------
+ src/panfrost/vulkan/panvk_physical_device.c |  16 +++
+ 12 files changed, 183 insertions(+), 52 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index df0241e..7937bfe 100644
+--- a/meson.build
++++ b/meson.build
+@@ -222,6 +222,10 @@ with_gallium_llvmpipe = gallium_drivers.contains('llvmpipe')
+ with_gallium_vc4 = gallium_drivers.contains('vc4')
+ with_gallium_v3d = gallium_drivers.contains('v3d')
+ with_gallium_panfrost = gallium_drivers.contains('panfrost')
++panfrost_archs = get_option('panfrost-archs')
++foreach a : panfrost_archs
++  pre_args += '-DPAN_BUILD_V@0@'.format(a)
++endforeach
+ with_gallium_etnaviv = gallium_drivers.contains('etnaviv')
+ with_gallium_tegra = gallium_drivers.contains('tegra')
+ with_gallium_crocus = gallium_drivers.contains('crocus')
+diff --git a/meson.options b/meson.options
+index 3f437d0..11d306f 100644
+--- a/meson.options
++++ b/meson.options
+@@ -915,3 +915,12 @@ option(
+   value : false,
+   description : 'Build panfrost Rust components.'
+ )
++
++option(
++  'panfrost-archs',
++  type : 'array',
++  value : ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14'],
++  choices : ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14'],
++  description : 'Mali architecture versions (GPU_ID major) panfrost and panvk are built for. ' +
++                'Each one is a copy of the per-arch code, shaders included.'
++)
+diff --git a/src/gallium/drivers/panfrost/meson.build b/src/gallium/drivers/panfrost/meson.build
+index 54ac313..962c659 100644
+--- a/src/gallium/drivers/panfrost/meson.build
++++ b/src/gallium/drivers/panfrost/meson.build
+@@ -83,7 +83,7 @@ if with_perfetto
+   files_panfrost += 'panfrost_perfetto.cc'
+ endif
+ 
+-panfrost_versions = ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14']
++panfrost_versions = panfrost_archs
+ libpanfrost_versions = []
+ 
+ foreach ver : panfrost_versions
+diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
+index aa4f35b..5ded855 100644
+--- a/src/gallium/drivers/panfrost/pan_screen.c
++++ b/src/gallium/drivers/panfrost/pan_screen.c
+@@ -1159,36 +1159,56 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
+          pan_get_nir_shader_compiler_options(dev->arch, i, false);
+ 
+    switch (dev->arch) {
++#ifdef PAN_BUILD_V4
+    case 4:
+       panfrost_cmdstream_screen_init_v4(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V5
+    case 5:
+       panfrost_cmdstream_screen_init_v5(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V6
+    case 6:
+       panfrost_cmdstream_screen_init_v6(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V7
+    case 7:
+       panfrost_cmdstream_screen_init_v7(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V9
+    case 9:
+       panfrost_cmdstream_screen_init_v9(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V10
+    case 10:
+       panfrost_cmdstream_screen_init_v10(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V11
+    case 11:
+       panfrost_cmdstream_screen_init_v11(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V12
+    case 12:
+       panfrost_cmdstream_screen_init_v12(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V13
+    case 13:
+       panfrost_cmdstream_screen_init_v13(screen);
+       break;
++#endif
++#ifdef PAN_BUILD_V14
+    case 14:
+       panfrost_cmdstream_screen_init_v14(screen);
+       break;
++#endif
+    default:
+       debug_printf("panfrost: Unhandled architecture major %d", dev->arch);
+       panfrost_destroy_screen(&(screen->base));
+diff --git a/src/panfrost/genxml/decode_common.c b/src/panfrost/genxml/decode_common.c
+index 96ee55b..5cb4700 100644
+--- a/src/panfrost/genxml/decode_common.c
++++ b/src/panfrost/genxml/decode_common.c
+@@ -357,21 +357,31 @@ pandecode_abort_on_fault(struct pandecode_context *ctx, uint64_t jc_gpu_va,
+    simple_mtx_lock(&ctx->lock);
+ 
+    switch (pan_arch(gpu_id)) {
++#ifdef PAN_BUILD_V4
+    case 4:
+       pandecode_abort_on_fault_v4(ctx, jc_gpu_va);
+       break;
++#endif
++#ifdef PAN_BUILD_V5
+    case 5:
+       pandecode_abort_on_fault_v5(ctx, jc_gpu_va);
+       break;
++#endif
++#ifdef PAN_BUILD_V6
+    case 6:
+       pandecode_abort_on_fault_v6(ctx, jc_gpu_va);
+       break;
++#endif
++#ifdef PAN_BUILD_V7
+    case 7:
+       pandecode_abort_on_fault_v7(ctx, jc_gpu_va);
+       break;
++#endif
++#ifdef PAN_BUILD_V9
+    case 9:
+       pandecode_abort_on_fault_v9(ctx, jc_gpu_va);
+       break;
++#endif
+    default:
+       UNREACHABLE("Unsupported architecture");
+    }
+@@ -385,21 +395,31 @@ pandecode_jc(struct pandecode_context *ctx, uint64_t jc_gpu_va, uint64_t gpu_id)
+    simple_mtx_lock(&ctx->lock);
+ 
+    switch (pan_arch(gpu_id)) {
++#ifdef PAN_BUILD_V4
+    case 4:
+       pandecode_jc_v4(ctx, jc_gpu_va, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V5
+    case 5:
+       pandecode_jc_v5(ctx, jc_gpu_va, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V6
+    case 6:
+       pandecode_jc_v6(ctx, jc_gpu_va, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V7
+    case 7:
+       pandecode_jc_v7(ctx, jc_gpu_va, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V9
+    case 9:
+       pandecode_jc_v9(ctx, jc_gpu_va, gpu_id);
+       break;
++#endif
+    default:
+       UNREACHABLE("Unsupported architecture");
+    }
+@@ -414,21 +434,31 @@ pandecode_interpret_cs(struct pandecode_context *ctx, uint64_t queue_gpu_va,
+    simple_mtx_lock(&ctx->lock);
+ 
+    switch (pan_arch(gpu_id)) {
++#ifdef PAN_BUILD_V10
+    case 10:
+       pandecode_interpret_cs_v10(ctx, queue_gpu_va, size, gpu_id, regs);
+       break;
++#endif
++#ifdef PAN_BUILD_V11
+    case 11:
+       pandecode_interpret_cs_v11(ctx, queue_gpu_va, size, gpu_id, regs);
+       break;
++#endif
++#ifdef PAN_BUILD_V12
+    case 12:
+       pandecode_interpret_cs_v12(ctx, queue_gpu_va, size, gpu_id, regs);
+       break;
++#endif
++#ifdef PAN_BUILD_V13
+    case 13:
+       pandecode_interpret_cs_v13(ctx, queue_gpu_va, size, gpu_id, regs);
+       break;
++#endif
++#ifdef PAN_BUILD_V14
+    case 14:
+       pandecode_interpret_cs_v14(ctx, queue_gpu_va, size, gpu_id, regs);
+       break;
++#endif
+    default:
+       UNREACHABLE("Unsupported architecture");
+    }
+@@ -443,21 +473,31 @@ pandecode_cs_binary(struct pandecode_context *ctx, uint64_t bin_gpu_va,
+    simple_mtx_lock(&ctx->lock);
+ 
+    switch (pan_arch(gpu_id)) {
++#ifdef PAN_BUILD_V10
+    case 10:
+       pandecode_cs_binary_v10(ctx, bin_gpu_va, size);
+       break;
++#endif
++#ifdef PAN_BUILD_V11
+    case 11:
+       pandecode_cs_binary_v11(ctx, bin_gpu_va, size);
+       break;
++#endif
++#ifdef PAN_BUILD_V12
+    case 12:
+       pandecode_cs_binary_v12(ctx, bin_gpu_va, size);
+       break;
++#endif
++#ifdef PAN_BUILD_V13
+    case 13:
+       pandecode_cs_binary_v13(ctx, bin_gpu_va, size);
+       break;
++#endif
++#ifdef PAN_BUILD_V14
+    case 14:
+       pandecode_cs_binary_v14(ctx, bin_gpu_va, size);
+       break;
++#endif
+    default:
+       UNREACHABLE("Unsupported architecture");
+    }
+@@ -472,21 +512,31 @@ pandecode_cs_trace(struct pandecode_context *ctx, uint64_t trace_gpu_va,
+    simple_mtx_lock(&ctx->lock);
+ 
+    switch (pan_arch(gpu_id)) {
++#ifdef PAN_BUILD_V10
+    case 10:
+       pandecode_cs_trace_v10(ctx, trace_gpu_va, size, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V11
+    case 11:
+       pandecode_cs_trace_v11(ctx, trace_gpu_va, size, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V12
+    case 12:
+       pandecode_cs_trace_v12(ctx, trace_gpu_va, size, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V13
+    case 13:
+       pandecode_cs_trace_v13(ctx, trace_gpu_va, size, gpu_id);
+       break;
++#endif
++#ifdef PAN_BUILD_V14
+    case 14:
+       pandecode_cs_trace_v14(ctx, trace_gpu_va, size, gpu_id);
+       break;
++#endif
+    default:
+       UNREACHABLE("Unsupported architecture");
+    }
+diff --git a/src/panfrost/genxml/meson.build b/src/panfrost/genxml/meson.build
+index 35edc05..93143f1 100644
+--- a/src/panfrost/genxml/meson.build
++++ b/src/panfrost/genxml/meson.build
+@@ -20,7 +20,7 @@ idep_pan_packers = declare_dependency(
+ 
+ libpanfrost_decode_per_arch = []
+ 
+-foreach ver : ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14']
++foreach ver : panfrost_archs
+   libpanfrost_decode_per_arch += static_library(
+     'pandecode-arch-v' + ver,
+     ['decode.c', 'decode_jm.c', 'decode_csf.c', pan_packers],
+diff --git a/src/panfrost/lib/meson.build b/src/panfrost/lib/meson.build
+index 58bd867..0509b85 100644
+--- a/src/panfrost/lib/meson.build
++++ b/src/panfrost/lib/meson.build
+@@ -22,7 +22,7 @@ endforeach
+ 
+ libpanfrost_per_arch = []
+ 
+-foreach ver : ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14']
++foreach ver : panfrost_archs
+   libpanfrost_per_arch += static_library(
+     'pan-arch-v' + ver,
+     [
+diff --git a/src/panfrost/lib/pan_mod.h b/src/panfrost/lib/pan_mod.h
+index a898b58..d00ac87 100644
+--- a/src/panfrost/lib/pan_mod.h
++++ b/src/panfrost/lib/pan_mod.h
+@@ -115,26 +115,46 @@ static inline const struct pan_mod_handler *
+ pan_mod_get_handler(unsigned arch, uint64_t modifier)
+ {
+    switch (arch) {
++#ifdef PAN_BUILD_V4
+    case 4:
+       return pan_mod_get_handler_v4(modifier);
++#endif
++#ifdef PAN_BUILD_V5
+    case 5:
+       return pan_mod_get_handler_v5(modifier);
++#endif
++#ifdef PAN_BUILD_V6
+    case 6:
+       return pan_mod_get_handler_v6(modifier);
++#endif
++#ifdef PAN_BUILD_V7
+    case 7:
+       return pan_mod_get_handler_v7(modifier);
++#endif
++#ifdef PAN_BUILD_V9
+    case 9:
+       return pan_mod_get_handler_v9(modifier);
++#endif
++#ifdef PAN_BUILD_V10
+    case 10:
+       return pan_mod_get_handler_v10(modifier);
++#endif
++#ifdef PAN_BUILD_V11
+    case 11:
+       return pan_mod_get_handler_v11(modifier);
++#endif
++#ifdef PAN_BUILD_V12
+    case 12:
+       return pan_mod_get_handler_v12(modifier);
++#endif
++#ifdef PAN_BUILD_V13
+    case 13:
+       return pan_mod_get_handler_v13(modifier);
++#endif
++#ifdef PAN_BUILD_V14
+    case 14:
+       return pan_mod_get_handler_v14(modifier);
++#endif
+    default:
+       UNREACHABLE("Unsupported arch");
+    }
+diff --git a/src/panfrost/libpan/meson.build b/src/panfrost/libpan/meson.build
+index f035f4a..025478e 100644
+--- a/src/panfrost/libpan/meson.build
++++ b/src/panfrost/libpan/meson.build
+@@ -11,7 +11,7 @@ libpan_shader_files = files(
+ 
+ idep_libpan_per_arch = {}
+ 
+-foreach ver : ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14']
++foreach ver : panfrost_archs
+   libpan_spv = custom_target(
+     input : libpan_shader_files,
+     output : 'libpan_v' + ver + '.spv',
+diff --git a/src/panfrost/vulkan/meson.build b/src/panfrost/vulkan/meson.build
+index 7c87fe4..a63cf6d 100644
+--- a/src/panfrost/vulkan/meson.build
++++ b/src/panfrost/vulkan/meson.build
+@@ -143,6 +143,9 @@ common_per_arch_files = [
+ ]
+ 
+ foreach arch : [6, 7, 10, 11, 12, 13, 14]
++  if '@0@'.format(arch) not in panfrost_archs
++    continue
++  endif
+   per_arch_files = common_per_arch_files
+   inc_panvk_per_arch = []
+ 
+diff --git a/src/panfrost/vulkan/panvk_macros.h b/src/panfrost/vulkan/panvk_macros.h
+index 3052c0c..5eb87dd 100644
+--- a/src/panfrost/vulkan/panvk_macros.h
++++ b/src/panfrost/vulkan/panvk_macros.h
+@@ -43,62 +43,71 @@ panvk_catch_indirect_alloc_failure(VkResult error)
+ 
+ #define panvk_arch_name(name, version) panvk_##version##_##name
+ 
++/* Expands to its arguments when panvk is built for that arch (panfrost-archs) */
++#ifdef PAN_BUILD_V6
++#define panvk_if_v6(...) __VA_ARGS__
++#else
++#define panvk_if_v6(...)
++#endif
++#ifdef PAN_BUILD_V7
++#define panvk_if_v7(...) __VA_ARGS__
++#else
++#define panvk_if_v7(...)
++#endif
++#ifdef PAN_BUILD_V10
++#define panvk_if_v10(...) __VA_ARGS__
++#else
++#define panvk_if_v10(...)
++#endif
++#ifdef PAN_BUILD_V11
++#define panvk_if_v11(...) __VA_ARGS__
++#else
++#define panvk_if_v11(...)
++#endif
++#ifdef PAN_BUILD_V12
++#define panvk_if_v12(...) __VA_ARGS__
++#else
++#define panvk_if_v12(...)
++#endif
++#ifdef PAN_BUILD_V13
++#define panvk_if_v13(...) __VA_ARGS__
++#else
++#define panvk_if_v13(...)
++#endif
++#ifdef PAN_BUILD_V14
++#define panvk_if_v14(...) __VA_ARGS__
++#else
++#define panvk_if_v14(...)
++#endif
++
+ #define panvk_arch_dispatch(arch, name, ...)                                   \
+    do {                                                                        \
+       switch (arch) {                                                          \
+-      case 6:                                                                  \
+-         panvk_arch_name(name, v6)(__VA_ARGS__);                               \
+-         break;                                                                \
+-      case 7:                                                                  \
+-         panvk_arch_name(name, v7)(__VA_ARGS__);                               \
+-         break;                                                                \
+-      case 10:                                                                 \
+-         panvk_arch_name(name, v10)(__VA_ARGS__);                              \
+-         break;                                                                \
+-      case 11:                                                                 \
+-         panvk_arch_name(name, v11)(__VA_ARGS__);                              \
+-         break;                                                                \
+-      case 12:                                                                 \
+-         panvk_arch_name(name, v12)(__VA_ARGS__);                              \
+-         break;                                                                \
+-      case 13:                                                                 \
+-         panvk_arch_name(name, v13)(__VA_ARGS__);                              \
+-         break;                                                                \
+-      case 14:                                                                 \
+-         panvk_arch_name(name, v14)(__VA_ARGS__);                              \
+-         break;                                                                \
++      panvk_if_v6(case 6: panvk_arch_name(name, v6)(__VA_ARGS__); break;)      \
++      panvk_if_v7(case 7: panvk_arch_name(name, v7)(__VA_ARGS__); break;)      \
++      panvk_if_v10(case 10: panvk_arch_name(name, v10)(__VA_ARGS__); break;)   \
++      panvk_if_v11(case 11: panvk_arch_name(name, v11)(__VA_ARGS__); break;)   \
++      panvk_if_v12(case 12: panvk_arch_name(name, v12)(__VA_ARGS__); break;)   \
++      panvk_if_v13(case 13: panvk_arch_name(name, v13)(__VA_ARGS__); break;)   \
++      panvk_if_v14(case 14: panvk_arch_name(name, v14)(__VA_ARGS__); break;)   \
+       default:                                                                 \
+          UNREACHABLE("Unsupported architecture");                              \
+       }                                                                        \
+    } while (0)
+ 
+-#define panvk_arch_dispatch_ret(arch, name, ret, ...)                          \
+-   do {                                                                        \
+-      switch (arch) {                                                          \
+-      case 6:                                                                  \
+-         ret = panvk_arch_name(name, v6)(__VA_ARGS__);                         \
+-         break;                                                                \
+-      case 7:                                                                  \
+-         ret = panvk_arch_name(name, v7)(__VA_ARGS__);                         \
+-         break;                                                                \
+-      case 10:                                                                 \
+-         ret = panvk_arch_name(name, v10)(__VA_ARGS__);                        \
+-         break;                                                                \
+-      case 11:                                                                 \
+-         ret = panvk_arch_name(name, v11)(__VA_ARGS__);                        \
+-         break;                                                                \
+-      case 12:                                                                 \
+-         ret = panvk_arch_name(name, v12)(__VA_ARGS__);                        \
+-         break;                                                                \
+-      case 13:                                                                 \
+-         ret = panvk_arch_name(name, v13)(__VA_ARGS__);                        \
+-         break;                                                                \
+-      case 14:                                                                 \
+-         ret = panvk_arch_name(name, v14)(__VA_ARGS__);                        \
+-         break;                                                                \
+-      default:                                                                 \
+-         UNREACHABLE("Unsupported architecture");                              \
+-      }                                                                        \
++#define panvk_arch_dispatch_ret(arch, name, ret, ...)                             \
++   do {                                                                           \
++      switch (arch) {                                                             \
++      panvk_if_v6(case 6: ret = panvk_arch_name(name, v6)(__VA_ARGS__); break;)   \
++      panvk_if_v7(case 7: ret = panvk_arch_name(name, v7)(__VA_ARGS__); break;)   \
++      panvk_if_v10(case 10: ret = panvk_arch_name(name, v10)(__VA_ARGS__); break;)\
++      panvk_if_v11(case 11: ret = panvk_arch_name(name, v11)(__VA_ARGS__); break;)\
++      panvk_if_v12(case 12: ret = panvk_arch_name(name, v12)(__VA_ARGS__); break;)\
++      panvk_if_v13(case 13: ret = panvk_arch_name(name, v13)(__VA_ARGS__); break;)\
++      panvk_if_v14(case 14: ret = panvk_arch_name(name, v14)(__VA_ARGS__); break;)\
++      default:                                                                    \
++         UNREACHABLE("Unsupported architecture");                                 \
++      }                                                                           \
+    } while (0)
+ 
+ #ifdef PAN_ARCH
+diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
+index 846cc8d..e6ade41 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -402,6 +402,22 @@ panvk_physical_device_init(struct panvk_physical_device *device,
+       goto fail;
+    }
+ 
++   /* Left out of the build (panfrost-archs) */
++   switch (arch) {
++   panvk_if_v6(case 6:)
++   panvk_if_v7(case 7:)
++   panvk_if_v10(case 10:)
++   panvk_if_v11(case 11:)
++   panvk_if_v12(case 12:)
++   panvk_if_v13(case 13:)
++   panvk_if_v14(case 14:)
++      break;
++   default:
++      result = panvk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
++                            "panvk built without v%d support", arch);
++      goto fail;
++   }
++
+    switch (arch) {
+    case 6:
+    case 7:
+-- 
+2.55.0
+
