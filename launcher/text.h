@@ -1,7 +1,8 @@
 /*
  * Text: fontconfig picks the font, HarfBuzz shapes, FreeType rasterizes.
  * Glyphs are bitmaps, rendered once per pixel size and packed into one
- * texture (skyline), so every size is crisp and nothing is scaled.
+ * texture (skyline, slot GFX_TEXT), so every size is crisp and nothing is
+ * scaled. Drawing pushes gfx quads, clipped like any other.
  */
 #pragma once
 
@@ -10,7 +11,7 @@
 #include <SDL.h>
 
 /* `pattern` is a fontconfig pattern, e.g. "sans-serif:weight=medium". */
-bool text_init(SDL_Renderer *renderer, const char *pattern);
+bool text_init(const char *pattern);
 /* Height of a line at `px`: ascender to descender. */
 int text_height(int px);
 int text_width(int px, const char *utf8);

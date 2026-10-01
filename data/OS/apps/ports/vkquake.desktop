@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Quake
+Comment=vkQuake on PanVK: /data/vkquake, game data in id1/ (pak0.pak from the shareware or full game)
+Path=/data/vkquake
+Exec=./vkquake -fullscreen -width 640 -height 480 > /var/log/vkquake.log 2>&1
+Icon=vkquake
+Keywords=fps;vulkan;
+Categories=Game;

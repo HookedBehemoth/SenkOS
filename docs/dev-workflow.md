@@ -65,21 +65,25 @@ The OS's own overrides live in `/data/OS/` (`SD:/OS/`). Everything else on `/dat
 | Path | Used by |
 |---|---|
 | `OS/launcher` | `/etc/init.d/weston` runs it instead of the image's launcher |
-| `OS/apps/` | the launcher's Apps page |
+| `OS/apps/{ports,applications,benchmarks}/` | the launcher's pages of the same names: `*.desktop` entries (or bare executables) |
+| `roms/gba/` | the launcher's Game Boy Advance page, run with mGBA from `/data/mgba` |
+| `OS/packs/<system>.pack` | game packs: titles, metadata and box art by ROM CRC32 (`tools/boxart-pack`) |
+| `.cache/launcher/crc32` | the launcher's CRC32 of each ROM, by path, size and mtime |
 | `OS/init.d/S*` | `/etc/init.d/data-init` (run by `/etc/init.d/weston`, rcS S01: after `/data` is mounted, before seatd and Weston) runs each executable one with `start`, in order. To fix a config on the read-only rootfs, bind-mount a file from `/data` over it. `touch /uboot/no-data-init` (FAT, editable from any PC) skips them all |
 | `OS/profile.d/*.sh` | sourced last by `/etc/profile` and by `weston.init`: environment overrides (`VK_DRIVER_FILES`, `PANVK_DEBUG`, `MESA_*`) reach Weston, the launcher, apps and ssh shells |
 
-The UI is [launcher/](../launcher) (SDL2 + HarfBuzz + fontconfig, immediate mode). `/etc/init.d/weston` runs
+The UI is [launcher/](../launcher) (SDL2 + Vulkan + HarfBuzz + fontconfig, immediate mode). `/etc/init.d/weston` runs
 `/data/OS/launcher` if it exists, or else the image's `/usr/bin/launcher`. It restarts the launcher whenever it exits.
 - `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/OS/launcher`, and restarts it. You don't need to reflash.
 - `tools/ssh rm /data/OS/launcher`: goes back to the image's launcher.
-- Its Apps page lists every executable in `/data/OS/apps`. While one runs, Menu pauses it (SIGSTOP) and shows Resume/Quit over a blur of its last frame. Quit sends SIGTERM (SDL apps quit cleanly). Menu or B resumes. While paused, the launcher grabs the pad (EVIOCGRAB), so the app never sees those presses.
+- It shows one page per category, as tiles: Game Boy Advance (the ROMs in `/data/roms/gba`), Ports, Applications and Benchmarks (`/data/OS/apps/<category>/`), then System. An app is an XDG `.desktop` file (`Name`, `Exec`, `Path`, `Icon`, `Keywords`, `Categories`) or a bare executable. `Exec` runs under `sh -c`, in `Path` or else the folder. `Icon` is a PNG, JPEG, WebP or BMP, relative to the folder, and the extension is optional. Icons load on a background thread and upload on a transfer queue. Below 100 MB for the whole process, the icons that haven't been shown for a while get evicted. The page shown at exit is shown again at the next start (`$HOME/.local/state/launcher`). While an app runs, Menu pauses it (SIGSTOP) and shows Resume/Quit over a blur of its last frame. Quit sends SIGTERM (SDL apps quit cleanly). Menu or B resumes. While paused, the launcher grabs the pad (EVIOCGRAB), so the app never sees those presses.
 - Apps carry `LAUNCHER_APP=<label>` in their environment. A launcher that (re)starts adopts an app the previous one left running (a session leader with that variable) and continues it if it was paused. Restarting the launcher (`tools/deploy-launcher`, a crash) doesn't end the game.
 - Volume keys: Weston's `volume-keys.so` sets Line Out, and the launcher's `osd` window shows the level. The patched kiosk shell keeps that window on top without focus.
 - [data/](../data) holds `/data` files that live in this repo: `tar cf - -C data . | tools/ssh tar xf - -C /data`. They include the
   GPU benchmarks (glmark2, vkmark), which show Mesa's HUD (`GALLIUM_HUD`, `VK_LAYER_MESA_overlay`)
   and write their scores to `/var/log`.
-- On the desktop: `meson setup build launcher && ninja -C build && build/launcher` (arrows, Enter, PgUp/PgDn).
+- ROMs get their title and box art from the system's game pack, matched by the CRC32 of the ROM (of a zip: of its first file, from the zip's directory). The launcher computes each CRC once in the background and caches it. An image of the same name next to the ROM wins over the pack's. To build a pack, use `tools/boxart-pack "Nintendo - Game Boy Advance" <libretro-thumbnails>/Named_Boxarts out.pack`. It downloads the No-Intro DAT and metadata (genre, developer, publisher, franchise, year, players) from libretro-database. It deduplicates box art by perceptual hash, keeps the best source of each group, and stores the art at 128 px as WebP (GBA: 2.4 GB of PNGs becomes 7.5 MB). The format is in [romdb.h](../launcher/romdb.h).
+- On the desktop: `meson setup build launcher && ninja -C build && LAUNCHER_DATA=launcher/testdata build/launcher` (arrows, Enter, PgUp/PgDn). `launcher/testdata` holds fake apps and ROMs with made-up icons in every format. The apps only sleep for 2 s. Its GBA ROMs carry the CRC32s of real games, so they match a GBA pack in `OS/packs`.
 
 mGBA (GBA) isn't in the image yet. Its recipe only deploys it: `kas build --target mgba`, then copy
 `deploy/images/rg35xx-sp/mgba/` to `/data/mgba` and run it from there: mGBA looks for `portable.ini` in

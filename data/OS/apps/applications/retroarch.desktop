@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=RetroArch
+Exec=/data/retroarch/retroarch
+Icon=retroarch
+Keywords=emulator;libretro;
+Categories=Game;Emulator;

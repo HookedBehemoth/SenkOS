@@ -1,4 +1,4 @@
-SUMMARY = "Handheld launcher: status bar + menus, pause screen, volume OSD; SDL2/HarfBuzz/fontconfig"
+SUMMARY = "Handheld launcher: app tiles by category, pause screen, volume OSD; SDL2/Vulkan/HarfBuzz/fontconfig"
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
@@ -10,7 +10,8 @@ S = "${UNPACKDIR}/launcher"
 
 inherit meson pkgconfig deploy
 
-DEPENDS = "libsdl2 wayland wayland-native alsa-lib harfbuzz fontconfig freetype"
+DEPENDS = "libsdl2 wayland wayland-native alsa-lib harfbuzz fontconfig freetype \
+    vulkan-loader vulkan-headers glslang-native libpng libjpeg-turbo libwebp zlib"
 # The image's fallback UI needs a font to find
 RDEPENDS:${PN} = "liberation-fonts"
 

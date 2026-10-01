@@ -1,4 +1,0 @@
-#!/bin/sh
-# glmark2 on panfrost with Mesa's GL HUD; the score lands in /var/log (/data/log/0)
-export GALLIUM_HUD=fps,frametime
-exec glmark2-es2-wayland --fullscreen > /var/log/glmark2.log 2>&1

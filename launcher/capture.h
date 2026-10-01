@@ -3,7 +3,7 @@
  */
 #pragma once
 
-#include <SDL.h>
+#include <stdint.h>
 
-/* NULL without Weston, or when the capture fails. */
-SDL_Texture *capture_blurred(SDL_Renderer *renderer);
+/* RGBA, opaque, to free(). NULL without Weston, or when the capture fails. */
+uint8_t *capture_blurred(int *w, int *h);

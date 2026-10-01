@@ -1,6 +1,6 @@
 /*
- * The part of webos-native's loom that nav.c needs, drawn straight with
- * SDL_Renderer instead of through a command list.
+ * The part of webos-native's loom that nav.c needs, drawn straight with gfx
+ * quads instead of through a command list.
  */
 #pragma once
 
@@ -8,6 +8,8 @@
 #include <stdint.h>
 
 #include <SDL.h>
+
+#include "gfx.h"
 
 typedef struct {
   float x, y, w, h;
@@ -21,7 +23,6 @@ typedef struct {
 typedef enum { UI_HORIZONTAL, UI_VERTICAL } ui_axis;
 
 typedef struct {
-  SDL_Renderer *renderer;
   ui_mask mask;
 } ui_context;
 
@@ -34,23 +35,19 @@ static inline ui_rect ui_inset(ui_rect r, float n) {
                      SDL_max(0, r.h - n * 2)};
 }
 
-/* ponytail: square corners, `radius` is ignored. A rounded ring wants a
- * texture or SDL_RenderGeometry. */
 static inline void ui_stroke(ui_context *ctx, ui_rect r,
-                               const ui_rect *clip, const ui_color color,
-                               float width, float radius) {
-  (void)radius;
-  SDL_Renderer *ren = ctx->renderer;
+                             const ui_rect *clip, const ui_color color,
+                             float width, float radius) {
+  (void)ctx;
   if (clip != NULL)
-    SDL_RenderSetClipRect(ren, &(SDL_Rect){(int)clip->x, (int)clip->y,
-                                          (int)clip->w, (int)clip->h});
-  SDL_SetRenderDrawColor(ren, color[0], color[1], color[2], color[3]);
-  const SDL_FRect edges[4] = {
-      {r.x, r.y, r.w, width},
-      {r.x, r.y + r.h - width, r.w, width},
-      {r.x, r.y + width, width, r.h - width * 2},
-      {r.x + r.w - width, r.y + width, width, r.h - width * 2},
-  };
-  SDL_RenderFillRectsF(ren, edges, 4);
-  SDL_RenderSetClipRect(ren, NULL);
+    gfx_clip(clip->x, clip->y, clip->w, clip->h);
+  gfx_push((gfx_quad){
+      .x = r.x, .y = r.y, .w = r.w, .h = r.h,
+      .u1 = 1, .v1 = 1,
+      .color = color[0] | color[1] << 8 | color[2] << 16 | (uint32_t)color[3] << 24,
+      .tex = GFX_WHITE,
+      .radius = radius,
+      .border = width,
+  });
+  gfx_noclip();
 }

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=glmark2
+Comment=glmark2 on panfrost with Mesa's GL HUD; the score lands in /var/log
+Exec=env GALLIUM_HUD=fps,frametime glmark2-es2-wayland --fullscreen > /var/log/glmark2.log 2>&1
+Icon=glmark2
+Keywords=gpu;opengl;gles;
+Categories=Benchmark;

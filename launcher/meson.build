@@ -14,15 +14,28 @@ capture_protocol = [
     command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@']),
 ]
 
-executable('launcher', 'main.c', 'capture.c', 'nav.c', 'skyline.c', 'text.c',
-  capture_protocol,
+glslang = find_program('glslangValidator', native: true)
+shaders = []
+foreach s : [['quad.vert', 'quad_vert'], ['quad.frag', 'quad_frag']]
+  shaders += custom_target(s[1], input: s[0], output: s[1] + '.h',
+    command: [glslang, '-V', '--target-env', 'vulkan1.3', '--vn', s[1], '-o', '@OUTPUT@', '@INPUT@'])
+endforeach
+
+executable('launcher', 'main.c', 'apps.c', 'assets.c', 'capture.c', 'gfx.c',
+  'nav.c', 'romdb.c', 'skyline.c', 'text.c',
+  capture_protocol, shaders,
   dependencies: [
     dependency('sdl2'),
+    dependency('vulkan'),
     dependency('wayland-client'),
     dependency('alsa'),
     dependency('harfbuzz'),
     dependency('fontconfig'),
     dependency('freetype2'),
+    dependency('libpng'),
+    dependency('libturbojpeg'),
+    dependency('libwebp'),
+    dependency('zlib'),
     meson.get_compiler('c').find_library('m'),
   ],
   install: true)

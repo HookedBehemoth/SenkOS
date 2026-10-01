@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Build a launcher game pack: one file per system with every No-Intro ROM's
+title and metadata (libretro-database) and its box art (libretro-thumbnails),
+looked up by the ROM's CRC32. The launcher mmaps it; see launcher/romdb.h for
+the layout.
+
+Box art is matched by name the way RetroArch does it, deduplicated by a
+perceptual hash (keeping the best source of each group), shrunk to fit
+128x128, flattened onto the launcher's tile colour and stored as WebP.
+
+usage: tools/boxart-pack "Nintendo - Game Boy Advance" BOXARTS_DIR OUT.pack
+  BOXARTS_DIR: Named_Boxarts of the system's libretro-thumbnails repo
+Needs Python 3 with Pillow (WebP) and numpy. The metadata is downloaded.
+"""
+import io
+import os
+import re
+import struct
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+from multiprocessing import Pool
+
+import numpy as np
+from PIL import Image, PngImagePlugin
+
+PngImagePlugin.MAX_TEXT_CHUNK = 64 << 20
+DB = 'https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/'
+FIELDS = ['genre', 'developer', 'publisher', 'franchise', 'releaseyear', 'maxusers']
+TILE = (0x1c, 0x1d, 0x23)  # TILE in launcher/main.c
+SIZE = 128
+QUALITY = 35  # WebP; no visible loss at tile size, half of q80
+# pHash bits apart that still count as the same box: 4 already merges
+# different localized titles, 2 only re-releases of one box
+SAME_HASH, SAME_COLOUR = 2, 10
+
+
+# launcher/romdb.h: header, then the sorted CRCs (the only thing searched),
+# records in the same order, image offsets, lists, strings, WebP
+HEADER = struct.Struct('<8s14I')
+RECORD = struct.Struct('<IIIIHHHHHHHBB')
+# No-Intro's region and language names, as bits
+REGIONS = ['World', 'USA', 'Europe', 'Japan', 'Asia', 'Australia', 'Brazil', 'Canada', 'China',
+           'Denmark', 'Finland', 'France', 'Germany', 'Greece', 'Hong Kong', 'India', 'Italy',
+           'Korea', 'Mexico', 'Netherlands', 'Norway', 'Poland', 'Portugal', 'Russia',
+           'Scandinavia', 'Spain', 'Sweden', 'Taiwan', 'UK', 'Unknown']
+LANGUAGES = ['En', 'Ja', 'Fr', 'De', 'Es', 'It', 'Nl', 'Pt', 'Sv', 'No', 'Da', 'Fi', 'Zh', 'Ko',
+             'Pl', 'Ru', 'Ro', 'Hu', 'Cs', 'El', 'Tr', 'Ar', 'Ca', 'He', 'Sk', 'Hr', 'Uk']
+# Tags kept as bits; a trailing number ("Beta 2") is dropped
+FLAGS = ['Beta', 'Proto', 'Demo', 'Sample', 'Kiosk', 'Promo', 'Unl', 'Pirate', 'Aftermarket',
+         'Homebrew', 'Hack', 'Alt', 'Debug', 'Virtual Console', 'Switch Online', 'Evercade']
+ARTICLES = ('The', 'A', 'An', 'Der', 'Die', 'Das', 'Le', 'La', 'Les', 'Il', 'El', 'Los', 'Las')
+
+
+def parse(name):
+    """No-Intro name -> display title, region/language/flag bits, revision and
+    whatever else is left as text"""
+    out = {'regions': 0, 'languages': 0, 'flags': 0, 'revision': 0, 'extra': ''}
+    groups = list(re.finditer(r' \(([^)]*)\)| \[([^]]*)\]', name))
+    # Groups before the region one belong to the title: "(Nicktoons)"
+    region_at = next((k for k, g in enumerate(groups) if g[1] and all(r in REGIONS for r in g[1].split(', '))), None)
+    title_end = groups[region_at].start() if region_at is not None else len(name)
+    title = name[:title_end]
+    extra = []
+    for k, g in enumerate(groups):
+        if g.start() < title_end:
+            continue
+        text = g[1] or g[2]
+        if k == region_at:
+            out['regions'] = sum(1 << REGIONS.index(r) for r in text.split(', '))
+        elif g[1] and all(l in LANGUAGES for l in text.split(',')):
+            out['languages'] = sum(1 << LANGUAGES.index(l) for l in text.split(','))
+        elif re.fullmatch(r'Rev (\d+|[A-Z])', text):
+            r = text[4:]
+            out['revision'] = int(r) if r.isdigit() else ord(r) - ord('A') + 1
+        elif re.sub(r' \d+$', '', text) in FLAGS:
+            out['flags'] |= 1 << FLAGS.index(re.sub(r' \d+$', '', text))
+        else:
+            extra.append(text)
+    # "Legend of Zelda, The - The Minish Cap" -> "The Legend of Zelda - The Minish Cap"
+    parts = []
+    for part in title.split(' - '):
+        m = re.fullmatch(r'(.*), (' + '|'.join(ARTICLES) + ')', part)
+        parts.append(f'{m[2]} {m[1]}' if m else part)
+    out['title'] = ' - '.join(parts)
+    out['extra'] = ', '.join(extra)
+    return out
+
+
+def fetch(kind, system):
+    url = DB + kind + '/' + urllib.parse.quote(system) + '.dat'
+    try:
+        return urllib.request.urlopen(url).read().decode('utf-8', 'replace')
+    except urllib.error.HTTPError:
+        return ''
+
+
+# clrmamepro DATs: game ( key "value" ... rom ( ... crc XXXXXXXX ... ) )
+GAME = re.compile(r'^game \($(.*?)^\)$', re.S | re.M)
+VALUE = re.compile(r'^\t(\w+) (?:"([^"]*)"|(\S+))$', re.M)
+CRC = re.compile(r'\bcrc ([0-9A-Fa-f]{8})')
+
+
+def games(text):
+    for block in GAME.findall(text):
+        values = {k: a or b for k, a, b in VALUE.findall(block)}
+        yield values, [int(c, 16) for c in CRC.findall(block)]
+
+
+def load(path):
+    try:
+        im = Image.open(path)
+        im.load()
+    except Exception:
+        # Some carry a corrupt iCCP chunk that Pillow rejects; ImageMagick only warns
+        out = subprocess.run(['magick', path, 'png:-'], capture_output=True, check=True)
+        im = Image.open(io.BytesIO(out.stdout))
+        im.load()
+    source = (im.size[0] * im.size[1], os.path.getsize(path))
+    im = im.convert('RGBA')
+    im.thumbnail((SIZE, SIZE), Image.LANCZOS, reducing_gap=3.0)
+    im = Image.alpha_composite(Image.new('RGBA', im.size, TILE + (255,)), im).convert('RGB')
+    return im, source
+
+
+N = 32
+_k = np.arange(N)
+DCT = np.cos(np.pi * (2 * _k[None, :] + 1) * _k[:, None] / (2 * N))
+
+
+def fingerprint(path):
+    im, source = load(path)
+    g = np.asarray(im.convert('L').resize((N, N), Image.LANCZOS), dtype=np.float64)
+    c = (DCT @ g @ DCT.T)[:8, :8].flatten()[1:]
+    # Grey hashes can't tell a red box from a blue one: an 8x8 colour thumbnail too
+    colour = np.asarray(im.resize((8, 8), Image.BOX), dtype=np.int16).flatten()
+    return c > np.median(c), colour, im.size[0] / im.size[1], source
+
+
+def encode(path):
+    b = io.BytesIO()
+    load(path)[0].save(b, 'WEBP', quality=QUALITY, method=6)
+    return b.getvalue()
+
+
+def groups(prints):
+    """Union of every pair close in hash, colour and aspect"""
+    n = len(prints)
+    bits = np.array([p[0] for p in prints])
+    colour = np.array([p[1] for p in prints])
+    aspect = np.array([p[2] for p in prints])
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i in range(n):
+        near = np.nonzero((bits[i + 1:] != bits[i]).sum(1) <= SAME_HASH)[0] + i + 1
+        for j in near:
+            if abs(aspect[i] - aspect[j]) < 0.05 and np.abs(colour[i] - colour[j]).mean() <= SAME_COLOUR:
+                parent[find(j)] = find(i)
+    return [find(i) for i in range(n)]
+
+
+def sanitize(name):
+    # libretro-thumbnails file names
+    return re.sub(r'[&*/:`<>?\\|"]', '_', name)
+
+
+def main():
+    if len(sys.argv) != 4:
+        sys.exit(__doc__)
+    system, boxarts, out = sys.argv[1:]
+
+    entries = {}  # crc -> metadata
+    for values, crcs in games(fetch('no-intro', system)):
+        for crc in crcs:
+            entries[crc] = {'title': values.get('name', '')}
+    for field in FIELDS:
+        for values, crcs in games(fetch(field, system)):
+            value = values.get('users' if field == 'maxusers' else field)
+            for crc in crcs:
+                if crc in entries and value:
+                    entries[crc][field] = value
+    if not entries:
+        sys.exit(f'no No-Intro DAT for "{system}"')
+
+    # Box art by exact name, else by the same title without the tags: a
+    # revision or re-release that has none of its own
+    files = {f[:-4]: os.path.join(boxarts, f) for f in os.listdir(boxarts) if f.endswith('.png')}
+    by_title = {}
+    for name in sorted(files):
+        by_title.setdefault(name.split(' (')[0], []).append(name)
+
+    def tags(name):
+        return set(re.findall(r'\(([^)]*)\)', name))
+    for e in entries.values():
+        name = sanitize(e['title'])
+        if name not in files:
+            # The one sharing the most tags: same region before any other
+            near = by_title.get(name.split(' (')[0], [])
+            name = max(near, key=lambda n: len(tags(n) & tags(name)), default=None)
+        if name is not None:
+            e['art'] = files[name]
+    paths = sorted({e['art'] for e in entries.values() if 'art' in e})
+    print(f'{system}: {len(entries)} ROMs, {len(paths)} box arts', file=sys.stderr)
+
+    with Pool() as pool:
+        prints = pool.map(fingerprint, paths, chunksize=8)
+        roots = groups(prints)
+        # Each group's best source: most pixels, then the biggest file
+        best = {}
+        for i, r in enumerate(roots):
+            if r not in best or prints[i][3] > prints[best[r]][3]:
+                best[r] = i
+        unique = sorted(set(best.values()))
+        blobs = pool.map(encode, [paths[i] for i in unique], chunksize=8)
+    image_of = {paths[i]: unique.index(best[roots[i]]) for i in range(len(paths))}
+    print(f'{len(unique)} unique, {sum(map(len, blobs)) >> 10} KiB of WebP', file=sys.stderr)
+
+    strings = bytearray(b'\0')
+    interned = {'': 0}
+
+    def string(text):
+        if text not in interned:
+            interned[text] = len(strings)
+            strings.extend(text.encode() + b'\0')
+        return interned[text]
+
+    def index_of(values):
+        """A list's position of each value; 0 is "none" """
+        ordered = [''] + sorted({v for v in values if v})
+        return ordered, {v: k for k, v in enumerate(ordered)}
+
+    parsed = {crc: parse(e['title']) for crc, e in entries.items()}
+    lists = [REGIONS, LANGUAGES, FLAGS]
+    lookups = []
+    for field in ('genre', 'developer', 'publisher', 'franchise'):
+        ordered, lookup = index_of(e.get(field, '') for e in entries.values())
+        lists.append(ordered)
+        lookups.append(lookup)
+    if max(map(len, lists)) > 0xffff or len(blobs) >= 0xffff:
+        sys.exit('too many values for 16-bit indexes')
+
+    crcs = sorted(entries)
+    records = bytearray()
+    for crc in crcs:
+        e, t = entries[crc], parsed[crc]
+        year = e.get('releaseyear', '')
+        records += RECORD.pack(
+            string(t['title']), string(t['extra']), t['regions'], t['languages'], t['flags'],
+            *(lookups[k][e.get(f, '')] for k, f in enumerate(('genre', 'developer', 'publisher', 'franchise'))),
+            image_of.get(e.get('art'), 0xffff), int(year) if year.isdigit() else 0,
+            min(int(e.get('maxusers', 0)), 255), t['revision'])
+    list_bytes = bytearray()
+    list_offsets = []
+    for values in lists:
+        list_offsets.append(len(list_bytes))
+        list_bytes += struct.pack(f'<{len(values) + 1}I', len(values), *map(string, values))
+    blob_offsets = [0]
+    for b in blobs:
+        blob_offsets.append(blob_offsets[-1] + len(b))
+
+    # Sections in header order, each 4-aligned by construction
+    sections = [struct.pack(f'<{len(crcs)}I', *crcs), records,
+                struct.pack(f'<{len(blob_offsets)}I', *blob_offsets), list_bytes]
+    offsets, at = [], HEADER.size
+    for sec in sections:
+        offsets.append(at)
+        at += len(sec)
+    strings_off = at
+    strings += b'\0' * (-len(strings) % 4)
+    blob_off = strings_off + len(strings)
+    with open(out, 'wb') as f:
+        f.write(HEADER.pack(b'GAMEPAK1', len(crcs), len(blobs), *offsets[:3], strings_off, blob_off,
+                            *(offsets[3] + o for o in list_offsets)))
+        for sec in sections:
+            f.write(sec)
+        f.write(strings)
+        for b in blobs:
+            f.write(b)
+    print(f'{out}: {os.path.getsize(out) >> 10} KiB ({(blob_off) >> 10} KiB index)', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()

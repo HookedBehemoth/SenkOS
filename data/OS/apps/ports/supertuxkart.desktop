@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SuperTuxKart
+Path=/data/supertuxkart
+Exec=./supertuxkart
+Icon=supertuxkart
+Keywords=racing;
+Categories=Game;

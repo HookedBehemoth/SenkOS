@@ -5,3 +5,4 @@ raw/
 bitbake/
 meta-arm/
 openembedded-core/
+testdata/

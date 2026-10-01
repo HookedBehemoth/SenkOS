@@ -10,6 +10,7 @@
 #include <hb-ft.h>
 #include <hb.h>
 
+#include "gfx.h"
 #include "skyline.h"
 
 typedef struct {
@@ -27,17 +28,15 @@ typedef struct {
   size_t count, capacity;
 } sized_font;
 
-static SDL_Renderer *renderer;
 static FT_Library library;
 static char *font_file;
 static int font_index;
 static skyline atlas;
-static SDL_Texture *texture;
+static gfx_image texture;
 static sized_font sizes[16];
 static size_t size_count;
 
-bool text_init(SDL_Renderer *r, const char *pattern) {
-  renderer = r;
+bool text_init(const char *pattern) {
   if (!FcInit())
     return false;
   FcPattern *wanted = FcNameParse((const FcChar8 *)pattern);
@@ -101,18 +100,15 @@ static const glyph *glyph_for(sized_font *f, unsigned gid) {
     while (!skyline_alloc(&atlas, bitmap->width, bitmap->rows, &g.region)) {
       if (atlas.size >= 4096 || !skyline_enlarge(&atlas, atlas.size * 2))
         return NULL;
-      SDL_DestroyTexture(texture);
-      texture = NULL;
     }
-    /* White, with the coverage as alpha: the colour comes from the colour mod. */
+    /* Coverage, premultiplied white: the colour comes from the quad */
     uint8_t *rgba = malloc((size_t)bitmap->width * bitmap->rows * 4);
     if (rgba == NULL)
       return NULL;
     for (unsigned y = 0; y < bitmap->rows; y++)
       for (unsigned x = 0; x < bitmap->width; x++) {
         uint8_t *p = rgba + ((size_t)y * bitmap->width + x) * 4;
-        p[0] = p[1] = p[2] = 255;
-        p[3] = bitmap->buffer[y * bitmap->pitch + x];
+        p[0] = p[1] = p[2] = p[3] = bitmap->buffer[y * bitmap->pitch + x];
       }
     skyline_blit(&atlas, g.region, rgba, (size_t)bitmap->width * 4);
     free(rgba);
@@ -130,25 +126,19 @@ static const glyph *glyph_for(sized_font *f, unsigned gid) {
   return &f->glyphs[f->count++];
 }
 
+/* The whole atlas, as a new image: the old one may be in a frame still in
+ * flight. ponytail: copies all of it for a few new glyphs; dirty rows into a
+ * persistent image if text changes every frame. */
 static bool upload(void) {
-  if (texture == NULL) {
-    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
-                                SDL_TEXTUREACCESS_STATIC, atlas.size,
-                                atlas.size);
-    if (texture == NULL)
-      return false;
-    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-    skyline_touch(&atlas, 0, atlas.size);
-  }
-  if (atlas.dirty) {
-    const SDL_Rect rows = {0, atlas.dirty_top, atlas.size,
-                           atlas.dirty_bottom - atlas.dirty_top};
-    SDL_UpdateTexture(texture, &rows,
-                      atlas.data + (size_t)atlas.dirty_top * atlas.size *
-                                       SKYLINE_BPP,
-                      atlas.size * SKYLINE_BPP);
-    atlas.dirty = false;
-  }
+  if (!atlas.dirty && texture.image != VK_NULL_HANDLE)
+    return true;
+  gfx_image fresh;
+  if (!gfx_upload(&fresh, atlas.data, atlas.size, atlas.size))
+    return false;
+  gfx_release(&texture);
+  texture = fresh;
+  gfx_bind(GFX_TEXT, &texture);
+  atlas.dirty = false;
   return true;
 }
 
@@ -179,21 +169,21 @@ static int run(int px, int x, int y, const char *utf8, const SDL_Color *color) {
       glyph_for(f, info[i].codepoint);
     if (!upload())
       color = NULL;
-    else {
-      SDL_SetTextureColorMod(texture, color->r, color->g, color->b);
-      SDL_SetTextureAlphaMod(texture, color->a);
-    }
   }
   const int baseline = y + (int)((f->face->size->metrics.ascender + 32) >> 6);
   hb_position_t pen = 0;
   for (unsigned i = 0; i < count; i++) {
     const glyph *g = color != NULL ? glyph_for(f, info[i].codepoint) : NULL;
     if (g != NULL && g->region.w > 0) {
-      const SDL_Rect src = {g->region.x, g->region.y, g->region.w, g->region.h};
-      const SDL_Rect dst = {
-          x + (int)((pen + pos[i].x_offset + 32) >> 6) + g->left,
-          baseline - (int)((pos[i].y_offset + 32) >> 6) - g->top, src.w, src.h};
-      SDL_RenderCopy(renderer, texture, &src, &dst);
+      const skyline_region r = g->region;
+      gfx_push((gfx_quad){
+          .x = x + (int)((pen + pos[i].x_offset + 32) >> 6) + g->left,
+          .y = baseline - (int)((pos[i].y_offset + 32) >> 6) - g->top,
+          .w = r.w, .h = r.h,
+          .u0 = r.x, .v0 = r.y, .u1 = r.x + r.w, .v1 = r.y + r.h,
+          .color = gfx_rgba(*color),
+          .tex = GFX_TEXT | GFX_TEXEL,
+      });
     }
     pen += pos[i].x_advance;
   }

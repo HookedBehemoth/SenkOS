@@ -1,8 +1,10 @@
 /*
- * Launcher: a status bar over pages of menus, immediate mode. Every frame is
- * drawn from the pages and the status; nav keeps focus and scrolling.
+ * Launcher: a status bar over pages, immediate mode. Every frame is drawn
+ * from the pages and the status; nav keeps focus and scrolling. A page is a
+ * category of apps (apps.h) as a grid of tiles, then the System menu. The
+ * page shown at exit (shutdown sends SIGTERM) is shown again at start.
  *
- * D-pad moves (left/right past the menu, or L1/R1, change page), A launches.
+ * D-pad moves (left/right past the edge, or L1/R1, change page), A launches.
  * What it launched owns the screen (Weston kiosk shell) until it exits; the
  * gamepad is read straight from evdev, so input is ignored meanwhile, but for
  * Menu: that stops the app and shows Resume/Quit over a blur of its last frame.
@@ -12,7 +14,8 @@
  * A second window, "osd", shows the volume whenever the mixer changes; the
  * patched kiosk shell keeps it on top of everything without focus.
  *
- * Apps page: built-ins, then every executable in /data/OS/apps.
+ * Drawn with Vulkan (gfx.h); icons come off the card in the background
+ * (assets.h). Runs on a desktop too: LAUNCHER_DATA=launcher/testdata.
  */
 #include <alsa/asoundlib.h>
 #include <dirent.h>
@@ -24,6 +27,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/pidfd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,36 +38,40 @@
 
 #include <SDL.h>
 
+#include "apps.h"
+#include "assets.h"
 #include "capture.h"
+#include "gfx.h"
 #include "nav.h"
+#include "romdb.h"
 #include "text.h"
 
-#define APPS_DIR "/data/OS/apps"
 /* weston.init's cgroup for apps: memory and CPU limits that keep the UI usable */
 #define APPS_CGROUP "/sys/fs/cgroup/session/apps/cgroup.procs"
 
 enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, MARGIN = 12 };
+enum { TILE_W = 144, TILE_H = 140, ICON = 88, TILE_TEXT = 16, LETTER = 40,
+       RADIUS = 12, GAP = 12 };
 enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
 
 static const SDL_Color BG = {0x14, 0x14, 0x18, 0xff};
 static const SDL_Color FG = {0xee, 0xee, 0xee, 0xff};
 static const SDL_Color DIM = {0x55, 0x55, 0x5c, 0xff};
 static const SDL_Color FOCUS = {0x2a, 0x2e, 0x3a, 0xff};
+static const SDL_Color TILE = {0x1c, 0x1d, 0x23, 0xff};
+static const SDL_Color EDGE = {0x33, 0x34, 0x3c, 0xff};
 /* Over the paused app's blurred frame */
 static const SDL_Color SCRIM = {0x14, 0x14, 0x18, 0xb0};
 static const SDL_Color LOW = {0xe0, 0x40, 0x40, 0xff};
 static const SDL_Color CHARGING = {0x50, 0xc8, 0x60, 0xff};
 static const ui_color RING = {0x6a, 0x9c, 0xff, 0xff};
 
+/* A row of a menu: sh -c */
 typedef struct {
   char label[64];
-  /* Absolute path: exec'd as is. Anything else: sh -c. */
   char command[256];
 } entry;
 
-static const entry builtin_apps[] = {
-    {"Vulkan cube", "vkcube --wsi wayland"},
-};
 /* Told apart by address */
 static const entry paused_entries[] = {{"Resume", ""}, {"Quit", ""}};
 static const size_t paused_count = SDL_arraysize(paused_entries);
@@ -73,19 +81,14 @@ static const entry system_entries[] = {
     {"Reboot", "echo reboot > /run/power"},
     {"Power off", "echo poweroff > /run/power"},
 };
-static entry apps[64];
-static size_t app_count;
 static const size_t system_count = SDL_arraysize(system_entries);
 
-static const struct {
-  const char *name;
-  const entry *entries;
-  const size_t *count;
-} pages[] = {
-    {"Apps", apps, &app_count},
-    {"System", system_entries, &system_count},
-};
-#define PAGES SDL_arraysize(pages)
+/* The categories, then System */
+#define PAGES (category_count + 1)
+
+static const char *page_name(size_t page) {
+  return page < category_count ? categories[page].name : "System";
+}
 
 typedef struct {
   int battery; /* percent, -1 without one */
@@ -94,41 +97,59 @@ typedef struct {
 } status;
 
 static SDL_Window *window, *osd;
-static SDL_Renderer *renderer, *osd_renderer;
+static gfx_target *screen, *osd_screen;
 static ui_context ctx;
 static pid_t child;
 static char child_label[64];
 /* SIGSTOPped under the pause screen; quitting: SIGTERM sent, not reaped yet */
 static bool paused, quitting;
-static SDL_Texture *backdrop;
+static gfx_image backdrop;
 static Uint64 osd_until;
-static Uint32 volume_event, exit_event;
+static Uint32 volume_event, exit_event, loaded_event, hashed_event;
 
-static int by_label(const void *a, const void *b) {
-  return strcmp(((const entry *)a)->label, ((const entry *)b)->label);
+static void rescan(size_t page) {
+  if (page < category_count)
+    apps_scan(&categories[page]);
 }
 
-static void scan_apps(void) {
-  app_count = 0;
-  for (size_t i = 0; i < SDL_arraysize(builtin_apps); i++)
-    apps[app_count++] = builtin_apps[i];
-  DIR *dir = opendir(APPS_DIR);
-  if (dir == NULL)
-    return;
-  const size_t first = app_count;
-  struct dirent *d;
-  while ((d = readdir(dir)) != NULL && app_count < SDL_arraysize(apps)) {
-    entry *e = &apps[app_count];
-    if (d->d_name[0] == '.' ||
-        snprintf(e->command, sizeof(e->command), APPS_DIR "/%s", d->d_name) >=
-            (int)sizeof(e->command) ||
-        access(e->command, X_OK) != 0)
-      continue;
-    snprintf(e->label, sizeof(e->label), "%.63s", d->d_name);
-    app_count++;
+/* $XDG_STATE_HOME/launcher: the page's name */
+static void state_path(char *out, size_t size) {
+  const char *state = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
+  if (state != NULL && state[0] == '/')
+    snprintf(out, size, "%s/launcher", state);
+  else
+    snprintf(out, size, "%s/.local/state/launcher", home ? home : "/tmp");
+}
+
+static size_t load_page(void) {
+  char path[512], name[64];
+  state_path(path, sizeof(path));
+  FILE *f = fopen(path, "r");
+  if (f == NULL)
+    return 0;
+  const bool read = fgets(name, sizeof(name), f) != NULL;
+  fclose(f);
+  name[strcspn(name, "\n")] = '\0';
+  for (size_t i = 0; read && i < PAGES; i++)
+    if (strcmp(name, page_name(i)) == 0)
+      return i;
+  return 0;
+}
+
+static void save_page(size_t page) {
+  char path[512];
+  state_path(path, sizeof(path));
+  /* mkdir -p of the two levels under $HOME that may be missing */
+  for (char *slash = strchr(path + 1, '/'); slash; slash = strchr(slash + 1, '/')) {
+    *slash = '\0';
+    mkdir(path, 0755);
+    *slash = '/';
   }
-  closedir(dir);
-  qsort(apps + first, app_count - first, sizeof(*apps), by_label);
+  FILE *f = fopen(path, "w");
+  if (f == NULL)
+    return;
+  fprintf(f, "%s\n", page_name(page));
+  fclose(f);
 }
 
 /* Posts exit_event (code: the pid) once the app is gone: waiting on its pidfd
@@ -162,17 +183,18 @@ static void set_listening(bool on);
 
 extern char **environ;
 
-static void launch(const entry *e) {
-  const char *command = e->command;
+/* sh -c `command` with $1 = `arg`, in `dir` when there is one */
+static void launch(const char *label, const char *command, const char *arg,
+                   const char *dir) {
   /* Built before fork: the child of a threaded process should not malloc */
   size_t n = 0;
   while (environ[n] != NULL)
     n++;
   char **env = malloc((n + 2) * sizeof(*env));
-  char marker[sizeof(APP_ENV) + sizeof(e->label)];
+  char marker[sizeof(APP_ENV) + sizeof(child_label)];
   if (env == NULL)
     return;
-  snprintf(marker, sizeof(marker), APP_ENV "%s", e->label);
+  snprintf(marker, sizeof(marker), APP_ENV "%s", label);
   memcpy(env, environ, n * sizeof(*env));
   env[n] = marker;
   env[n + 1] = NULL;
@@ -185,16 +207,15 @@ static void launch(const entry *e) {
       (void)!write(cg, "0", 1);
       close(cg);
     }
-    if (command[0] == '/')
-      execle(command, command, (char *)NULL, env);
-    else
-      execle("/bin/sh", "sh", "-c", command, (char *)NULL, env);
+    if (dir[0] != '\0' && chdir(dir) != 0)
+      _exit(127);
+    execle("/bin/sh", "sh", "-c", command, "sh", arg, (char *)NULL, env);
     _exit(127);
   }
   free(env);
   if (pid > 0) {
     child = pid;
-    snprintf(child_label, sizeof(child_label), "%s", e->label);
+    snprintf(child_label, sizeof(child_label), "%s", label);
     set_listening(false);
     watch_child();
   }
@@ -307,9 +328,19 @@ static void grab(bool on) {
 /* setsid made the child a group leader: signals go to all it started. Stopped
  * first, so the frame blurred is the one it stays on. The pad is grabbed once
  * Menu is released (input). */
+static void drop_backdrop(void) {
+  gfx_bind(GFX_BACKDROP, NULL);
+  gfx_release(&backdrop);
+}
+
 static void pause_child(nav *ui) {
   kill(-child, SIGSTOP);
-  backdrop = capture_blurred(renderer);
+  drop_backdrop();
+  int w, h;
+  uint8_t *rgba = capture_blurred(&w, &h);
+  if (rgba != NULL && gfx_upload(&backdrop, rgba, w, h))
+    gfx_bind(GFX_BACKDROP, &backdrop);
+  free(rgba);
   paused = true;
   set_listening(true);
   nav_focus(ui, 0);
@@ -323,6 +354,7 @@ static void resume_child(void) {
   set_listening(false);
   grab(false);
   SDL_HideWindow(window);
+  drop_backdrop();
   kill(-child, SIGCONT);
 }
 
@@ -415,42 +447,44 @@ static void read_status(status *s) {
   }
 }
 
-static void fill(float x, float y, float w, float h, SDL_Color c) {
-  SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
-  SDL_RenderFillRectF(renderer, &(SDL_FRect){x, y, w, h});
+static void rounded(float x, float y, float w, float h, SDL_Color c,
+                    float radius, float border) {
+  gfx_push((gfx_quad){.x = x, .y = y, .w = w, .h = h, .u1 = 1, .v1 = 1,
+                      .color = gfx_rgba(c), .tex = GFX_WHITE,
+                      .radius = radius, .border = border});
 }
 
-/* Speaker, then the level as a bar. Its own renderer, so no text. Created on
- * first use: a second GL context at startup delays the first frame. */
+static void fill(float x, float y, float w, float h, SDL_Color c) {
+  rounded(x, y, w, h, c, 0, 0);
+}
+
+/* Speaker, then the level as a bar. Created on first use: a second
+ * swapchain at startup delays the first frame. */
 static void show_volume(int percent) {
   if (osd == NULL)
     osd = SDL_CreateWindow("osd", SDL_WINDOWPOS_UNDEFINED,
                            SDL_WINDOWPOS_UNDEFINED, OSD_W, OSD_H,
-                           SDL_WINDOW_HIDDEN);
-  if (osd != NULL && osd_renderer == NULL)
-    osd_renderer = SDL_CreateRenderer(osd, -1, SDL_RENDERER_ACCELERATED);
-  if (osd_renderer == NULL)
+                           SDL_WINDOW_HIDDEN | SDL_WINDOW_VULKAN);
+  if (osd != NULL && osd_screen == NULL)
+    osd_screen = gfx_target_create(osd, true);
+  if (osd_screen == NULL)
     return;
   SDL_ShowWindow(osd);
-  SDL_Renderer *r = osd_renderer;
-  /* Wayland wants premultiplied alpha */
-  SDL_SetRenderDrawColor(r, BG.r * SCRIM.a / 255, BG.g * SCRIM.a / 255,
-                         BG.b * SCRIM.a / 255, SCRIM.a);
-  SDL_RenderClear(r);
-  SDL_SetRenderDrawColor(r, FG.r, FG.g, FG.b, FG.a);
-  SDL_RenderFillRectF(r, &(SDL_FRect){MARGIN, OSD_H / 2 - 5, 6, 10});
+  int w, h;
+  if (!gfx_begin(osd_screen, &w, &h))
+    return;
+  fill(0, 0, w, h, (SDL_Color){BG.r, BG.g, BG.b, SCRIM.a});
+  fill(MARGIN, OSD_H / 2 - 5, 6, 10, FG);
+  /* The cone, a column a pixel */
   const float x0 = MARGIN + 6, x1 = x0 + 8, y = OSD_H / 2;
-  const SDL_Vertex cone[] = {
-      {{x0, y - 5}, FG, {0, 0}}, {{x1, y - 11}, FG, {0, 0}}, {{x1, y + 11}, FG, {0, 0}},
-      {{x0, y - 5}, FG, {0, 0}}, {{x1, y + 11}, FG, {0, 0}}, {{x0, y + 5}, FG, {0, 0}},
-  };
-  SDL_RenderGeometry(r, NULL, cone, SDL_arraysize(cone), NULL, 0);
+  for (float x = x0; x < x1; x++) {
+    const float half = 5 + (x - x0) * 6 / (x1 - x0);
+    fill(x, y - half, 1, half * 2, FG);
+  }
   const float bx = x1 + MARGIN, bw = OSD_W - bx - MARGIN * 1.5f;
-  SDL_SetRenderDrawColor(r, DIM.r, DIM.g, DIM.b, DIM.a);
-  SDL_RenderFillRectF(r, &(SDL_FRect){bx, y - 3, bw, 6});
-  SDL_SetRenderDrawColor(r, FG.r, FG.g, FG.b, FG.a);
-  SDL_RenderFillRectF(r, &(SDL_FRect){bx, y - 3, bw * percent / 100, 6});
-  SDL_RenderPresent(r);
+  rounded(bx, y - 3, bw, 6, DIM, 3, 0);
+  rounded(bx, y - 3, bw * percent / 100, 6, FG, 3, 0);
+  gfx_end(osd_screen);
   osd_until = SDL_GetTicks64() + OSD_MS;
 }
 
@@ -468,12 +502,11 @@ static void top_bar(int width, const char *page, const status *s) {
     const SDL_Color level = s->charging         ? CHARGING
                             : s->battery <= 15 ? LOW
                                                : FG;
-    fill(x -= 2, BAR / 2 - 3, 2, 6, FG);
+    rounded(x -= 2, BAR / 2 - 3, 2, 6, FG, 1, 0);
     x -= 24;
-    ui_stroke(&ctx, (ui_rect){x, BAR / 2 - 6, 24, 12}, NULL,
-              (ui_color){FG.r, FG.g, FG.b, FG.a}, 1, 0);
-    fill(x + 2, BAR / 2 - 4, 20 * SDL_clamp(s->battery, 0, 100) / 100.0f, 8,
-         level);
+    rounded(x, BAR / 2 - 6, 24, 12, FG, 3, 1);
+    rounded(x + 2, BAR / 2 - 4, 20 * SDL_clamp(s->battery, 0, 100) / 100.0f, 8,
+            level, 1.5f, 0);
     char percent[8];
     snprintf(percent, sizeof(percent), "%d%%", s->battery);
     x -= 6 + text_width(BAR_TEXT, percent);
@@ -482,7 +515,7 @@ static void top_bar(int width, const char *page, const status *s) {
   x -= 10 + 4 * 5;
   for (int i = 0; i < 4; i++) {
     const float h = 4 + 3 * i;
-    fill(x + i * 5, BAR / 2 + 7 - h, 3, h, i < s->wifi ? FG : DIM);
+    rounded(x + i * 5, BAR / 2 + 7 - h, 3, h, i < s->wifi ? FG : DIM, 1, 0);
   }
   fill(0, BAR, width, 1, DIM);
 }
@@ -499,44 +532,114 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
   const float offset =
       nav_scroll_begin(ui, nav_str("menu"), view, UI_VERTICAL,
                        count * ROW + MARGIN * 2, ROW, 0);
-  SDL_RenderSetClipRect(renderer, &(SDL_Rect){(int)view.x, (int)view.y,
-                                              (int)view.w, (int)view.h});
+  gfx_clip(view.x, view.y, view.w, view.h);
   for (size_t i = 0; i < count; i++) {
     const ui_rect r = {view.x + MARGIN, view.y + MARGIN + i * ROW - offset,
                        view.w - MARGIN * 2, ROW - 4};
     const unsigned flags = nav_item(ui, nav_int(i), r, view);
-    nav_ring(ui, r, 0);
+    nav_ring(ui, r, 8);
     if (flags & NAV_FOCUSED)
-      fill(r.x, r.y, r.w, r.h, FOCUS);
+      rounded(r.x, r.y, r.w, r.h, FOCUS, 6, 0);
     text_draw(ROW_TEXT, (int)r.x + MARGIN,
               (int)r.y + ((int)r.h - text_height(ROW_TEXT)) / 2,
               entries[i].label, FG);
     if (flags & NAV_ACTIVATED)
       chosen = &entries[i];
   }
-  SDL_RenderSetClipRect(renderer, NULL);
+  gfx_noclip();
+  nav_scroll_end(ui);
+  return chosen;
+}
+
+/* `utf8` cut to fit `max` pixels, with an ellipsis */
+static const char *fit(int px, const char *utf8, float max) {
+  static char out[80];
+  size_t n = snprintf(out, sizeof(out) - 4, "%s", utf8);
+  n = SDL_min(n, sizeof(out) - 5);
+  while (n > 0 && text_width(px, out) > max) {
+    do
+      n--;
+    while (n > 0 && (out[n] & 0xc0) == 0x80);
+    memcpy(out + n, "\u2026", 4);
+  }
+  return out;
+}
+
+static void tile(const app *a, ui_rect r, unsigned flags) {
+  rounded(r.x, r.y, r.w, r.h, flags & NAV_FOCUSED ? FOCUS : TILE, RADIUS, 0);
+  rounded(r.x, r.y, r.w, r.h, EDGE, RADIUS, 1);
+  const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 12;
+  const asset icon = assets_get(a->icon);
+  if (icon.slot == GFX_PLACEHOLDER) {
+    /* Until it loads, or without one: the initial */
+    rounded(ix, iy, ICON, ICON, EDGE, RADIUS - 2, 0);
+    const char initial[2] = {a->name[0], '\0'};
+    text_draw(LETTER, (int)(ix + (ICON - text_width(LETTER, initial)) / 2),
+              (int)(iy + (ICON - text_height(LETTER)) / 2), initial, DIM);
+  } else {
+    /* Fit, aspect kept */
+    const float scale = SDL_min((float)ICON / icon.w, (float)ICON / icon.h);
+    const float w = icon.w * scale, h = icon.h * scale;
+    gfx_push((gfx_quad){.x = ix + (ICON - w) / 2, .y = iy + (ICON - h) / 2,
+                        .w = w, .h = h, .u1 = 1, .v1 = 1,
+                        .color = 0xffffffff, .tex = icon.slot,
+                        .radius = RADIUS - 2});
+  }
+  const char *name = fit(TILE_TEXT, a->name, r.w - MARGIN);
+  text_draw(TILE_TEXT, (int)(r.x + (r.w - text_width(TILE_TEXT, name)) / 2),
+            (int)(iy + ICON + (r.y + r.h - iy - ICON - text_height(TILE_TEXT)) / 2),
+            name, FG);
+}
+
+/* A grid, scrolled by rows. Returns the app activated this frame, if any. */
+static const app *tiles(nav *ui, const category *c, ui_rect view) {
+  if (c->count == 0) {
+    text_draw(ROW_TEXT, view.x + MARGIN * 2, view.y + MARGIN, "Nothing here",
+              DIM);
+    return NULL;
+  }
+  const int cols = SDL_max(1, (int)((view.w - GAP) / (TILE_W + GAP)));
+  const size_t rows = (c->count + cols - 1) / cols;
+  const float left = view.x + (view.w - cols * (TILE_W + GAP) + GAP) / 2;
+  const float offset =
+      nav_scroll_begin(ui, nav_str("tiles"), view, UI_VERTICAL,
+                       rows * (TILE_H + GAP) + GAP, GAP, 0);
+  const app *chosen = NULL;
+  gfx_clip(view.x, view.y, view.w, view.h);
+  for (size_t i = 0; i < c->count; i++) {
+    const ui_rect r = {left + (i % cols) * (TILE_W + GAP),
+                       view.y + GAP + (i / cols) * (TILE_H + GAP) - offset,
+                       TILE_W, TILE_H};
+    /* Every tile is there to move to; only those in view are drawn, and only
+     * their icons are asked for */
+    const unsigned flags = nav_item(ui, nav_int(i), r, view);
+    nav_ring(ui, r, RADIUS + 2);
+    if (r.y < view.y + view.h && r.y + r.h > view.y)
+      tile(&c->apps[i], r, flags);
+    if (flags & NAV_ACTIVATED)
+      chosen = &c->apps[i];
+  }
+  gfx_noclip();
   nav_scroll_end(ui);
   return chosen;
 }
 
 static void turn_page(size_t *page, int by) {
   *page = (*page + PAGES + by) % PAGES;
-  if (*page == 0)
-    scan_apps();
+  rescan(*page);
 }
 
 /* Back to the menu. Reaped here if it is ours; an adopted one is init's. */
-static void child_exited(void) {
+static void child_exited(size_t page) {
   waitpid(child, NULL, WNOHANG);
   if (paused)
     grab(false);
   child = 0;
   paused = quitting = false;
   set_listening(true);
-  SDL_DestroyTexture(backdrop);
-  backdrop = NULL;
+  drop_backdrop();
   SDL_ShowWindow(window);
-  scan_apps();
+  rescan(page);
 }
 
 static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
@@ -545,13 +648,19 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
     show_volume(ev->user.code);
     return true;
   }
+  /* A ROM's CRC: its title and box art may be known now */
+  if (ev->type == hashed_event) {
+    rescan(*page);
+    return true;
+  }
   if (ev->type == exit_event) {
     if (ev->user.code == child)
-      child_exited();
+      child_exited(*page);
     return true;
   }
   switch (ev->type) {
   case SDL_QUIT:
+    save_page(*page);
     return false;
   /* Menu's release, which reaches the app queue first: it sees the whole
    * press, and nothing after it until it is resumed. */
@@ -616,8 +725,6 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
 }
 
 int main(void) {
-  /* An alpha channel for the OSD, and no opaque region */
-  SDL_SetHint(SDL_HINT_VIDEO_EGL_ALLOW_TRANSPARENCY, "1");
   /* The kiosk shell knows the OSD by app_id and title; apps get their own */
   SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "launcher", 1);
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -627,21 +734,19 @@ int main(void) {
   unsetenv("SDL_VIDEO_WAYLAND_WMCLASS");
   window = SDL_CreateWindow("Launcher", SDL_WINDOWPOS_UNDEFINED,
                             SDL_WINDOWPOS_UNDEFINED, 640, 480,
-                            SDL_WINDOW_RESIZABLE);
-  /* No vsync: Mesa waits for the last frame's callback before the next
-   * swap, and a window hidden right after a frame (Resume) may never get it.
-   * Weston composites on vblank anyway; the loop paces animation. */
-  renderer = window ? SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED)
-                    : NULL;
-  if (renderer == NULL || !text_init(renderer, "sans-serif")) {
+                            SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
+  if (window == NULL || !gfx_init(window) ||
+      (screen = gfx_target_create(window, false)) == NULL ||
+      !text_init("sans-serif")) {
     SDL_Log("launcher: %s", SDL_GetError());
     return 1;
   }
-  ctx.renderer = renderer;
-  /* The window has alpha now: blend, so it stays opaque under the scrim */
-  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-  volume_event = SDL_RegisterEvents(2);
+  volume_event = SDL_RegisterEvents(4);
   exit_event = volume_event + 1;
+  loaded_event = volume_event + 2;
+  hashed_event = volume_event + 3;
+  assets_init(loaded_event);
+  romdb_init(hashed_event);
   set_listening(true);
   open_pad();
   /* Mapping put this window over the adopted app: give it back the screen */
@@ -653,8 +758,8 @@ int main(void) {
   }
   SDL_DetachThread(SDL_CreateThread(volume_thread, "volume", NULL));
   static nav ui = {.animate = true, .duration = 150};
-  size_t page = 0;
-  scan_apps();
+  size_t page = load_page();
+  rescan(page);
   status st;
   read_status(&st);
   Uint64 status_at = SDL_GetTicks64();
@@ -692,36 +797,51 @@ int main(void) {
       status_at = now;
     }
 
+    assets_frame();
     int w, h;
-    SDL_GetRendererOutputSize(renderer, &w, &h);
-    SDL_SetRenderDrawColor(renderer, BG.r, BG.g, BG.b, BG.a);
-    SDL_RenderClear(renderer);
-    if (paused && backdrop != NULL) {
-      SDL_RenderCopy(renderer, backdrop, NULL, NULL);
+    if (!gfx_begin(screen, &w, &h))
+      continue;
+    fill(0, 0, w, h, BG);
+    if (paused && backdrop.image != VK_NULL_HANDLE) {
+      gfx_push((gfx_quad){.w = w, .h = h, .u1 = 1, .v1 = 1,
+                          .color = 0xffffffff, .tex = GFX_BACKDROP});
       fill(0, 0, w, h, SCRIM);
     }
     nav_begin(&ui, &ctx, now);
     const entry *chosen = NULL;
+    const app *picked = NULL;
+    const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
     if (paused) {
       top_bar(w, child_label, &st);
       NAV_SCOPE(&ui, nav_str("paused")) {
-        chosen = menu(&ui, paused_entries, paused_count,
-                      (ui_rect){0, BAR + 1, w, h - BAR - 1});
+        chosen = menu(&ui, paused_entries, paused_count, view);
       }
     } else {
-      top_bar(w, pages[page].name, &st);
+      top_bar(w, page_name(page), &st);
       NAV_SCOPE(&ui, nav_int(page)) {
-        chosen = menu(&ui, pages[page].entries, *pages[page].count,
-                      (ui_rect){0, BAR + 1, w, h - BAR - 1});
+        if (page < category_count)
+          picked = tiles(&ui, &categories[page], view);
+        else
+          chosen = menu(&ui, system_entries, system_count, view);
       }
     }
     animating = nav_end(&ui, RING, 2);
-    SDL_RenderPresent(renderer);
+    gfx_end(screen);
+    static bool presented;
+    if (!presented) {
+      /* boot-time measurements: seconds since kernel start */
+      struct timespec ts;
+      clock_gettime(CLOCK_BOOTTIME, &ts);
+      SDL_Log("first frame at %.3f s", ts.tv_sec + ts.tv_nsec / 1e9);
+      presented = true;
+    }
     if (chosen == &paused_entries[0])
       resume_child();
     else if (chosen == &paused_entries[1])
       quit_child();
     else if (chosen != NULL)
-      launch(chosen);
+      launch(chosen->label, chosen->command, "", "");
+    else if (picked != NULL)
+      launch(picked->name, picked->exec, picked->arg, picked->dir);
   }
 }

@@ -8,11 +8,14 @@
  */
 #include "capture.h"
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <SDL.h>
 #include <wayland-client.h>
 
 #include "weston-output-capture-client-protocol.h"
@@ -22,7 +25,7 @@ typedef struct {
   struct wl_shm *shm;
   struct weston_capture_v1 *capture;
   uint32_t shm_format;
-  Uint32 sdl_format;
+  bool bgra; /* else RGBA */
   int width, height;
   int done; /* 1 complete, -1 failed */
 } capture;
@@ -53,21 +56,20 @@ static void format(void *data, struct weston_capture_source_v1 *source,
                    uint32_t drm_format) {
   (void)source;
   capture *c = data;
-  if (c->sdl_format != 0)
+  if (c->shm_format != 0)
     return;
   switch (drm_format) {
   case 0x34325241: /* AR24 */
     c->shm_format = WL_SHM_FORMAT_ARGB8888;
-    c->sdl_format = SDL_PIXELFORMAT_ARGB8888;
+    c->bgra = true;
     break;
   case 0x34325258: /* XR24 */
     c->shm_format = WL_SHM_FORMAT_XRGB8888;
-    c->sdl_format = SDL_PIXELFORMAT_ARGB8888;
+    c->bgra = true;
     break;
   case WL_SHM_FORMAT_ABGR8888:
   case WL_SHM_FORMAT_XBGR8888:
     c->shm_format = drm_format;
-    c->sdl_format = SDL_PIXELFORMAT_ABGR8888;
     break;
   }
 }
@@ -128,12 +130,10 @@ static void box(const uint8_t *src, uint8_t *dst, int n, int lines,
 }
 
 /* Three box blurs each way, in place, which is close to a gaussian; linear
- * filtering scales it back up. */
-static SDL_Texture *blur(SDL_Renderer *renderer, uint8_t *a, int w, int h,
-                         Uint32 sdl_format) {
+ * filtering scales it back up. Returns a copy in RGBA. */
+static uint8_t *blur(uint8_t *a, int w, int h, bool bgra) {
   const size_t stride = (size_t)w * 4;
   uint8_t *b = malloc(stride * h);
-  SDL_Texture *texture = NULL;
   if (b == NULL)
     return NULL;
   /* Byte 3 is alpha in both formats: opaque, whatever the read back held */
@@ -143,18 +143,17 @@ static SDL_Texture *blur(SDL_Renderer *renderer, uint8_t *a, int w, int h,
     box(a, b, w, h, 4, stride);
     box(b, a, h, w, stride, 4);
   }
-  texture = SDL_CreateTexture(renderer, sdl_format, SDL_TEXTUREACCESS_STATIC,
-                              w, h);
-  if (texture != NULL) {
-    SDL_UpdateTexture(texture, NULL, a, (int)stride);
-    SDL_SetTextureScaleMode(texture, SDL_ScaleModeLinear);
-    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
-  }
-  free(b);
-  return texture;
+  memcpy(b, a, stride * h);
+  if (bgra)
+    for (size_t i = 0; i < stride * h; i += 4) {
+      const uint8_t t = b[i];
+      b[i] = b[i + 2];
+      b[i + 2] = t;
+    }
+  return b;
 }
 
-SDL_Texture *capture_blurred(SDL_Renderer *renderer) {
+uint8_t *capture_blurred(int *w, int *h) {
   struct wl_display *display = wl_display_connect(NULL);
   if (display == NULL)
     return NULL;
@@ -167,14 +166,14 @@ SDL_Texture *capture_blurred(SDL_Renderer *renderer) {
   struct wl_buffer *buffer = NULL;
   void *pixels = MAP_FAILED;
   size_t bytes = 0;
-  SDL_Texture *texture = NULL;
+  uint8_t *rgba = NULL;
   if (c.output == NULL || c.shm == NULL || c.capture == NULL)
     goto out;
   source = weston_capture_v1_create(c.capture, c.output,
                                     WESTON_CAPTURE_V1_SOURCE_THUMBNAIL);
   weston_capture_source_v1_add_listener(source, &source_listener, &c);
   wl_display_roundtrip(display);
-  if (c.sdl_format == 0 || c.width <= 0 || c.height <= 0)
+  if (c.shm_format == 0 || c.width <= 0 || c.height <= 0)
     goto out;
 
   const int stride = c.width * 4;
@@ -197,8 +196,10 @@ SDL_Texture *capture_blurred(SDL_Renderer *renderer) {
   weston_capture_source_v1_capture(source, buffer);
   while (c.done == 0 && wl_display_dispatch(display) >= 0)
     ;
-  if (c.done > 0)
-    texture = blur(renderer, pixels, c.width, c.height, c.sdl_format);
+  if (c.done > 0 && (rgba = blur(pixels, c.width, c.height, c.bgra)) != NULL) {
+    *w = c.width;
+    *h = c.height;
+  }
 
 out:
   if (buffer != NULL)
@@ -215,5 +216,5 @@ out:
     wl_output_destroy(c.output);
   wl_registry_destroy(registry);
   wl_display_disconnect(display);
-  return texture;
+  return rgba;
 }

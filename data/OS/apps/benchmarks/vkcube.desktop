@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Vulkan cube
+Exec=vkcube --wsi wayland
+Icon=vkcube
+Keywords=gpu;vulkan;demo;
+Categories=Benchmark;
