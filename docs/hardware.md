@@ -5,7 +5,7 @@
 | SoC | Allwinner **H700** (H616 family), 4x Cortex-A53 with the ARMv8 crypto extensions | DT `sun50i-h700-anbernic-rg35xx-sp` |
 | RAM | 1 GB **LPDDR4** @ 672 MHz (DDR3/LPDDR3 units exist and need a different SPL config) | |
 | GPU | Mali-G31 MP2 (Bifrost) | panfrost (GLES 3.1, GL 3.1), PanVK (Vulkan, non-conformant on G31) |
-| Video decode | Cedar VE: H.264, H.265, VP8, VP9 (8-bit) | Cedrus, V4L2 stateless |
+| Video decode | Cedar VE: H.264, H.265, VP8, VP9, MPEG-2; 10-bit H.265 and VP9 as P010 | Cedrus, V4L2 stateless |
 | PMIC | X-Powers **AXP717**, i2c @0x34 | `axp20x-pek` power key, `axp20x-usb`, battery |
 | RTC | NXP **PCF8563**, i2c @0x51 | `rtc0` |
 | Display | 3.5" 640x480 IPS, parallel RGB, initialised over SPI. Two panel revisions ("v2 panel" on newer units) | `panel-mipi-dpi-spi`, init sequence built into the kernel; one dtb per panel |

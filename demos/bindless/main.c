@@ -345,14 +345,17 @@ int main(void)
    VkQueue queue;
    vkGetDeviceQueue(dev, qf, 0, &queue);
 
-   /* Swapchain: UNORM if offered (tints are plain RGBA8) */
+   /* Swapchain: UNORM if offered (tints are plain RGBA8), BGRA first: with RGBA (DRM ABGR8888)
+    * the H700's display planes swap red and blue when Weston scans the buffer out directly */
    uint32_t n_fmt = 32;
    VkSurfaceFormatKHR fmts[32];
    CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(pdev, surface, &n_fmt, fmts));
    sc_format = fmts[0];
    for (uint32_t i = 0; i < n_fmt; i++)
-      if ((fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM || fmts[i].format == VK_FORMAT_R8G8B8A8_UNORM) &&
-          fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+      if (fmts[i].format == VK_FORMAT_R8G8B8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+         sc_format = fmts[i];
+   for (uint32_t i = 0; i < n_fmt; i++)
+      if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
          sc_format = fmts[i];
    create_swapchain(win);
 

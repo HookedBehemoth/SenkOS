@@ -120,6 +120,9 @@ nav_id nav_child(nav_id scope, nav_id local);
 /* Between frames, from the event handlers. */
 /* false when nothing lies that way; the caller decides what that means. */
 bool nav_move(nav *ui, nav_dir where);
+/* To the first item (Down, Right) or the last (Up, Left) declared: a list
+ * going round. */
+void nav_wrap(nav *ui, nav_dir where);
 void nav_activate(nav *ui);
 void nav_pointer(nav *ui, float x, float y);
 void nav_pointer_leave(nav *ui);

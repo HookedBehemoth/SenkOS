@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://usb-gadget.rules file://data-init.init file://zz-data.sh"
+SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://usb-gadget.rules file://data-init.init file://zz-data.sh file://asound.conf"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
@@ -20,6 +20,7 @@ do_install() {
     install -Dm0755 ${S}/stop-all ${D}${sbindir}/stop-all
     install -Dm0755 ${S}/data-init.init ${D}${sysconfdir}/init.d/data-init
     install -Dm0644 ${S}/udhcpd.conf ${D}${sysconfdir}/udhcpd.conf
+    install -Dm0644 ${S}/asound.conf ${D}${sysconfdir}/asound.conf
     install -Dm0644 ${S}/panvk.sh ${D}${sysconfdir}/profile.d/panvk.sh
     install -Dm0644 ${S}/wayland.sh ${D}${sysconfdir}/profile.d/wayland.sh
     install -Dm0644 ${S}/zz-data.sh ${D}${sysconfdir}/profile.d/zz-data.sh
@@ -38,4 +39,4 @@ do_install() {
 }
 
 FILES:${PN} += "/uboot /data"
-RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher util-linux-sfdisk e2fsprogs-mke2fs alsa-utils-amixer weston-volume-keys"
+RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk e2fsprogs-mke2fs alsa-utils-amixer weston-volume-keys"

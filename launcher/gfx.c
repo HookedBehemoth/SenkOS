@@ -781,16 +781,20 @@ gfx_target *gfx_target_create(SDL_Window *window, bool translucent) {
   if (!present)
     return NULL;
 
-  /* UNORM: colours are used as they are */
+  /* UNORM: colours are used as they are. BGRA (DRM ARGB8888) first: what
+   * Weston and EGL use. With RGBA (ABGR8888) the H700's display planes swap
+   * red and blue whenever Weston scans the buffer out directly instead of
+   * compositing it: a blue focus ring flashed orange. */
   uint32_t n = 32;
   VkSurfaceFormatKHR formats[32];
   must(vkGetPhysicalDeviceSurfaceFormatsKHR(pdev, t->surface, &n, formats), "formats");
   t->format = formats[0];
-  for (uint32_t i = 0; i < n; i++)
-    if ((formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ||
-         formats[i].format == VK_FORMAT_R8G8B8A8_UNORM) &&
-        formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-      t->format = formats[i];
+  const VkFormat wanted[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+  for (int w = SDL_arraysize(wanted) - 1; w >= 0; w--)
+    for (uint32_t i = 0; i < n; i++)
+      if (formats[i].format == wanted[w] &&
+          formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        t->format = formats[i];
   t->pipeline = pipeline(t->format.format);
 
   VkCommandBuffer cmds[FRAMES];

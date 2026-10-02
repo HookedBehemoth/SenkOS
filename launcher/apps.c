@@ -10,11 +10,61 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Cores run in corehost: the launcher is their UI. $COREHOST
+ * (/data/OS/profile.d) tries out another build. `env` before it: what the
+ * core needs set (sh assignments). */
+#define COREHOST_ENV(name, env, so) {name, env "exec \"${COREHOST:-corehost}\" ./" so "_libretro.so \"$1\""}
+#define COREHOST(name, so) COREHOST_ENV(name, "", so)
+/* The cores' BIOS and asset files, in /data/bios (run from retroarch/cores) */
+#define BIOS "COREHOST_SYSTEM=\"${PWD%/*/*}/bios\" "
+#define SYSTEM(title, dir, exts, pack_name, ...)                                         \
+  {.name = title, .folder = "roms/" dir, .roms = exts, .system_dir = "retroarch/cores", \
+   .pack = pack_name, .cores = (const core[]){__VA_ARGS__, {0}}}
+
 category categories[] = {
-    /* mGBA reads portable.ini in the cwd and keeps its config next to it */
-    {.name = "Game Boy Advance", .folder = "roms/gba", .roms = ".gba;.zip;",
-     .system_dir = "mgba", .system_exec = "exec ./mgba \"$1\"",
-     .pack = "Nintendo - Game Boy Advance"},
+    SYSTEM("Game Boy Advance", "gba", ".gba;.zip;", "Nintendo - Game Boy Advance",
+           COREHOST("mGBA", "mgba")),
+    SYSTEM("Game Boy", "gb", ".gb;.zip;", "Nintendo - Game Boy",
+           COREHOST("Gambatte", "gambatte"), COREHOST("mGBA", "mgba")),
+    SYSTEM("Game Boy Color", "gbc", ".gbc;.gb;.zip;", "Nintendo - Game Boy Color",
+           COREHOST("Gambatte", "gambatte"), COREHOST("mGBA", "mgba")),
+    SYSTEM("NES", "nes", ".nes;.fds;.unf;.unif;.zip;", "Nintendo - Nintendo Entertainment System",
+           COREHOST("FCEUmm", "fceumm")),
+    SYSTEM("SNES", "snes", ".sfc;.smc;.zip;", "Nintendo - Super Nintendo Entertainment System",
+           COREHOST("Snes9x", "snes9x")),
+    SYSTEM("Nintendo 64", "n64", ".n64;.v64;.z64;.zip;", "Nintendo - Nintendo 64",
+           COREHOST("Mupen64Plus-Next", "mupen64plus_next")),
+    SYSTEM("Mega Drive", "md", ".md;.gen;.smd;.bin;.zip;", "Sega - Mega Drive - Genesis",
+           COREHOST("Genesis Plus GX", "genesis_plus_gx")),
+    SYSTEM("Master System", "ms", ".sms;.zip;", "Sega - Master System - Mark III",
+           COREHOST("Genesis Plus GX", "genesis_plus_gx")),
+    SYSTEM("Game Gear", "gg", ".gg;.zip;", "Sega - Game Gear",
+           COREHOST("Genesis Plus GX", "genesis_plus_gx")),
+    SYSTEM("Dreamcast", "dc", ".chd;.cdi;.gdi;.cue;", "Sega - Dreamcast",
+           COREHOST_ENV("Flycast", BIOS, "flycast")),
+    SYSTEM("PC Engine", "pce", ".pce;.cue;.chd;.zip;", "NEC - PC Engine - TurboGrafx 16",
+           COREHOST("Beetle PCE Fast", "mednafen_pce_fast")),
+    SYSTEM("PlayStation", "ps", ".cue;.chd;.pbp;.m3u;.bin;.img;", "Sony - PlayStation",
+           COREHOST("PCSX ReARMed", "pcsx_rearmed")),
+    SYSTEM("PSP", "psp", ".iso;.cso;.pbp;.chd;", "Sony - PlayStation Portable",
+           /* Its memory stick beside the games: PPSSPP takes a folder named
+           * "psp" for the stick's PSP folder, so not the ROM folder itself */
+           COREHOST_ENV("PPSSPP", BIOS "COREHOST_SAVE=\"${1%/*}/memstick\" ", "ppsspp")),
+    SYSTEM("Arcade", "arcade", ".zip;.7z;", NULL,
+           COREHOST("FinalBurn Neo", "fbneo")),
+    SYSTEM("Neo Geo Pocket", "ngp", ".ngp;.ngc;.zip;", "SNK - Neo Geo Pocket Color",
+           COREHOST("Beetle NGP", "mednafen_ngp")),
+    SYSTEM("WonderSwan", "ws", ".ws;.wsc;.zip;", "Bandai - WonderSwan Color",
+           COREHOST("Beetle WonderSwan", "mednafen_wswan")),
+    SYSTEM("Atari 2600", "atari2600", ".a26;.bin;.zip;", "Atari - 2600",
+           COREHOST("Stella 2014", "stella2014")),
+    SYSTEM("Atari Lynx", "lynx", ".lnx;.o;.zip;", "Atari - Lynx",
+           COREHOST("Handy", "handy")),
+    /* Not games, but a folder of files run by one player all the same;
+     * $MEDIAPLAYER tries out another build */
+    {.name = "Videos", .folder = "videos", .roms = ".mp4;.mkv;.webm;.mov;.m4v;.avi;",
+     .system_dir = "videos",
+     .cores = (const core[]){{"Media player", "exec \"${MEDIAPLAYER:-mediaplayer}\" \"$1\""}, {0}}},
     {.name = "Ports", .folder = "OS/apps/ports"},
     {.name = "Applications", .folder = "OS/apps/applications"},
     {.name = "Benchmarks", .folder = "OS/apps/benchmarks"},
@@ -26,6 +76,70 @@ static const char *const image_exts[] = {".png", ".jpg", ".jpeg", ".webp", ".bmp
 static const char *root(void) {
   const char *r = getenv("LAUNCHER_DATA");
   return r != NULL && r[0] != '\0' ? r : "/data";
+}
+
+FILE *state_file(const char *suffix, const char *mode) {
+  char path[512];
+  const char *state = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
+  if (state != NULL && state[0] == '/')
+    snprintf(path, sizeof(path), "%s/launcher%s", state, suffix);
+  else
+    snprintf(path, sizeof(path), "%s/.local/state/launcher%s", home ? home : "/tmp", suffix);
+  /* mkdir -p of the two levels under $HOME that may be missing */
+  for (char *slash = strchr(path + 1, '/'); mode[0] != 'r' && slash; slash = strchr(slash + 1, '/')) {
+    *slash = '\0';
+    mkdir(path, 0755);
+    *slash = '/';
+  }
+  return fopen(path, mode);
+}
+
+size_t apps_core_count(const category *c) {
+  size_t n = 0;
+  while (c->cores != NULL && c->cores[n].name != NULL)
+    n++;
+  return n;
+}
+
+/* The core picked for `rom` in `picks` (launcher-cores: a line
+ * "ROM\tcore name" each, the last one standing); else the first.
+ * ponytail: only ever appended to; compact it if it grows. */
+static int core_of(const category *c, const char *picks, const char *rom) {
+  int index = 0;
+  const size_t n = strlen(rom), cores = apps_core_count(c);
+  for (const char *line = picks; line != NULL && *line;) {
+    const char *end = line + strcspn(line, "\n"), *name = line + n + 1;
+    for (size_t i = 0; end - line > (long)n && strncmp(line, rom, n) == 0 && line[n] == '\t' && i < cores; i++)
+      if (strlen(c->cores[i].name) == (size_t)(end - name) && strncmp(name, c->cores[i].name, end - name) == 0)
+        index = (int)i;
+    line = *end ? end + 1 : end;
+  }
+  return index;
+}
+
+/* The whole of launcher-cores, NULL without it */
+static char *read_picks(void) {
+  FILE *f = state_file("-cores", "r");
+  if (f == NULL)
+    return NULL;
+  fseek(f, 0, SEEK_END);
+  const long size = ftell(f);
+  rewind(f);
+  char *buf = size >= 0 ? malloc(size + 1) : NULL;
+  if (buf != NULL)
+    buf[fread(buf, 1, size, f)] = '\0';
+  fclose(f);
+  return buf;
+}
+
+void apps_set_core(category *c, app *a, int index) {
+  FILE *f = state_file("-cores", "a");
+  if (f != NULL) {
+    fprintf(f, "%s\t%s\n", a->arg, c->cores[index].name);
+    fclose(f);
+  }
+  a->core = index;
+  snprintf(a->exec, sizeof(a->exec), "%s", c->cores[index].exec);
 }
 
 static bool is_file(const char *path) {
@@ -158,7 +272,7 @@ static void stem(char *out, size_t size, const char *name) {
   snprintf(out, size, "%.*s", dot && dot != name ? (int)(dot - name) : (int)strlen(name), name);
 }
 
-static void scan_entry(category *c, const char *folder, const char *name) {
+static void scan_entry(category *c, const char *picks, const char *folder, const char *name) {
   char path[512], base[512];
   struct stat st;
   if (name[0] == '.' || snprintf(path, sizeof(path), "%s/%s", folder, name) >= (int)sizeof(path) ||
@@ -169,8 +283,9 @@ static void scan_entry(category *c, const char *folder, const char *name) {
     if (!has_ext(name, c->roms) || (a = add(c)) == NULL)
       return;
     stem(a->name, sizeof(a->name), name);
-    snprintf(a->exec, sizeof(a->exec), "%s", c->system_exec);
     snprintf(a->arg, sizeof(a->arg), "%s", path);
+    a->core = core_of(c, picks, path);
+    snprintf(a->exec, sizeof(a->exec), "%s", c->cores[a->core].exec);
     snprintf(a->dir, sizeof(a->dir), "%s/%s", root(), c->system_dir);
     stem(base, sizeof(base), path);
     find_image(a->icon, sizeof(a->icon), base);
@@ -209,6 +324,13 @@ static int by_name(const void *a, const void *b) {
   return strcasecmp(((const app *)a)->name, ((const app *)b)->name);
 }
 
+bool apps_present(const category *c) {
+  char folder[256];
+  struct stat st;
+  snprintf(folder, sizeof(folder), "%s/%s", root(), c->folder);
+  return c->roms == NULL || (stat(folder, &st) == 0 && S_ISDIR(st.st_mode));
+}
+
 void apps_scan(category *c) {
   c->count = 0;
   char folder[256];
@@ -216,9 +338,11 @@ void apps_scan(category *c) {
   DIR *dir = opendir(folder);
   if (dir == NULL)
     return;
+  char *picks = c->roms != NULL ? read_picks() : NULL;
   struct dirent *d;
   while ((d = readdir(dir)) != NULL)
-    scan_entry(c, folder, d->d_name);
+    scan_entry(c, picks, folder, d->d_name);
   closedir(dir);
+  free(picks);
   qsort(c->apps, c->count, sizeof(*c->apps), by_name);
 }

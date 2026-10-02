@@ -62,6 +62,11 @@ export HOME=/data
 . /etc/profile.d/zz-data.sh
 mkdir -p -m 0700 $XDG_RUNTIME_DIR
 chown player:player $XDG_RUNTIME_DIR
+# Mesa (kmsro) opens the panfrost render node itself, as the player, not through seatd. devtmpfs
+# creates it 0600 root and udev (S04, after us) only later makes it 0666: Weston's EGL init lost
+# that race once Mesa got small enough to load before udev ran. Same mode udev's default rule sets.
+chgrp video /dev/dri/renderD*
+chmod 0666 /dev/dri/renderD*
 (
 	echo 0 > $c/ui/cgroup.procs
 	seatd -g seat </dev/null >/dev/null 2>&1 &

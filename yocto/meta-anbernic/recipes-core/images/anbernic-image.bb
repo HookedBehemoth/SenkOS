@@ -34,6 +34,7 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-good-isomp4 \
     gstreamer1.0-plugins-good-matroska \
     gstreamer1.0-plugins-base-videoconvertscale \
+    mediaplayer \
     liberation-fonts \
     ttf-bitstream-vera \
     libasound \

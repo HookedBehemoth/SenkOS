@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""launcher/icons/*.svg -> launcher/icons.inc: each icon's strokes as absolute
+moves, lines and cubics in its 24x24 box (arcs, circles and rounded rects
+turned into cubics), for icons.c to stroke with FreeType at the size drawn.
+
+Only what the icons use: path, circle, rect, line, polyline, polygon, all
+stroked (fill="none").
+
+    tools/icon-paths
+"""
+import math
+import pathlib
+import re
+import xml.etree.ElementTree as ET
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+SRC = ROOT / "launcher/icons"
+OUT = ROOT / "launcher/icons.inc"
+NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+TOKEN = re.compile(r"[MmLlHhVvCcSsQqAaZz]|" + NUMBER.pattern)
+
+
+def arc(x0, y0, rx, ry, phi, large, sweep, x, y):
+    """SVG's endpoint arc as cubics: [(c1, c2, end)]"""
+    if rx == 0 or ry == 0 or (x0, y0) == (x, y):
+        return [((x0, y0), (x, y), (x, y))]
+    phi = math.radians(phi)
+    cos, sin = math.cos(phi), math.sin(phi)
+    dx, dy = (x0 - x) / 2, (y0 - y) / 2
+    x1 = cos * dx + sin * dy
+    y1 = -sin * dx + cos * dy
+    rx, ry = abs(rx), abs(ry)
+    scale = x1 * x1 / (rx * rx) + y1 * y1 / (ry * ry)
+    if scale > 1:
+        rx, ry = rx * math.sqrt(scale), ry * math.sqrt(scale)
+    num = rx * rx * ry * ry - rx * rx * y1 * y1 - ry * ry * x1 * x1
+    k = math.sqrt(max(0, num / (rx * rx * y1 * y1 + ry * ry * x1 * x1)))
+    if large == sweep:
+        k = -k
+    cx1, cy1 = k * rx * y1 / ry, -k * ry * x1 / rx
+    cx = cos * cx1 - sin * cy1 + (x0 + x) / 2
+    cy = sin * cx1 + cos * cy1 + (y0 + y) / 2
+
+    def angle(ux, uy, vx, vy):
+        a = math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+        return a
+
+    t0 = angle(1, 0, (x1 - cx1) / rx, (y1 - cy1) / ry)
+    dt = angle((x1 - cx1) / rx, (y1 - cy1) / ry, (-x1 - cx1) / rx, (-y1 - cy1) / ry)
+    if not sweep and dt > 0:
+        dt -= 2 * math.pi
+    elif sweep and dt < 0:
+        dt += 2 * math.pi
+    n = max(1, math.ceil(abs(dt) / (math.pi / 2) - 1e-9))
+    step = dt / n
+    alpha = 4 / 3 * math.tan(step / 4)
+
+    def point(t):
+        ex, ey = rx * math.cos(t), ry * math.sin(t)
+        return cos * ex - sin * ey + cx, sin * ex + cos * ey + cy
+
+    def tangent(t):
+        ex, ey = -rx * math.sin(t), ry * math.cos(t)
+        return cos * ex - sin * ey, sin * ex + cos * ey
+
+    out = []
+    for i in range(n):
+        a, b = t0 + i * step, t0 + (i + 1) * step
+        p0, p1 = point(a), point(b)
+        d0, d1 = tangent(a), tangent(b)
+        out.append(((p0[0] + alpha * d0[0], p0[1] + alpha * d0[1]),
+                    (p1[0] - alpha * d1[0], p1[1] - alpha * d1[1]), p1))
+    out[-1] = (out[-1][0], out[-1][1], (x, y))
+    return out
+
+
+def path(d):
+    """[('M', x, y) | ('L', x, y) | ('C', x1, y1, x2, y2, x, y) | ('Z',)]"""
+    tokens = TOKEN.findall(d)
+    out, i, cmd = [], 0, None
+    x = y = sx = sy = 0.0
+    last_c2 = None
+
+    def num():
+        nonlocal i
+        i += 1
+        return float(tokens[i - 1])
+
+    while i < len(tokens):
+        if tokens[i].isalpha():
+            cmd = tokens[i]
+            i += 1
+        rel = cmd.islower()
+        ox, oy = (x, y) if rel else (0, 0)
+        c = cmd.upper()
+        if c == "M":
+            x, y = ox + num(), oy + num()
+            sx, sy = x, y
+            out.append(("M", x, y))
+            cmd = "l" if rel else "L"
+        elif c == "L":
+            x, y = ox + num(), oy + num()
+            out.append(("L", x, y))
+        elif c == "H":
+            x = ox + num()
+            out.append(("L", x, y))
+        elif c == "V":
+            y = oy + num()
+            out.append(("L", x, y))
+        elif c in "CS":
+            if c == "C":
+                x1, y1 = ox + num(), oy + num()
+            else:
+                x1, y1 = (2 * x - last_c2[0], 2 * y - last_c2[1]) if last_c2 else (x, y)
+            x2, y2 = ox + num(), oy + num()
+            x, y = ox + num(), oy + num()
+            out.append(("C", x1, y1, x2, y2, x, y))
+            last_c2 = (x2, y2)
+            continue
+        elif c == "Q":
+            qx, qy = ox + num(), oy + num()
+            nx, ny = ox + num(), oy + num()
+            out.append(("C", x + 2 / 3 * (qx - x), y + 2 / 3 * (qy - y),
+                        nx + 2 / 3 * (qx - nx), ny + 2 / 3 * (qy - ny), nx, ny))
+            x, y = nx, ny
+        elif c == "A":
+            rx, ry, phi = num(), num(), num()
+            large, sweep = num(), num()
+            nx, ny = ox + num(), oy + num()
+            for c1, c2, end in arc(x, y, rx, ry, phi, large, sweep, nx, ny):
+                out.append(("C", *c1, *c2, *end))
+            x, y = nx, ny
+        elif c == "Z":
+            out.append(("Z",))
+            x, y = sx, sy
+        else:
+            raise ValueError(f"path command {cmd}")
+        last_c2 = None
+    return out
+
+
+def element(e):
+    tag = e.tag.split("}")[-1]
+    a = {k: v for k, v in e.attrib.items()}
+    f = lambda k, default=0.0: float(a.get(k, default))
+    if tag == "path":
+        return path(a["d"])
+    if tag == "circle":
+        cx, cy, r = f("cx"), f("cy"), f("r")
+        return path(f"M{cx - r} {cy}A{r} {r} 0 0 1 {cx + r} {cy}A{r} {r} 0 0 1 {cx - r} {cy}Z")
+    if tag == "rect":
+        x, y, w, h = f("x"), f("y"), f("width"), f("height")
+        rx = f("rx", a.get("ry", 0))
+        ry = f("ry", rx)
+        return path(f"M{x + rx} {y}H{x + w - rx}A{rx} {ry} 0 0 1 {x + w} {y + ry}"
+                    f"V{y + h - ry}A{rx} {ry} 0 0 1 {x + w - rx} {y + h}"
+                    f"H{x + rx}A{rx} {ry} 0 0 1 {x} {y + h - ry}"
+                    f"V{y + ry}A{rx} {ry} 0 0 1 {x + rx} {y}Z")
+    if tag == "line":
+        return [("M", f("x1"), f("y1")), ("L", f("x2"), f("y2"))]
+    if tag in ("polyline", "polygon"):
+        n = [float(v) for v in NUMBER.findall(a["points"])]
+        out = [("M", n[0], n[1])] + [("L", n[i], n[i + 1]) for i in range(2, len(n), 2)]
+        return out + [("Z",)] if tag == "polygon" else out
+    return []
+
+
+def main():
+    icons = sorted(SRC.glob("*.svg"))
+    ident = lambda p: p.stem.replace("-", "_")
+    lines = ["#pragma once", "/* Generated by tools/icon-paths from the SVGs in launcher/icons: don't edit.",
+             " * Ops then their points, in the 24x24 box, y down. */",
+             "enum { ICON_MOVE, ICON_LINE, ICON_CUBIC, ICON_CLOSE, ICON_END };",
+             "enum {"]
+    lines += [f"  ICON_{ident(p).upper()}," for p in icons]
+    lines += ["  ICON_COUNT", "};", "", "/* The paths: icons.c's */", "#ifdef ICON_PATHS"]
+    names = []
+    for p in icons:
+        ops = []
+        for e in ET.parse(p).getroot().iter():
+            ops += element(e)
+        values = []
+        for op in ops:
+            values.append({"M": "ICON_MOVE", "L": "ICON_LINE", "C": "ICON_CUBIC", "Z": "ICON_CLOSE"}[op[0]])
+            values += [f"{v:.3f}f".replace(".000f", ".0f") for v in op[1:]]
+        values.append("ICON_END")
+        name = f"icon_{ident(p)}"
+        names.append(name)
+        lines.append(f"static const float {name}[] = {{")
+        for i in range(0, len(values), 8):
+            lines.append("    " + ", ".join(values[i:i + 8]) + ",")
+        lines.append("};")
+    lines.append("static const float *const icon_paths[ICON_COUNT] = {")
+    lines += [f"    {n}," for n in names]
+    lines += ["};", "#endif"]
+    OUT.write_text("\n".join(lines) + "\n")
+
+
+if __name__ == "__main__":
+    main()

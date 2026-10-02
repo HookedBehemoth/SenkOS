@@ -83,6 +83,25 @@ static sized_font *font_for(int px) {
   return f;
 }
 
+bool text_atlas_add(const uint8_t *coverage, int w, int h, int pitch, skyline_region *out) {
+  while (!skyline_alloc(&atlas, w, h, out)) {
+    if (atlas.size >= 4096 || !skyline_enlarge(&atlas, atlas.size * 2))
+      return false;
+  }
+  /* Coverage, premultiplied white: the colour comes from the quad */
+  uint8_t *rgba = malloc((size_t)w * h * 4);
+  if (rgba == NULL)
+    return false;
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      uint8_t *p = rgba + ((size_t)y * w + x) * 4;
+      p[0] = p[1] = p[2] = p[3] = coverage[y * pitch + x];
+    }
+  skyline_blit(&atlas, *out, rgba, (size_t)w * 4);
+  free(rgba);
+  return true;
+}
+
 /* ponytail: linear search, fine for the few hundred glyphs of a Latin UI; a
  * hash when CJK text shows up. */
 static const glyph *glyph_for(sized_font *f, unsigned gid) {
@@ -96,23 +115,9 @@ static const glyph *glyph_for(sized_font *f, unsigned gid) {
   const FT_Bitmap *bitmap = &slot->bitmap;
   glyph g = {gid, {0}, slot->bitmap_left, slot->bitmap_top};
   if (bitmap->width > 0 && bitmap->rows > 0 &&
-      bitmap->pixel_mode == FT_PIXEL_MODE_GRAY) {
-    while (!skyline_alloc(&atlas, bitmap->width, bitmap->rows, &g.region)) {
-      if (atlas.size >= 4096 || !skyline_enlarge(&atlas, atlas.size * 2))
-        return NULL;
-    }
-    /* Coverage, premultiplied white: the colour comes from the quad */
-    uint8_t *rgba = malloc((size_t)bitmap->width * bitmap->rows * 4);
-    if (rgba == NULL)
-      return NULL;
-    for (unsigned y = 0; y < bitmap->rows; y++)
-      for (unsigned x = 0; x < bitmap->width; x++) {
-        uint8_t *p = rgba + ((size_t)y * bitmap->width + x) * 4;
-        p[0] = p[1] = p[2] = p[3] = bitmap->buffer[y * bitmap->pitch + x];
-      }
-    skyline_blit(&atlas, g.region, rgba, (size_t)bitmap->width * 4);
-    free(rgba);
-  }
+      bitmap->pixel_mode == FT_PIXEL_MODE_GRAY &&
+      !text_atlas_add(bitmap->buffer, bitmap->width, bitmap->rows, bitmap->pitch, &g.region))
+    return NULL;
 
   if (f->count == f->capacity) {
     const size_t capacity = f->capacity ? f->capacity * 2 : 128;
@@ -192,6 +197,14 @@ static int run(int px, int x, int y, const char *utf8, const SDL_Color *color) {
 }
 
 int text_width(int px, const char *utf8) { return run(px, 0, 0, utf8, NULL); }
+
+void text_atlas_draw(skyline_region r, int x, int y, SDL_Color color) {
+  if (!upload())
+    return;
+  gfx_push((gfx_quad){.x = x, .y = y, .w = r.w, .h = r.h,
+                      .u0 = r.x, .v0 = r.y, .u1 = r.x + r.w, .v1 = r.y + r.h,
+                      .color = gfx_rgba(color), .tex = GFX_TEXT | GFX_TEXEL});
+}
 
 int text_draw(int px, int x, int y, const char *utf8, SDL_Color color) {
   return run(px, x, y, utf8, &color);

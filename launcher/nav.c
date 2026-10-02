@@ -118,6 +118,14 @@ bool nav_move(nav *ui, nav_dir where) {
   return true;
 }
 
+void nav_wrap(nav *ui, nav_dir where) {
+  const size_t n = ui->count[ui->current];
+  if (n == 0)
+    return;
+  ui->focus = ui->items[ui->current][where == NAV_UP || where == NAV_LEFT ? n - 1 : 0].id;
+  ui->reveal = true;
+}
+
 void nav_activate(nav *ui) {
   ui->activated = ui->focus;
   ui->clicked = false;
@@ -324,6 +332,9 @@ unsigned nav_item(nav *ui, nav_id id, ui_rect rect, ui_rect clip) {
 }
 
 void nav_ring(nav *ui, ui_rect ring, float radius) {
+  /* An inert nav_item recorded nothing: the last record is another's */
+  if (ui->inert || ui->count[ui->current] == 0)
+    return;
   nav_item_record *item = &ui->items[ui->current][ui->count[ui->current] - 1];
   item->ring = ring;
   item->radius = radius;

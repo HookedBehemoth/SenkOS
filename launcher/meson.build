@@ -22,7 +22,7 @@ foreach s : [['quad.vert', 'quad_vert'], ['quad.frag', 'quad_frag']]
 endforeach
 
 executable('launcher', 'main.c', 'apps.c', 'assets.c', 'capture.c', 'gfx.c',
-  'nav.c', 'romdb.c', 'skyline.c', 'text.c',
+  'icons.c', 'nav.c', 'romdb.c', 'running.c', 'skyline.c', 'text.c',
   capture_protocol, shaders,
   dependencies: [
     dependency('sdl2'),
