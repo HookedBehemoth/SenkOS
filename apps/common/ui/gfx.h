@@ -15,7 +15,7 @@
 
 #include <vulkan/vulkan.h>
 
-typedef struct SDL_Window SDL_Window;
+#include "win.h"
 
 /* Slots with a fixed meaning; the rest are the assets'. */
 enum { GFX_WHITE, GFX_PLACEHOLDER, GFX_TEXT, GFX_BACKDROP, GFX_FIRST_FREE };
@@ -50,10 +50,10 @@ static inline uint32_t gfx_rgba(gfx_color c) {
   return c.r | c.g << 8 | c.b << 16 | (uint32_t)c.a << 24;
 }
 
-bool gfx_init(SDL_Window *window);
+bool gfx_init(win *window);
 /* A window to draw to. `translucent`: premultiplied alpha reaches the
  * compositor (the OSD); otherwise the window is opaque. */
-gfx_target *gfx_target_create(SDL_Window *window, bool translucent);
+gfx_target *gfx_target_create(win *window, bool translucent);
 /* False when there is nothing to draw to (minimized, lost surface). */
 bool gfx_begin(gfx_target *t, int *w, int *h);
 void gfx_push(gfx_quad q);

@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <SDL.h>
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -39,17 +38,7 @@ static gfx_image texture;
 static sized_font sizes[16];
 static size_t size_count;
 
-static uint32_t wake_event;
-
-void ui_wake(int why, int value) {
-  SDL_Event ev = {.user = {.type = wake_event, .code = why, .data1 = (void *)(intptr_t)value}};
-  SDL_PushEvent(&ev);
-}
-
-uint32_t ui_wake_event(void) { return wake_event; }
-
 bool ui_init(const char *pattern) {
-  wake_event = SDL_RegisterEvents(1);
   if (!FcInit())
     return false;
   FcPattern *wanted = FcNameParse((const FcChar8 *)pattern);

@@ -3,8 +3,8 @@
  * Weston patch: shrunk 4:1 each way on the GPU, so only 1/16 of it is read
  * back), then box-blurred on the CPU: once per pause.
  *
- * On a connection of its own: a wl_output bound on SDL's could not be released
- * (v1), and SDL's surface enter/leave handlers crash on the dead proxy.
+ * On a connection of its own: a wl_output v1 can't be released, so it goes
+ * with its connection.
  */
 #include "capture.h"
 

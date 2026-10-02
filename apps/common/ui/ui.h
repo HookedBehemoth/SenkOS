@@ -1,7 +1,6 @@
 /*
  * Drawing for immediate-mode screens, straight to gfx quads: boxes, text,
- * icons; the part of webos-native's loom that nav.c needs; and ui_wake, for
- * the threads.
+ * icons; and the part of webos-native's loom that nav.c needs.
  *
  * Text: fontconfig picks the font, HarfBuzz shapes, FreeType rasterizes.
  * Glyphs are bitmaps, rendered once per pixel size and packed into one
@@ -37,7 +36,7 @@ typedef enum { UI_HORIZONTAL, UI_VERTICAL } ui_axis;
 void ui_rounded(float x, float y, float w, float h, gfx_color c, float radius, float border);
 void ui_fill(float x, float y, float w, float h, gfx_color c);
 
-/* After SDL_Init, before any thread may ui_wake. `font` is a fontconfig
+/* After win_connect. `font` is a fontconfig
  * pattern, e.g. "sans-serif:weight=medium". */
 bool ui_init(const char *font);
 /* Height of a line at `px`: ascender to descender. */
@@ -57,15 +56,12 @@ void ui_icon(int icon, int px, int x, int y, gfx_color color);
 bool ui_atlas_add(const uint8_t *coverage, int w, int h, int pitch, skyline_region *out);
 void ui_atlas_draw(skyline_region r, int x, int y, gfx_color color);
 
-/* What woke the UI thread: ours, then the app's own from UI_WAKE_APP */
+/* The library's reasons to win_wake (win.h), then the app's own from
+ * UI_WAKE_APP */
 enum {
-  UI_LOADED, /* an image is in (assets.h): a frame is all it wants */
+  UI_LOADED = WIN_WAKE_APP, /* an image is in (assets.h): a frame is all it wants */
   UI_WAKE_APP,
 };
-/* Any thread: an SDL event of type ui_wake_event() for the UI loop, `why`
- * as its user.code and `value` as its user.data1 */
-void ui_wake(int why, int value);
-uint32_t ui_wake_event(void);
 
 typedef struct {
   ui_mask mask;

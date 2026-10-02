@@ -15,7 +15,6 @@
 #include <turbojpeg.h>
 #include <webp/decode.h>
 
-#include <SDL.h>
 
 #include "gfx.h"
 #include "ui.h"
@@ -145,19 +144,63 @@ static uint8_t *decode_webp(const uint8_t *data, size_t size, int *w, int *h) {
   return rgba;
 }
 
-static uint8_t *decode_bmp(const uint8_t *data, size_t size, int *w, int *h) {
-  SDL_Surface *bmp = SDL_LoadBMP_RW(SDL_RWFromConstMem(data, (int)size), 1);
-  SDL_Surface *s = bmp ? SDL_ConvertSurfaceFormat(bmp, SDL_PIXELFORMAT_RGBA32, 0) : NULL;
-  SDL_FreeSurface(bmp);
-  uint8_t *rgba = s ? malloc((size_t)s->w * s->h * 4) : NULL;
-  if (rgba != NULL) {
-    *w = s->w;
-    *h = s->h;
-    for (int y = 0; y < s->h; y++)
-      memcpy(rgba + (size_t)y * s->w * 4, (uint8_t *)s->pixels + (size_t)y * s->pitch,
-             (size_t)s->w * 4);
+static uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
+/* Uncompressed, 8 bits (a palette), 24 or 32; 32 with BI_BITFIELDS too, its
+ * masks a byte each. ponytail: no RLE, no 1/4/16 bits; none of the art has
+ * them. */
+static uint8_t *decode_bmp(const uint8_t *d, size_t n, int *w, int *h) {
+  if (n < 54)
+    return NULL;
+  const uint32_t offset = le32(d + 10), header = le32(d + 14), compression = le32(d + 30);
+  const int32_t width = (int32_t)le32(d + 18), height = (int32_t)le32(d + 22);
+  const int bpp = d[28] | d[29] << 8;
+  /* r, g, b, a; a 32-bit BI_RGB pixel is BGRA, unless its alpha is all 0 */
+  uint32_t masks[4] = {0xff0000, 0xff00, 0xff, bpp == 32 ? 0xff000000 : 0};
+  if (compression == 3 && bpp == 32 && n >= 66) {
+    for (int i = 0; i < 3; i++)
+      masks[i] = le32(d + 54 + i * 4);
+    masks[3] = header >= 56 && n >= 70 ? le32(d + 66) : 0;
+  } else if (compression != 0 || (bpp != 8 && bpp != 24 && bpp != 32)) {
+    return NULL;
   }
-  SDL_FreeSurface(s);
+  const int64_t rows = height < 0 ? -(int64_t)height : height;
+  if (width <= 0 || rows == 0 || (uint64_t)width * rows > MAX_DECODE_PX)
+    return NULL;
+  const size_t stride = ((size_t)width * bpp + 31) / 32 * 4;
+  const uint8_t *palette = d + 14 + header;
+  /* Only the colours used, maybe; past them is black */
+  const size_t colors = MIN(le32(d + 46) ? le32(d + 46) : 256, 256u);
+  if (offset > n || stride * rows > n - offset || (bpp == 8 && 14 + header + colors * 4 > offset))
+    return NULL;
+  uint8_t *rgba = malloc((size_t)width * rows * 4);
+  if (rgba == NULL)
+    return NULL;
+  uint8_t alpha = 0;
+  for (int64_t y = 0; y < rows; y++) {
+    /* Bottom-up, unless the height is negative */
+    const uint8_t *src = d + offset + stride * (size_t)(height < 0 ? y : rows - 1 - y);
+    uint8_t *dst = rgba + (size_t)y * width * 4;
+    for (int32_t x = 0; x < width; x++, dst += 4) {
+      if (bpp == 8) {
+        const uint8_t *c = src[x] < colors ? palette + src[x] * 4 : (const uint8_t *)"\0\0\0";
+        dst[0] = c[2], dst[1] = c[1], dst[2] = c[0], dst[3] = 255;
+      } else if (bpp == 24) {
+        const uint8_t *c = src + x * 3;
+        dst[0] = c[2], dst[1] = c[1], dst[2] = c[0], dst[3] = 255;
+      } else {
+        const uint32_t px = le32(src + x * 4);
+        for (int i = 0; i < 4; i++)
+          dst[i] = masks[i] ? (uint8_t)((px & masks[i]) >> __builtin_ctz(masks[i])) : 255;
+        alpha |= dst[3];
+      }
+    }
+  }
+  if (bpp == 32 && masks[3] != 0 && alpha == 0)
+    for (size_t i = 3; i < (size_t)width * rows * 4; i += 4)
+      rgba[i] = 255;
+  *w = width;
+  *h = (int)rows;
   return rgba;
 }
 
@@ -239,7 +282,7 @@ static void *loader(void *data) {
     done[done_count].image = image;
     done_count++;
     pthread_mutex_unlock(&lock);
-    ui_wake(UI_LOADED, 0);
+    win_wake(UI_LOADED, 0);
   }
   return NULL;
 }

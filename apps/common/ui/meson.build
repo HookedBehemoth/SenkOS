@@ -1,4 +1,4 @@
-# gfx: Vulkan quads; skyline: atlas packing; ui: boxes, text, icons, ui_wake;
+# gfx: Vulkan quads; skyline: atlas packing; ui: boxes, text, icons;
 # nav: focus and scrolling; assets: images off the disk
 glslang = find_program('glslangValidator', native: true)
 shaders = []
@@ -9,7 +9,6 @@ endforeach
 
 ui_deps = [
   common_dep,
-  dependency('sdl2'),
   dependency('vulkan'),
   dependency('harfbuzz'),
   dependency('fontconfig'),

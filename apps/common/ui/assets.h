@@ -17,7 +17,7 @@ typedef struct {
   int w, h; /* 1x1 for the placeholder */
 } asset;
 
-/* ui_wake(UI_LOADED) whenever an image arrives, so an idle screen redraws */
+/* win_wake(UI_LOADED) whenever an image arrives, so an idle screen redraws */
 void assets_init(void);
 /* Before building a frame: takes in finished loads, evicts. */
 void assets_frame(void);

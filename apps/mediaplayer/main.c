@@ -46,7 +46,7 @@
 #include "pad.h"
 #include "str.h"
 #include "util.h"
-#include "xdg-shell-client-protocol.h"
+#include "win.h"
 
 #define OSD_H 72
 #define OSD_SHOWN_MS 3000
@@ -57,18 +57,11 @@
 /* As the launcher's Videos page has them (launcher/apps.c) */
 static const str video_exts[] = {S(".mp4"), S(".mkv"), S(".webm"), S(".mov"), S(".m4v"), S(".avi"), S(".ts")};
 
-static struct wl_display *dpy;
-static struct wl_compositor *compositor;
-static struct wl_subcompositor *subcompositor;
-static struct wl_shm *shm_global;
-static struct xdg_wm_base *wm_base;
-static struct wl_seat *seat;
-static struct wl_surface *top, *video_surface, *osd_surface;
+static struct wl_surface *video_surface, *osd_surface;
 static struct wl_subsurface *video_sub, *osd_sub;
-static struct xdg_surface *xsurface;
-static struct xdg_toplevel *toplevel;
-static int win_w = 640, win_h = 480;
-static bool configured;
+static void configured(win *w);
+static win window = {.app_id = "mediaplayer", .title = "Media player", .fullscreen = true,
+                     .w = 640, .h = 480, .configure = configured};
 
 static GstElement *pipe_, *vsink;
 static STRBUF(1024) path;
@@ -117,7 +110,7 @@ static bool shm_buffer_make(shm_buffer *sb, int w, int h, uint32_t format) {
     return false;
   }
   sb->pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  struct wl_shm_pool *pool = wl_shm_create_pool(shm_global, fd, (int32_t)size);
+  struct wl_shm_pool *pool = wl_shm_create_pool(win_shm, fd, (int32_t)size);
   close(fd);
   sb->buffer = wl_shm_pool_create_buffer(pool, 0, w, h, w * 4, format);
   wl_shm_pool_destroy(pool);
@@ -263,7 +256,7 @@ static void show(str text) {
 static void osd_draw(void) {
   const uint64_t now = ms_now();
   const bool wanted = now < osd_until || user_paused || finished;
-  if (!configured)
+  if (!window.configured)
     return;
   if (!wanted) {
     if (osd_mapped) {
@@ -276,7 +269,7 @@ static void osd_draw(void) {
   shm_buffer *b = !osd_buffers[0].busy ? &osd_buffers[0] : !osd_buffers[1].busy ? &osd_buffers[1] : NULL;
   if (b == NULL)
     return;
-  if ((b->w != win_w || b->buffer == NULL) && !shm_buffer_make(b, win_w, OSD_H, WL_SHM_FORMAT_ARGB8888))
+  if ((b->w != window.w || b->buffer == NULL) && !shm_buffer_make(b, window.w, OSD_H, WL_SHM_FORMAT_ARGB8888))
     return;
   const int m = 16, w = b->w;
   fill(b, 0, 0, w, OSD_H, 0xd0101014);
@@ -313,65 +306,20 @@ static void osd_poke(void) { osd_until = ms_now() + OSD_SHOWN_MS; }
 static shm_buffer black, clear;
 
 static void attach_background(void) {
-  if (black.w != win_w || black.h != win_h)
-    shm_buffer_make(&black, win_w, win_h, WL_SHM_FORMAT_XRGB8888);
-  wl_subsurface_set_position(osd_sub, 0, win_h - OSD_H);
-  wl_surface_attach(top, black.buffer, 0, 0);
-  wl_surface_damage(top, 0, 0, win_w, win_h);
-  wl_surface_commit(top);
+  if (black.w != window.w || black.h != window.h)
+    shm_buffer_make(&black, window.w, window.h, WL_SHM_FORMAT_XRGB8888);
+  wl_subsurface_set_position(osd_sub, 0, window.h - OSD_H);
+  wl_surface_attach(window.surface, black.buffer, 0, 0);
+  wl_surface_damage(window.surface, 0, 0, window.w, window.h);
+  wl_surface_commit(window.surface);
   if (vsink != NULL)
-    gst_video_overlay_set_render_rectangle(GST_VIDEO_OVERLAY(vsink), 0, 0, win_w, win_h);
+    gst_video_overlay_set_render_rectangle(GST_VIDEO_OVERLAY(vsink), 0, 0, window.w, window.h);
 }
 
-static void xsurface_configure(void *data, struct xdg_surface *s, uint32_t serial) {
-  (void)data;
-  xdg_surface_ack_configure(s, serial);
-  configured = true;
+static void configured(win *w) {
+  (void)w;
   attach_background();
   osd_draw();
-}
-static const struct xdg_surface_listener xsurface_listener = {xsurface_configure};
-
-static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t w, int32_t h,
-                               struct wl_array *states) {
-  (void)data, (void)t, (void)states;
-  if (w > 0 && h > 0) {
-    win_w = w;
-    win_h = h;
-  }
-}
-static void toplevel_close(void *data, struct xdg_toplevel *t) {
-  (void)data, (void)t;
-  quit = true;
-}
-static const struct xdg_toplevel_listener toplevel_listener = {.configure = toplevel_configure,
-                                                               .close = toplevel_close};
-
-static void wm_ping(void *data, struct xdg_wm_base *b, uint32_t serial) {
-  (void)data;
-  xdg_wm_base_pong(b, serial);
-}
-static const struct xdg_wm_base_listener wm_listener = {wm_ping};
-
-static void map_toplevel(void) {
-  xsurface = xdg_wm_base_get_xdg_surface(wm_base, top);
-  xdg_surface_add_listener(xsurface, &xsurface_listener, NULL);
-  toplevel = xdg_surface_get_toplevel(xsurface);
-  xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
-  xdg_toplevel_set_app_id(toplevel, "mediaplayer");
-  xdg_toplevel_set_title(toplevel, "Media player");
-  xdg_toplevel_set_fullscreen(toplevel, NULL);
-  configured = false;
-  wl_surface_commit(top);
-}
-
-/* Mapped again: the kiosk shell puts what maps on top */
-static void raise_window(void) {
-  xdg_toplevel_destroy(toplevel);
-  xdg_surface_destroy(xsurface);
-  wl_surface_attach(top, NULL, 0, 0);
-  wl_surface_commit(top);
-  map_toplevel();
 }
 
 /* --- keyboard (testing on a desktop) ------------------------------------ */
@@ -395,79 +343,22 @@ static int key_button(uint32_t key) {
   }
 }
 
-static void kb_keymap(void *d, struct wl_keyboard *k, uint32_t format, int fd, uint32_t size) {
-  (void)d, (void)k, (void)format, (void)size;
-  close(fd);
+static void key(unsigned code, bool down) {
+  const int b = key_button(code);
+  if (b >= 0)
+    (down ? press : release)(b);
 }
-static void kb_enter(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *f, struct wl_array *keys) {
-  (void)d, (void)k, (void)s, (void)f, (void)keys;
-}
-static void kb_leave(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *f) {
-  (void)d, (void)k, (void)s, (void)f;
-}
-static void kb_key(void *d, struct wl_keyboard *k, uint32_t s, uint32_t t, uint32_t key, uint32_t state) {
-  (void)d, (void)k, (void)s, (void)t;
-  const int b = key_button(key);
-  if (b < 0)
-    return;
-  if (state == WL_KEYBOARD_KEY_STATE_PRESSED)
-    press(b);
-  else
-    release(b);
-}
-static void kb_modifiers(void *d, struct wl_keyboard *k, uint32_t s, uint32_t a, uint32_t b, uint32_t c, uint32_t e) {
-  (void)d, (void)k, (void)s, (void)a, (void)b, (void)c, (void)e;
-}
-static void kb_repeat(void *d, struct wl_keyboard *k, int32_t r, int32_t delay) {
-  (void)d, (void)k, (void)r, (void)delay;
-}
-static const struct wl_keyboard_listener kb_listener = {kb_keymap, kb_enter, kb_leave, kb_key,
-                                                        kb_modifiers, kb_repeat};
-
-static void seat_caps(void *data, struct wl_seat *s, uint32_t caps) {
-  (void)data;
-  static struct wl_keyboard *kb;
-  if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && kb == NULL) {
-    kb = wl_seat_get_keyboard(s);
-    wl_keyboard_add_listener(kb, &kb_listener, NULL);
-  }
-}
-static void seat_name(void *data, struct wl_seat *s, const char *name) { (void)data, (void)s, (void)name; }
-static const struct wl_seat_listener seat_listener = {seat_caps, seat_name};
-
-static void global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version) {
-  (void)data;
-  if (strcmp(iface, wl_compositor_interface.name) == 0)
-    compositor = wl_registry_bind(r, name, &wl_compositor_interface, 4);
-  else if (strcmp(iface, wl_subcompositor_interface.name) == 0)
-    subcompositor = wl_registry_bind(r, name, &wl_subcompositor_interface, 1);
-  else if (strcmp(iface, wl_shm_interface.name) == 0)
-    shm_global = wl_registry_bind(r, name, &wl_shm_interface, 1);
-  else if (strcmp(iface, xdg_wm_base_interface.name) == 0) {
-    wm_base = wl_registry_bind(r, name, &xdg_wm_base_interface, 1);
-    xdg_wm_base_add_listener(wm_base, &wm_listener, NULL);
-  } else if (strcmp(iface, wl_seat_interface.name) == 0 && seat == NULL) {
-    seat = wl_registry_bind(r, name, &wl_seat_interface, MIN(version, 5u));
-    wl_seat_add_listener(seat, &seat_listener, NULL);
-  }
-}
-static void global_remove(void *data, struct wl_registry *r, uint32_t name) { (void)data, (void)r, (void)name; }
-static const struct wl_registry_listener registry_listener = {global, global_remove};
 
 static bool window_init(void) {
-  if ((dpy = wl_display_connect(NULL)) == NULL)
+  if (!win_connect(key))
     return false;
-  wl_registry_add_listener(wl_display_get_registry(dpy), &registry_listener, NULL);
-  wl_display_roundtrip(dpy);
-  if (compositor == NULL || subcompositor == NULL || shm_global == NULL || wm_base == NULL)
-    return false;
-  top = wl_compositor_create_surface(compositor);
+  struct wl_surface *top = window.surface = wl_compositor_create_surface(win_compositor);
   /* Video first, OSD second: a new subsurface goes on top of its siblings,
    * and waylandsink's own surfaces stay inside the video's */
-  video_surface = wl_compositor_create_surface(compositor);
-  video_sub = wl_subcompositor_get_subsurface(subcompositor, video_surface, top);
-  osd_surface = wl_compositor_create_surface(compositor);
-  osd_sub = wl_subcompositor_get_subsurface(subcompositor, osd_surface, top);
+  video_surface = wl_compositor_create_surface(win_compositor);
+  video_sub = wl_subcompositor_get_subsurface(win_subcompositor, video_surface, top);
+  osd_surface = wl_compositor_create_surface(win_compositor);
+  osd_sub = wl_subcompositor_get_subsurface(win_subcompositor, osd_surface, top);
   wl_subsurface_set_desync(video_sub);
   wl_subsurface_set_desync(osd_sub);
   /* An unmapped parent hides its children: the video's gets a clear pixel */
@@ -475,11 +366,11 @@ static bool window_init(void) {
   wl_surface_attach(video_surface, clear.buffer, 0, 0);
   wl_surface_commit(video_surface);
   /* Pass input to... nothing: the OSD and video never take it */
-  struct wl_region *none = wl_compositor_create_region(compositor);
+  struct wl_region *none = wl_compositor_create_region(win_compositor);
   wl_surface_set_input_region(osd_surface, none);
   wl_surface_set_input_region(video_surface, none);
   wl_region_destroy(none);
-  map_toplevel();
+  win_map(&window);
   return true;
 }
 
@@ -711,7 +602,7 @@ static bool open_ctl(void) {
 static GstBusSyncReply bus_sync(GstBus *bus, GstMessage *m, gpointer data) {
   (void)bus, (void)data;
   if (gst_is_wl_display_handle_need_context_message(m)) {
-    GstContext *c = gst_wl_display_handle_context_new(dpy);
+    GstContext *c = gst_wl_display_handle_context_new(win_display);
     gst_element_set_context(GST_ELEMENT(GST_MESSAGE_SRC(m)), c);
     gst_context_unref(c);
     gst_message_unref(m);
@@ -720,7 +611,7 @@ static GstBusSyncReply bus_sync(GstBus *bus, GstMessage *m, gpointer data) {
   if (gst_is_video_overlay_prepare_window_handle_message(m)) {
     GstVideoOverlay *o = GST_VIDEO_OVERLAY(GST_MESSAGE_SRC(m));
     gst_video_overlay_set_window_handle(o, (guintptr)video_surface);
-    gst_video_overlay_set_render_rectangle(o, 0, 0, win_w, win_h);
+    gst_video_overlay_set_render_rectangle(o, 0, 0, window.w, window.h);
     gst_message_unref(m);
     return GST_BUS_DROP;
   }
@@ -1030,7 +921,7 @@ static bool control(void) {
   case APPCTL_RESUME:
     ctl_paused = false;
     if (m.arg)
-      raise_window();
+      win_map(&window);
     /* Presses that were the launcher's */
     read_pad(true);
     play_state();
@@ -1077,19 +968,14 @@ int main(int argc, char **argv) {
 
   uint64_t saved = ms_now();
   while (!quit) {
-    while (wl_display_prepare_read(dpy) != 0)
-      wl_display_dispatch_pending(dpy);
-    wl_display_flush(dpy);
-    struct pollfd fds[3] = {{wl_display_get_fd(dpy), POLLIN, 0}, {pad_fd, POLLIN, 0}, {ctl, POLLIN, 0}};
+    struct pollfd fds[2] = {{pad_fd, POLLIN, 0}, {ctl, POLLIN, 0}};
     /* ponytail: the GStreamer bus and the OSD's clock are polled at 50 Hz;
      * gst_bus_get_pollfd and a timer when idle wakeups matter */
-    if (poll(fds, 3, 20) > 0 && (fds[0].revents & POLLIN))
-      wl_display_read_events(dpy);
-    else
-      wl_display_cancel_read(dpy);
-    if (wl_display_dispatch_pending(dpy) < 0)
+    if (!win_wait(fds, 2, 20))
       break;
-    if (ctl >= 0 && fds[2].revents && !control())
+    for (int why, value; win_woken(&why, &value);)
+      quit |= why == WIN_QUIT;
+    if (ctl >= 0 && fds[1].revents && !control())
       break;
     input();
     bus_messages();

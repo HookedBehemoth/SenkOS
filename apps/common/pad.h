@@ -6,8 +6,13 @@
  */
 #pragma once
 
+#include <stdint.h>
+
 /* Its event node, opened with `flags` besides O_RDONLY | O_CLOEXEC; -1
  * without one */
 int pad_open(int flags);
 /* APPCTL_* for an EV_KEY code, -1 for one that isn't the pad's */
 int pad_button(unsigned code);
+/* What is held now, a bit per APPCTL_* button: the device's state, not its
+ * queue */
+uint16_t pad_held(int fd);

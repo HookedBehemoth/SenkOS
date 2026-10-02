@@ -5,6 +5,7 @@
 #include <linux/input.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 
 #include "appctl.h"
 #include "str.h"
@@ -53,4 +54,17 @@ int pad_button(unsigned code) {
   case BTN_MODE: return APPCTL_MENU;
   default: return -1;
   }
+}
+
+uint16_t pad_held(int fd) {
+  uint8_t bits[KEY_MAX / 8 + 1] = {0};
+  uint16_t held = 0;
+  if (fd < 0 || ioctl(fd, EVIOCGKEY(sizeof(bits)), bits) < 0)
+    return 0;
+  for (unsigned code = BTN_MISC; code <= BTN_DPAD_RIGHT; code++) {
+    const int b = bits[code / 8] >> (code % 8) & 1 ? pad_button(code) : -1;
+    if (b >= 0)
+      held |= 1u << b;
+  }
+  return held;
 }

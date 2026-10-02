@@ -5,14 +5,16 @@
  *
  *   corehost CORE.so ROM
  *
- * Video through SDL_Renderer (handheld cores are small), or for a core that
- * renders with GLES (N64, Dreamcast, PSP) a GLES context and a framebuffer
- * for it to draw into, blitted to the window. Or Vulkan, the way RetroArch
- * offers it: the core makes its device on our instance and surface, renders
- * into its own image and hands that over; we blit it into the swapchain.
- * Cores that can do both are offered GLES unless $COREHOST_RENDER=vulkan. Audio queued to SDL and the
- * pace taken from it, input from the first SDL game controller (the
- * built-in pad, by label: SDL_GAMECONTROLLERCONFIG) or the keyboard.
+ * Video through Vulkan: a core's frame is copied into a host-visible buffer,
+ * from there into an image in its own pixel format, and blitted into the
+ * swapchain (handheld cores are small). A core that renders with GLES (N64,
+ * Dreamcast, PSP) gets an EGL context and a framebuffer to draw into,
+ * blitted to the window. A Vulkan core gets it the way RetroArch offers it:
+ * it makes its device on our instance and surface, renders into its own
+ * image and hands that over; we blit that instead. Cores that can do both
+ * are offered GLES unless $COREHOST_RENDER=vulkan. Paced as RetroArch
+ * paces by default: vsync, with the sound resampled to fit (audio_batch_).
+ * Input from the built-in pad (pad.h) or the keyboard (win.h).
  *
  * Every game button and the hotkeys (fast forward, a toggle; rewind, held;
  * save and load state 0) are bindings: a button combo each, which the
@@ -34,8 +36,11 @@
  * corehost saves a state, runs itself again in place (same pid, same control
  * channel) and loads it.
  */
+#include <ctype.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <linux/input.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -47,16 +52,24 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <SDL.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <alsa/asoundlib.h>
+#include <wayland-client.h>
+#include <wayland-egl.h>
 #include <zlib.h>
-/* The context's own functions, from SDL_GL_GetProcAddress: nothing linked */
+/* The context's own functions, from eglGetProcAddress: nothing linked */
 #define GL_GLES_PROTOTYPES 0
 #include <GLES3/gl3.h>
-#include <SDL_vulkan.h>
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_wayland.h>
 #include "libretro_vulkan.h"
 
 #include "appctl.h"
 #include "libretro.h"
+#include "pad.h"
+#include "util.h"
+#include "win.h"
 
 /* Frames run per frame shown while fast forwarding */
 #define FAST_SPEED 3
@@ -85,23 +98,27 @@ static struct {
 #undef SYM
 } core;
 
-static SDL_Window *window;
-static SDL_Renderer *renderer;
-static SDL_Texture *texture;
-static Uint32 texture_format = SDL_PIXELFORMAT_RGB565;
+static win window;
+/* A software core's pixels, as libretro and Vulkan name them */
+static VkFormat frame_format = VK_FORMAT_R5G6B5_UNORM_PACK16;
+static unsigned frame_bytes = 2;
 static int frame_w, frame_h;
 /* The frame's shape on screen, width / height; 0: square pixels */
 static float aspect;
-static SDL_AudioDeviceID audio;
-static SDL_GameController *pad;
+static snd_pcm_t *audio;
+static int pad_fd = -1;
+/* evdev KEY_*, for the keyboard's bindings */
+static bool keys[KEY_MAX + 1];
 static double fps = 60;
-static int sample_rate;
 static const char *core_path;
 
 /* SET_HW_RENDER: the core draws into fbo, at most max_w x max_h */
 static struct retro_hw_render_callback hw;
 static bool hw_on, vk_on;
-static SDL_GLContext gl_context;
+static EGLDisplay egl_display;
+static EGLSurface egl_surface;
+static EGLContext gl_context;
+static struct wl_egl_window *egl_window;
 static GLuint fbo, fbo_color, fbo_depth;
 static unsigned max_w, max_h;
 static struct {
@@ -155,29 +172,29 @@ static const struct {
   const char *key, *label;
   uint16_t buttons;
   int id; /* libretro's joypad id; ANALOG_ID(..) for a stick; -1: a hotkey */
-  SDL_Scancode keyboard;
+  unsigned keyboard; /* KEY_* */
 } bindings[] = {
     {"corehost_hotkey_fast", "Fast forward (toggle)", B(MENU) | B(R1), -1, 0},
     {"corehost_hotkey_rewind", "Rewind (hold)", B(MENU) | B(L1), -1, 0},
     {"corehost_hotkey_save", "Save state", B(MENU) | B(R2), -1, 0},
     {"corehost_hotkey_load", "Load state", B(MENU) | B(L2), -1, 0},
-    {"corehost_map_up", "Up", B(UP), RETRO_DEVICE_ID_JOYPAD_UP, SDL_SCANCODE_UP},
-    {"corehost_map_down", "Down", B(DOWN), RETRO_DEVICE_ID_JOYPAD_DOWN, SDL_SCANCODE_DOWN},
-    {"corehost_map_left", "Left", B(LEFT), RETRO_DEVICE_ID_JOYPAD_LEFT, SDL_SCANCODE_LEFT},
-    {"corehost_map_right", "Right", B(RIGHT), RETRO_DEVICE_ID_JOYPAD_RIGHT, SDL_SCANCODE_RIGHT},
-    {"corehost_map_a", "Button A", B(A), RETRO_DEVICE_ID_JOYPAD_A, SDL_SCANCODE_X},
-    {"corehost_map_b", "Button B", B(B), RETRO_DEVICE_ID_JOYPAD_B, SDL_SCANCODE_Z},
-    {"corehost_map_x", "Button X", B(X), RETRO_DEVICE_ID_JOYPAD_X, SDL_SCANCODE_S},
-    {"corehost_map_y", "Button Y", B(Y), RETRO_DEVICE_ID_JOYPAD_Y, SDL_SCANCODE_A},
-    {"corehost_map_l", "Button L", B(L1), RETRO_DEVICE_ID_JOYPAD_L, SDL_SCANCODE_Q},
-    {"corehost_map_r", "Button R", B(R1), RETRO_DEVICE_ID_JOYPAD_R, SDL_SCANCODE_W},
-    {"corehost_map_l2", "Button L2", B(L2), RETRO_DEVICE_ID_JOYPAD_L2, SDL_SCANCODE_1},
-    {"corehost_map_r2", "Button R2", B(R2), RETRO_DEVICE_ID_JOYPAD_R2, SDL_SCANCODE_2},
-    {"corehost_map_select", "Select", B(SELECT), RETRO_DEVICE_ID_JOYPAD_SELECT, SDL_SCANCODE_RSHIFT},
-    {"corehost_map_start", "Start", B(START), RETRO_DEVICE_ID_JOYPAD_START, SDL_SCANCODE_RETURN},
+    {"corehost_map_up", "Up", B(UP), RETRO_DEVICE_ID_JOYPAD_UP, KEY_UP},
+    {"corehost_map_down", "Down", B(DOWN), RETRO_DEVICE_ID_JOYPAD_DOWN, KEY_DOWN},
+    {"corehost_map_left", "Left", B(LEFT), RETRO_DEVICE_ID_JOYPAD_LEFT, KEY_LEFT},
+    {"corehost_map_right", "Right", B(RIGHT), RETRO_DEVICE_ID_JOYPAD_RIGHT, KEY_RIGHT},
+    {"corehost_map_a", "Button A", B(A), RETRO_DEVICE_ID_JOYPAD_A, KEY_X},
+    {"corehost_map_b", "Button B", B(B), RETRO_DEVICE_ID_JOYPAD_B, KEY_Z},
+    {"corehost_map_x", "Button X", B(X), RETRO_DEVICE_ID_JOYPAD_X, KEY_S},
+    {"corehost_map_y", "Button Y", B(Y), RETRO_DEVICE_ID_JOYPAD_Y, KEY_A},
+    {"corehost_map_l", "Button L", B(L1), RETRO_DEVICE_ID_JOYPAD_L, KEY_Q},
+    {"corehost_map_r", "Button R", B(R1), RETRO_DEVICE_ID_JOYPAD_R, KEY_W},
+    {"corehost_map_l2", "Button L2", B(L2), RETRO_DEVICE_ID_JOYPAD_L2, KEY_1},
+    {"corehost_map_r2", "Button R2", B(R2), RETRO_DEVICE_ID_JOYPAD_R2, KEY_2},
+    {"corehost_map_select", "Select", B(SELECT), RETRO_DEVICE_ID_JOYPAD_SELECT, KEY_RIGHTSHIFT},
+    {"corehost_map_start", "Start", B(START), RETRO_DEVICE_ID_JOYPAD_START, KEY_ENTER},
     /* No sticks to click: unbound until the player binds them */
-    {"corehost_map_l3", "Button L3", 0, RETRO_DEVICE_ID_JOYPAD_L3, SDL_SCANCODE_3},
-    {"corehost_map_r3", "Button R3", 0, RETRO_DEVICE_ID_JOYPAD_R3, SDL_SCANCODE_4},
+    {"corehost_map_l3", "Button L3", 0, RETRO_DEVICE_ID_JOYPAD_L3, KEY_3},
+    {"corehost_map_r3", "Button R3", 0, RETRO_DEVICE_ID_JOYPAD_R3, KEY_4},
 /* Half an axis each: stick (left, right), axis (x, y), direction (-, +) */
 #define ANALOG_ID(stick, axis, plus) (16 + (stick) * 4 + (axis) * 2 + (plus))
     {"corehost_map_lstick_left", "Left stick left", 0, ANALOG_ID(0, 0, 0), 0},
@@ -189,7 +206,7 @@ static const struct {
     {"corehost_map_rstick_up", "Right stick up", 0, ANALOG_ID(1, 1, 0), 0},
     {"corehost_map_rstick_down", "Right stick down", 0, ANALOG_ID(1, 1, 1), 0},
 };
-enum { HOT_FAST, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, BINDINGS = SDL_arraysize(bindings) };
+enum { HOT_FAST, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, BINDINGS = COUNTOF(bindings) };
 enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
 _Static_assert(BINDINGS <= 32, "active is a bit per binding");
 
@@ -477,6 +494,8 @@ static void publish_and_load(void) {
   load_options_from(game_opt_path, true);
 }
 
+static void sw_frame(const void *data, unsigned w, unsigned h, size_t pitch);
+
 static void video(const void *data, unsigned w, unsigned h, size_t pitch) {
   if (data == NULL) /* a dupe: the last frame stays */
     return;
@@ -488,21 +507,82 @@ static void video(const void *data, unsigned w, unsigned h, size_t pitch) {
     }
     return;
   }
-  if (texture == NULL || (int)w != frame_w || (int)h != frame_h) {
-    SDL_DestroyTexture(texture);
-    texture = SDL_CreateTexture(renderer, texture_format, SDL_TEXTUREACCESS_STREAMING, w, h);
-    frame_w = w;
-    frame_h = h;
-  }
-  SDL_UpdateTexture(texture, NULL, data, (int)pitch);
+  sw_frame(data, w, h, pitch);
 }
 
 /* Fast forward and rewind are silent */
 static bool muted;
 
+static int64_t ns_now(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/* RetroArch's audio sync: the display paces the game (vsync, present) and
+ * the sound is resampled to fit. A core close to the refresh rate is run at
+ * it (GBA's 59.73 fps at 60: 0.45% fast), its samples stretched to match;
+ * on top, dynamic rate control nudges the ratio by up to RATE_CONTROL to
+ * keep the device's buffer half full, against the two clocks' drift. Then
+ * a write finds room and returns at once. A core further off (PAL on 60 Hz)
+ * isn't stretched: its writes wait, and the sound paces it. */
+#define OUT_RATE 48000 /* dmix's (asound.conf): one resampling, ours */
+#define MAX_SKEW 0.05
+#define RATE_CONTROL 0.005
+static unsigned swaps = 1; /* presents a frame: 2 for a 30 fps core at 60 Hz */
+static double in_rate;     /* the core's samples per second of ours */
+static snd_pcm_uframes_t audio_buffer;
+
+/* The core's sound at `step` of its frames per one of ours, linearly;
+ * `pos` is where the next one falls past `prev`, the last frame in */
+static struct {
+  double pos;
+  int16_t prev[2];
+} rs;
+
+static size_t resample(const int16_t *in, size_t n, double step, int16_t *out, size_t room) {
+  size_t k = 0;
+  while (rs.pos < n && k < room) {
+    const size_t i = (size_t)rs.pos;
+    const float t = (float)(rs.pos - i);
+    const int16_t *a = i == 0 ? rs.prev : in + (i - 1) * 2, *b = in + i * 2;
+    out[k * 2] = (int16_t)(a[0] + (b[0] - a[0]) * t);
+    out[k * 2 + 1] = (int16_t)(a[1] + (b[1] - a[1]) * t);
+    k++;
+    rs.pos += step;
+  }
+  rs.pos -= (double)n;
+  memcpy(rs.prev, in + (n - 1) * 2, sizeof(rs.prev));
+  return k;
+}
+
+/* Waits only while the device is full: never when stretched, but for drift */
 static void audio_batch_(const int16_t *data, size_t frames) {
-  if (audio != 0 && !muted)
-    SDL_QueueAudio(audio, data, (Uint32)frames * 4);
+  if (audio == NULL || muted || frames == 0)
+    return;
+  /* Below half full: more of ours per frame of the core's */
+  const snd_pcm_sframes_t avail = snd_pcm_avail_update(audio);
+  const double half = audio_buffer / 2.0;
+  const double direction = avail >= 0 && audio_buffer > 0 ? (avail - half) / half : 0;
+  const double step = in_rate / OUT_RATE / (1 + RATE_CONTROL * direction);
+  static int16_t out[4096 * 2];
+  while (frames > 0) {
+    /* As much as `out` takes once resampled */
+    const size_t chunk = MIN(frames, MAX((size_t)(4000 * step), (size_t)1));
+    size_t n = resample(data, chunk, step, out, 4096);
+    const int16_t *at = out;
+    while (n > 0) {
+      const snd_pcm_sframes_t written = snd_pcm_writei(audio, at, n);
+      if (written < 0 && snd_pcm_recover(audio, (int)written, 1) < 0)
+        break;
+      if (written > 0) {
+        at += written * 2;
+        n -= (size_t)written;
+      }
+    }
+    data += chunk * 2;
+    frames -= chunk;
+  }
 }
 
 static size_t audio_batch(const int16_t *data, size_t frames) {
@@ -515,38 +595,23 @@ static void audio_sample(int16_t left, int16_t right) {
   audio_batch_(frame, 1);
 }
 
-static void input_poll(void) { SDL_PumpEvents(); }
+/* Held when the launcher gave the game back (Resume is pressed with A):
+ * not the game's until let go */
+static uint16_t launcher_held;
 
-/* What is held, as appctl bits; the triggers are axes to SDL */
-static uint16_t pad_held(void) {
-  static const SDL_GameControllerButton map[APPCTL_BUTTONS] = {
-      [APPCTL_MENU] = SDL_CONTROLLER_BUTTON_GUIDE,
-      [APPCTL_L1] = SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
-      [APPCTL_L2] = SDL_CONTROLLER_BUTTON_INVALID,
-      [APPCTL_R1] = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
-      [APPCTL_R2] = SDL_CONTROLLER_BUTTON_INVALID,
-      [APPCTL_UP] = SDL_CONTROLLER_BUTTON_DPAD_UP,
-      [APPCTL_DOWN] = SDL_CONTROLLER_BUTTON_DPAD_DOWN,
-      [APPCTL_LEFT] = SDL_CONTROLLER_BUTTON_DPAD_LEFT,
-      [APPCTL_RIGHT] = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
-      [APPCTL_START] = SDL_CONTROLLER_BUTTON_START,
-      [APPCTL_SELECT] = SDL_CONTROLLER_BUTTON_BACK,
-      [APPCTL_A] = SDL_CONTROLLER_BUTTON_A,
-      [APPCTL_B] = SDL_CONTROLLER_BUTTON_B,
-      [APPCTL_X] = SDL_CONTROLLER_BUTTON_X,
-      [APPCTL_Y] = SDL_CONTROLLER_BUTTON_Y,
-  };
-  if (pad == NULL)
-    return 0;
-  uint16_t held = 0;
-  for (int i = 0; i < APPCTL_BUTTONS; i++)
-    if (map[i] != SDL_CONTROLLER_BUTTON_INVALID && SDL_GameControllerGetButton(pad, map[i]))
-      held |= 1u << i;
-  if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16384)
-    held |= B(L2);
-  if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16384)
-    held |= B(R2);
-  return held;
+/* The window's events were dispatched before the frame (main) */
+static void input_poll(void) {}
+
+static void key(unsigned code, bool down) {
+  if (code <= KEY_MAX)
+    keys[code] = down;
+}
+
+/* What is held, as appctl bits */
+static uint16_t buttons_held(void) {
+  const uint16_t held = pad_held(pad_fd);
+  launcher_held &= held;
+  return held & ~launcher_held;
 }
 
 /* The bindings held this frame, a bit each. One inside a bigger one that is
@@ -554,7 +619,7 @@ static uint16_t pad_held(void) {
 static uint32_t active;
 
 static void update_bindings(void) {
-  const uint16_t held = pad_held();
+  const uint16_t held = buttons_held();
   uint16_t combo[BINDINGS];
   uint32_t on = 0;
   for (int i = 0; i < BINDINGS; i++) {
@@ -572,7 +637,6 @@ static void update_bindings(void) {
 
 /* libretro ids */
 static int16_t buttons(void) {
-  const Uint8 *keys = SDL_GetKeyboardState(NULL);
   int16_t mask = 0;
   for (int i = HOTKEYS; i < ANALOG; i++)
     if ((active >> i & 1) || keys[bindings[i].keyboard])
@@ -653,39 +717,42 @@ static const uint8_t font_rows[][7] = {
 #define OVERLAY_RECTS 1024
 static char overlay[OVERLAY_LINES][32];
 static char notice[32];
-static Uint64 notice_until;
+static uint64_t notice_until;
+typedef struct {
+  int x, y, w, h;
+} rect;
 static struct {
-  SDL_Rect r;
+  rect r;
   bool text; /* else the box */
 } orects[OVERLAY_RECTS];
 
 static void notify(const char *text) {
   snprintf(notice, sizeof(notice), "%s", text);
-  notice_until = SDL_GetTicks64() + 2000;
+  notice_until = ms_now() + 2000;
 }
 
 /* The overlay's rectangles for a w x h window; 0 when there is nothing */
 static int overlay_rects(int w, int h) {
   (void)w;
-  const int px = SDL_max(1, h / 160); /* a font pixel: 3 at 480 lines */
+  const int px = MAX(1, h / 160); /* a font pixel: 3 at 480 lines */
   int lines = 0, cols = 0;
   for (int l = 0; l < OVERLAY_LINES; l++)
     if (overlay[l][0]) {
       lines++;
-      cols = SDL_max(cols, (int)strlen(overlay[l]));
+      cols = MAX(cols, (int)strlen(overlay[l]));
     }
   if (lines == 0)
     return 0;
   const int x0 = px * 4, y0 = px * 4, pad = px * 2;
   int n = 0;
-  orects[n].r = (SDL_Rect){x0, y0, cols * 6 * px - px + pad * 2, lines * 9 * px - 2 * px + pad * 2};
+  orects[n].r = (rect){x0, y0, cols * 6 * px - px + pad * 2, lines * 9 * px - 2 * px + pad * 2};
   orects[n++].text = false;
   int y = y0 + pad;
   for (int l = 0; l < OVERLAY_LINES; l++) {
     if (!overlay[l][0])
       continue;
     for (int c = 0; overlay[l][c]; c++) {
-      const char *at = strchr(font_chars, SDL_toupper((unsigned char)overlay[l][c]));
+      const char *at = strchr(font_chars, toupper((unsigned char)overlay[l][c]));
       if (at == NULL || *at == '\0')
         continue; /* a space, or one we don't have */
       const uint8_t *rows = font_rows[at - font_chars];
@@ -698,7 +765,7 @@ static int overlay_rects(int w, int h) {
           while (b - len >= 0 && (rows[r] >> (b - len) & 1))
             len++;
           if (n < OVERLAY_RECTS) {
-            orects[n].r = (SDL_Rect){x + (4 - b) * px, y + r * px, len * px, px};
+            orects[n].r = (rect){x + (4 - b) * px, y + r * px, len * px, px};
             orects[n++].text = true;
           }
           b -= len - 1;
@@ -734,7 +801,7 @@ static struct {
   VkFence fence[VK_FRAMES];
   VkSemaphore acquired[VK_FRAMES];
   uint32_t index;
-  SDL_mutex *queue_lock;
+  pthread_mutex_t queue_lock;
   /* From the core for this frame */
   struct retro_vulkan_image image;
   bool have_image;
@@ -745,7 +812,23 @@ static struct {
    * its rectangles */
   VkImage colors;
   VkDeviceMemory colors_memory;
+  /* A software core's frame: a host-visible buffer per frame in flight,
+   * copied into `frame` (GENERAL, in the core's format) by its present */
+  VkBuffer staging[VK_FRAMES];
+  VkDeviceMemory staging_memory[VK_FRAMES];
+  void *staging_map[VK_FRAMES];
+  VkDeviceSize staging_size;
+  VkImage frame;
+  VkDeviceMemory frame_memory;
+  uint32_t row_texels;
+  bool frame_new, frame_undefined;
+  int win_w, win_h; /* the window's size the swapchain was made for */
 } vk;
+
+static bool fail(const char *why) {
+  fprintf(stderr, "corehost: %s\n", why);
+  return false;
+}
 
 static void vk_set_image(void *handle, const struct retro_vulkan_image *image, uint32_t n,
                          const VkSemaphore *semaphores, uint32_t src_family) {
@@ -753,40 +836,41 @@ static void vk_set_image(void *handle, const struct retro_vulkan_image *image, u
   vk.image = *image;
   vk.have_image = true;
   vk.src_family = src_family;
-  vk.wait_count = SDL_min(n, VK_MAX);
+  vk.wait_count = MIN(n, VK_MAX);
   memcpy(vk.wait, semaphores, vk.wait_count * sizeof(*semaphores));
 }
 static uint32_t vk_sync_index(void *handle) { return (void)handle, vk.index; }
 static uint32_t vk_sync_mask(void *handle) { return (void)handle, (1u << VK_FRAMES) - 1; }
 static void vk_set_command_buffers(void *handle, uint32_t n, const VkCommandBuffer *cmd) {
   (void)handle;
-  vk.cmd_count = SDL_min(n, VK_MAX);
+  vk.cmd_count = MIN(n, VK_MAX);
   memcpy(vk.core_cmd, cmd, vk.cmd_count * sizeof(*cmd));
 }
 static void vk_wait_sync_index(void *handle) {
   (void)handle;
   vkWaitForFences(vk.device, 1, &vk.fence[vk.index], VK_TRUE, UINT64_MAX);
 }
-static void vk_lock(void *handle) { (void)handle, SDL_LockMutex(vk.queue_lock); }
-static void vk_unlock(void *handle) { (void)handle, SDL_UnlockMutex(vk.queue_lock); }
+static void vk_lock(void *handle) { (void)handle, pthread_mutex_lock(&vk.queue_lock); }
+static void vk_unlock(void *handle) { (void)handle, pthread_mutex_unlock(&vk.queue_lock); }
 static void vk_set_signal(void *handle, VkSemaphore semaphore) { (void)handle, vk.signal = semaphore; }
 
 static bool vk_swapchain(void) {
   VkSurfaceCapabilitiesKHR caps;
   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk.gpu, vk.surface, &caps);
-  int w, h;
-  SDL_Vulkan_GetDrawableSize(window, &w, &h);
-  vk.extent = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+  vk.extent = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent
+                                                    : (VkExtent2D){(uint32_t)window.w, (uint32_t)window.h};
+  vk.win_w = window.w;
+  vk.win_h = window.h;
   if (vk.extent.width == 0 || vk.extent.height == 0)
     return false;
   uint32_t count = caps.minImageCount + 1;
   if (caps.maxImageCount != 0)
-    count = SDL_min(count, caps.maxImageCount);
+    count = MIN(count, caps.maxImageCount);
   VkSwapchainKHR old = vk.swapchain;
   const VkSwapchainCreateInfoKHR info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
       .surface = vk.surface,
-      .minImageCount = SDL_min(count, VK_MAX),
+      .minImageCount = MIN(count, VK_MAX),
       .imageFormat = vk.format,
       .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
       .imageExtent = vk.extent,
@@ -810,16 +894,10 @@ static bool vk_swapchain(void) {
   return true;
 }
 
-/* Window, instance, the core's device, swapchain; then its context_reset */
-static bool vk_init(const char *title, int w, int h, Uint32 flags) {
-  window = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, w, h,
-                            flags | SDL_WINDOW_VULKAN);
-  unsigned n_ext = 0;
-  if (window == NULL || !SDL_Vulkan_GetInstanceExtensions(window, &n_ext, NULL))
-    return false;
-  const char *exts[16];
-  n_ext = SDL_min(n_ext, SDL_arraysize(exts));
-  SDL_Vulkan_GetInstanceExtensions(window, &n_ext, exts);
+/* Instance, the core's device (or ours), swapchain; then its context_reset */
+static bool vk_init(void) {
+  static const char *const exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME};
+  const uint32_t n_ext = COUNTOF(exts);
   const VkApplicationInfo default_app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                                          .pApplicationName = "corehost",
                                          .apiVersion = VK_API_VERSION_1_1};
@@ -835,14 +913,17 @@ static bool vk_init(const char *title, int w, int h, Uint32 flags) {
   PFN_vkEnumerateInstanceVersion enumerate_version =
       (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion");
   if (enumerate_version != NULL && enumerate_version(&api_version) == VK_SUCCESS)
-    app_info.apiVersion = SDL_max(app_info.apiVersion, api_version);
+    app_info.apiVersion = MAX(app_info.apiVersion, api_version);
   const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                     .pApplicationInfo = &app_info,
                                     .enabledExtensionCount = n_ext,
                                     .ppEnabledExtensionNames = exts};
+  const VkWaylandSurfaceCreateInfoKHR wsi = {.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+                                             .display = win_display,
+                                             .surface = window.surface};
   if (vkCreateInstance(&ici, NULL, &vk.instance) != VK_SUCCESS ||
-      !SDL_Vulkan_CreateSurface(window, vk.instance, &vk.surface))
-    return SDL_SetError("no Vulkan instance or surface"), false;
+      vkCreateWaylandSurfaceKHR(vk.instance, &wsi, NULL, &vk.surface) != VK_SUCCESS)
+    return fail("no Vulkan instance or surface");
 
   static const char *const device_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
   struct retro_vulkan_context ctx = {0};
@@ -850,14 +931,14 @@ static bool vk_init(const char *title, int w, int h, Uint32 flags) {
     const VkPhysicalDeviceFeatures none = {0};
     if (!vk.negotiation->create_device(&ctx, vk.instance, VK_NULL_HANDLE, vk.surface, vkGetInstanceProcAddr,
                                        (const char **)device_exts, 1, NULL, 0, &none))
-      return SDL_SetError("the core made no Vulkan device"), false;
+      return fail("the core made no Vulkan device");
   } else {
     /* Ours: the first GPU's first queue that draws and presents */
     uint32_t n = 1, families = 8;
     VkQueueFamilyProperties qf[8];
     vkEnumeratePhysicalDevices(vk.instance, &n, &ctx.gpu);
     if (n == 0)
-      return SDL_SetError("no Vulkan device"), false;
+      return fail("no Vulkan device");
     vkGetPhysicalDeviceQueueFamilyProperties(ctx.gpu, &families, qf);
     VkBool32 present = VK_FALSE;
     for (ctx.queue_family_index = 0; ctx.queue_family_index < families; ctx.queue_family_index++) {
@@ -876,7 +957,7 @@ static bool vk_init(const char *title, int w, int h, Uint32 flags) {
                                     .enabledExtensionCount = 1,
                                     .ppEnabledExtensionNames = device_exts};
     if (ctx.queue_family_index == families || vkCreateDevice(ctx.gpu, &dci, NULL, &ctx.device) != VK_SUCCESS)
-      return SDL_SetError("no Vulkan queue for the window"), false;
+      return fail("no Vulkan queue for the window");
     vkGetDeviceQueue(ctx.device, ctx.queue_family_index, 0, &ctx.queue);
   }
   vk.gpu = ctx.gpu;
@@ -884,7 +965,8 @@ static bool vk_init(const char *title, int w, int h, Uint32 flags) {
   vk.queue = ctx.queue;
   vk.family = ctx.queue_family_index;
 
-  /* BGRA8 if there is one; immediate or mailbox: the pace is the audio's */
+  /* BGRA8 if there is one; mailbox or immediate: a present never waits
+   * (the frame callbacks are the pace, main) */
   uint32_t n = VK_MAX;
   VkSurfaceFormatKHR formats[VK_MAX];
   vkGetPhysicalDeviceSurfaceFormatsKHR(vk.gpu, vk.surface, &n, formats);
@@ -901,7 +983,14 @@ static bool vk_init(const char *title, int w, int h, Uint32 flags) {
         (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR && vk.mode == VK_PRESENT_MODE_FIFO_KHR))
       vk.mode = modes[i];
   if (!vk_swapchain())
-    return SDL_SetError("no swapchain"), false;
+    return fail("no swapchain");
+  /* A software core's format: blitted, and filtered when asked to (both
+   * are required of all three) */
+  VkFormatProperties fp;
+  vkGetPhysicalDeviceFormatProperties(vk.gpu, frame_format, &fp);
+  const VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+  if (!hw_on && (fp.optimalTilingFeatures & needed) != needed)
+    return fail("the core's pixel format can't be blitted");
 
   const VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -921,7 +1010,7 @@ static bool vk_init(const char *title, int w, int h, Uint32 flags) {
   }
   for (int i = 0; i < VK_MAX; i++)
     vkCreateSemaphore(vk.device, &sci, NULL, &vk.rendered[i]);
-  vk.queue_lock = SDL_CreateMutex();
+  pthread_mutex_init(&vk.queue_lock, NULL);
 
   vk.iface = (struct retro_hw_render_interface_vulkan){
       .interface_type = RETRO_HW_RENDER_INTERFACE_VULKAN,
@@ -969,6 +1058,95 @@ static void vk_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, V
                        NULL, 0, NULL, 1, &b);
 }
 
+/* Memory of a type `req` allows, with `props`, bound to it later */
+static VkDeviceMemory vk_memory(VkMemoryRequirements req, VkMemoryPropertyFlags props) {
+  VkPhysicalDeviceMemoryProperties mp;
+  vkGetPhysicalDeviceMemoryProperties(vk.gpu, &mp);
+  uint32_t type = 0;
+  while (type < mp.memoryTypeCount &&
+         !((req.memoryTypeBits >> type & 1) && (mp.memoryTypes[type].propertyFlags & props) == props))
+    type++;
+  const VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                    .allocationSize = req.size,
+                                    .memoryTypeIndex = type};
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  if (type < mp.memoryTypeCount)
+    vkAllocateMemory(vk.device, &mai, NULL, &memory);
+  return memory;
+}
+
+/* A software core's frame for w x h, `size` bytes of it: the staging
+ * buffers grow, the image is made again */
+static bool sw_resize(unsigned w, unsigned h, VkDeviceSize size) {
+  vkDeviceWaitIdle(vk.device);
+  for (int f = 0; size > vk.staging_size && f < VK_FRAMES; f++) {
+    vkDestroyBuffer(vk.device, vk.staging[f], NULL);
+    vkFreeMemory(vk.device, vk.staging_memory[f], NULL);
+    const VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                    .size = size,
+                                    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkMemoryRequirements req;
+    vk.staging_memory[f] = VK_NULL_HANDLE;
+    if (vkCreateBuffer(vk.device, &bci, NULL, &vk.staging[f]) != VK_SUCCESS)
+      return vk.staging[f] = VK_NULL_HANDLE, vk.staging_size = 0, false;
+    vkGetBufferMemoryRequirements(vk.device, vk.staging[f], &req);
+    vk.staging_memory[f] = vk_memory(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vk.staging_memory[f] == VK_NULL_HANDLE ||
+        vkBindBufferMemory(vk.device, vk.staging[f], vk.staging_memory[f], 0) != VK_SUCCESS ||
+        vkMapMemory(vk.device, vk.staging_memory[f], 0, size, 0, &vk.staging_map[f]) != VK_SUCCESS)
+      return vk.staging_size = 0, false;
+    /* All of them are this big once the last is */
+    if (f == VK_FRAMES - 1)
+      vk.staging_size = size;
+  }
+  vkDestroyImage(vk.device, vk.frame, NULL);
+  vkFreeMemory(vk.device, vk.frame_memory, NULL);
+  vk.frame_memory = VK_NULL_HANDLE;
+  const VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                 .imageType = VK_IMAGE_TYPE_2D,
+                                 .format = frame_format,
+                                 .extent = {w, h, 1},
+                                 .mipLevels = 1,
+                                 .arrayLayers = 1,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                 .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+  VkMemoryRequirements req;
+  if (vkCreateImage(vk.device, &ici, NULL, &vk.frame) != VK_SUCCESS)
+    return vk.frame = VK_NULL_HANDLE, false;
+  vkGetImageMemoryRequirements(vk.device, vk.frame, &req);
+  vk.frame_memory = vk_memory(req, 0);
+  vk.frame_undefined = true;
+  return vk.frame_memory != VK_NULL_HANDLE &&
+         vkBindImageMemory(vk.device, vk.frame, vk.frame_memory, 0) == VK_SUCCESS;
+}
+
+/* Into the staging buffer of the frame it will be presented with, once the
+ * GPU is done with that one; a few times for one present when fast */
+static void sw_frame(const void *data, unsigned w, unsigned h, size_t pitch) {
+  if (vk.device == VK_NULL_HANDLE || w == 0 || h == 0)
+    return;
+  const uint32_t f = vk.index;
+  vkWaitForFences(vk.device, 1, &vk.fence[f], VK_TRUE, UINT64_MAX);
+  /* The last row may end at its pixels */
+  const VkDeviceSize size = (VkDeviceSize)pitch * (h - 1) + (VkDeviceSize)w * frame_bytes;
+  if (((int)w != frame_w || (int)h != frame_h || size > vk.staging_size || vk.frame_memory == VK_NULL_HANDLE) &&
+      !sw_resize(w, h, size)) {
+    vk.have_image = false;
+    frame_w = frame_h = 0;
+    return;
+  }
+  memcpy(vk.staging_map[f], data, size);
+  frame_w = (int)w;
+  frame_h = (int)h;
+  vk.row_texels = (uint32_t)(pitch / frame_bytes);
+  vk.frame_new = true;
+  vk.image = (struct retro_vulkan_image){.image_layout = VK_IMAGE_LAYOUT_GENERAL,
+                                         .create_info = {.image = vk.frame}};
+  vk.src_family = VK_QUEUE_FAMILY_IGNORED;
+  vk.have_image = true;
+}
+
 /* The overlay's colour image, made the first time it is needed */
 static bool vk_colors(void) {
   if (vk.colors != VK_NULL_HANDLE)
@@ -986,15 +1164,8 @@ static bool vk_colors(void) {
     return false;
   VkMemoryRequirements req;
   vkGetImageMemoryRequirements(vk.device, vk.colors, &req);
-  VkPhysicalDeviceMemoryProperties mp;
-  vkGetPhysicalDeviceMemoryProperties(vk.gpu, &mp);
-  uint32_t type = 0;
-  while (type < mp.memoryTypeCount && !(req.memoryTypeBits >> type & 1))
-    type++;
-  const VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                    .allocationSize = req.size,
-                                    .memoryTypeIndex = type};
-  if (type == mp.memoryTypeCount || vkAllocateMemory(vk.device, &mai, NULL, &vk.colors_memory) != VK_SUCCESS ||
+  vk.colors_memory = vk_memory(req, 0);
+  if (vk.colors_memory == VK_NULL_HANDLE ||
       vkBindImageMemory(vk.device, vk.colors, vk.colors_memory, 0) != VK_SUCCESS) {
     vkDestroyImage(vk.device, vk.colors, NULL);
     vk.colors = VK_NULL_HANDLE;
@@ -1007,6 +1178,8 @@ static bool vk_colors(void) {
  * command buffers and semaphores go with it */
 static void vk_present(int x, int y, int w, int h) {
   const uint32_t f = vk.index;
+  if ((window.w != vk.win_w || window.h != vk.win_h) && !vk_swapchain())
+    return;
   vkWaitForFences(vk.device, 1, &vk.fence[f], VK_TRUE, UINT64_MAX);
   uint32_t at;
   VkResult r = vkAcquireNextImageKHR(vk.device, vk.swapchain, UINT64_MAX, vk.acquired[f], VK_NULL_HANDLE, &at);
@@ -1030,6 +1203,17 @@ static void vk_present(int x, int y, int w, int h) {
              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
   const VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
   vkCmdClearColorImage(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &color);
+  /* A software core's new frame, into its image; the blit's barrier below
+   * waits for it */
+  if (vk.frame_new) {
+    vk_barrier(cmd, vk.frame, vk.frame_undefined ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+               VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
+    const VkBufferImageCopy copy = {.bufferRowLength = vk.row_texels,
+                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .imageExtent = {(uint32_t)frame_w, (uint32_t)frame_h, 1}};
+    vkCmdCopyBufferToImage(cmd, vk.staging[f], vk.frame, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+    vk.frame_new = vk.frame_undefined = false;
+  }
   if (vk.have_image && frame_w > 0 && frame_h > 0) {
     const VkImage source = vk.image.create_info.image;
     const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
@@ -1065,7 +1249,7 @@ static void vk_present(int x, int y, int w, int h) {
                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &both);
     static VkImageBlit blits[OVERLAY_RECTS];
     for (int i = 0; i < n_rects; i++) {
-      const SDL_Rect r = orects[i].r;
+      const rect r = orects[i].r;
       blits[i] = (VkImageBlit){
           .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, orects[i].text, 1},
           .srcOffsets = {{0, 0, 0}, {1, 1, 1}},
@@ -1107,10 +1291,10 @@ static void vk_present(int x, int y, int w, int h) {
                                     .swapchainCount = 1,
                                     .pSwapchains = &vk.swapchain,
                                     .pImageIndices = &at};
-  SDL_LockMutex(vk.queue_lock);
+  pthread_mutex_lock(&vk.queue_lock);
   vkQueueSubmit(vk.queue, 1, &submit, vk.fence[f]);
   r = vkQueuePresentKHR(vk.queue, &present);
-  SDL_UnlockMutex(vk.queue_lock);
+  pthread_mutex_unlock(&vk.queue_lock);
   if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
     vk_swapchain();
   vk.wait_count = vk.cmd_count = 0;
@@ -1130,14 +1314,14 @@ static bool clear_thread_waits(unsigned clear, void *data) {
 }
 
 static retro_proc_address_t hw_proc(const char *sym) {
-  return (retro_proc_address_t)SDL_GL_GetProcAddress(sym);
+  return (retro_proc_address_t)eglGetProcAddress(sym);
 }
 
 /* The fbo's storage for frames up to w x h; before the context: noted */
 static void hw_resize(unsigned w, unsigned h) {
-  max_w = SDL_max(max_w, w);
-  max_h = SDL_max(max_h, h);
-  if (gl_context == NULL)
+  max_w = MAX(max_w, w);
+  max_h = MAX(max_h, h);
+  if (gl_context == EGL_NO_CONTEXT)
     return;
   GLint was;
   gl.GetIntegerv(GL_FRAMEBUFFER_BINDING, &was);
@@ -1153,30 +1337,46 @@ static void hw_resize(unsigned w, unsigned h) {
   gl.BindFramebuffer(GL_FRAMEBUFFER, was);
 }
 
-/* Window and context for SET_HW_RENDER's core, then its context_reset */
-static bool hw_init(const char *title, int w, int h, Uint32 flags) {
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,
-                      hw.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION ? (int)hw.version_major
-                      : hw.context_type == RETRO_HW_CONTEXT_OPENGLES3      ? 3
-                                                                           : 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,
-                      hw.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION ? (int)hw.version_minor : 0);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
-  /* Opaque: Weston can scan it out instead of compositing it */
-  SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
-  window = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, w, h,
-                            flags | SDL_WINDOW_OPENGL);
-  if (window == NULL || (gl_context = SDL_GL_CreateContext(window)) == NULL)
-    return false;
-  /* The pace is the audio's; and a hidden window would block a swap */
-  SDL_GL_SetSwapInterval(0);
-#define GL(name) (*(void **)&gl.name = SDL_GL_GetProcAddress("gl" #name)) != NULL
+/* EGL on the window for SET_HW_RENDER's core, then its context_reset */
+static bool hw_init(void) {
+  const EGLint major = hw.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION ? (EGLint)hw.version_major
+                       : hw.context_type == RETRO_HW_CONTEXT_OPENGLES3      ? 3
+                                                                            : 2;
+  const EGLint minor = hw.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION ? (EGLint)hw.version_minor : 0;
+  const EGLint wanted[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+                           EGL_RENDERABLE_TYPE, major >= 3 ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT,
+                           EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE};
+  const EGLint context[] = {EGL_CONTEXT_MAJOR_VERSION, major, EGL_CONTEXT_MINOR_VERSION, minor, EGL_NONE};
+  EGLConfig configs[64], config;
+  EGLint n = 0;
+  egl_display = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, win_display, NULL);
+  if (egl_display == EGL_NO_DISPLAY || !eglInitialize(egl_display, NULL, NULL) ||
+      !eglBindAPI(EGL_OPENGL_ES_API) || !eglChooseConfig(egl_display, wanted, configs, 64, &n) || n == 0)
+    return fail("no EGL config");
+  /* Opaque, without depth: Weston can scan it out instead of compositing
+   * it, and the core draws into its own framebuffer */
+  config = configs[0];
+  for (EGLint i = n - 1; i >= 0; i--) {
+    EGLint alpha, depth;
+    eglGetConfigAttrib(egl_display, configs[i], EGL_ALPHA_SIZE, &alpha);
+    eglGetConfigAttrib(egl_display, configs[i], EGL_DEPTH_SIZE, &depth);
+    if (alpha == 0 && depth == 0)
+      config = configs[i];
+  }
+  egl_window = wl_egl_window_create(window.surface, window.w, window.h);
+  egl_surface = eglCreatePlatformWindowSurface(egl_display, config, egl_window, NULL);
+  gl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, context);
+  if (egl_surface == EGL_NO_SURFACE || gl_context == EGL_NO_CONTEXT ||
+      !eglMakeCurrent(egl_display, egl_surface, egl_surface, gl_context))
+    return fail("no GLES context");
+  /* A swap never waits: the frame callbacks are the pace (main) */
+  eglSwapInterval(egl_display, 0);
+#define GL(name) (*(void **)&gl.name = eglGetProcAddress("gl" #name)) != NULL
   if (!(GL(GenFramebuffers) && GL(BindFramebuffer) && GL(GenRenderbuffers) && GL(BindRenderbuffer) &&
         GL(RenderbufferStorage) && GL(FramebufferRenderbuffer) && GL(BlitFramebuffer) &&
         GL(ClearColor) && GL(Clear) && GL(ColorMask) && GL(Disable) && GL(Enable) &&
         GL(IsEnabled) && GL(GetIntegerv) && GL(GetBooleanv) && GL(Scissor)))
-    return SDL_SetError("no GLES 3 functions"), false;
+    return fail("no GLES 3 functions");
 #undef GL
   gl.GenFramebuffers(1, &fbo);
   gl.GenRenderbuffers(1, &fbo_color);
@@ -1216,7 +1416,7 @@ static void hw_present(int x, int y, int w, int h, int win_w, int win_h) {
   gl.GetIntegerv(GL_SCISSOR_BOX, box);
   gl.Enable(GL_SCISSOR_TEST);
   for (int i = 0; i < n_rects; i++) {
-    const SDL_Rect r = orects[i].r;
+    const rect r = orects[i].r;
     const float v = orects[i].text ? 1 : 0.08f;
     gl.Scissor(r.x, win_h - r.y - r.h, r.w, r.h);
     gl.ClearColor(v, v, orects[i].text ? 1 : 0.1f, 1);
@@ -1224,7 +1424,11 @@ static void hw_present(int x, int y, int w, int h, int win_w, int win_h) {
   }
   gl.Disable(GL_SCISSOR_TEST);
   gl.Scissor(box[0], box[1], box[2], box[3]);
-  SDL_GL_SwapWindow(window);
+  int egl_w, egl_h;
+  wl_egl_window_get_attached_size(egl_window, &egl_w, &egl_h);
+  if (egl_w != win_w || egl_h != win_h)
+    wl_egl_window_resize(egl_window, win_w, win_h, 0, 0);
+  eglSwapBuffers(egl_display, egl_surface);
   gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
   gl.BindFramebuffer(GL_READ_FRAMEBUFFER, read);
   gl.ColorMask(mask[0], mask[1], mask[2], mask[3]);
@@ -1236,9 +1440,10 @@ static bool environment(unsigned cmd, void *data) {
   switch (cmd) {
   case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
     switch (*(const enum retro_pixel_format *)data) {
-    case RETRO_PIXEL_FORMAT_XRGB8888: texture_format = SDL_PIXELFORMAT_XRGB8888; return true;
-    case RETRO_PIXEL_FORMAT_RGB565: texture_format = SDL_PIXELFORMAT_RGB565; return true;
-    case RETRO_PIXEL_FORMAT_0RGB1555: texture_format = SDL_PIXELFORMAT_XRGB1555; return true;
+    /* X as A: the swapchain is opaque */
+    case RETRO_PIXEL_FORMAT_XRGB8888: frame_format = VK_FORMAT_B8G8R8A8_UNORM, frame_bytes = 4; return true;
+    case RETRO_PIXEL_FORMAT_RGB565: frame_format = VK_FORMAT_R5G6B5_UNORM_PACK16, frame_bytes = 2; return true;
+    case RETRO_PIXEL_FORMAT_0RGB1555: frame_format = VK_FORMAT_A1R5G5B5_UNORM_PACK16, frame_bytes = 2; return true;
     default: return false;
     }
   case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
@@ -1485,7 +1690,7 @@ static void load_sram(void) {
     data = read_all(path, &size);
   }
   if (data != NULL) {
-    memcpy(ram, data, SDL_min(size, room));
+    memcpy(ram, data, MIN(size, room));
     free(data);
   }
   /* What is on disk, so an unchanged one is never written */
@@ -1506,7 +1711,7 @@ static void flush_sram(void) {
   char path[600];
   snprintf(path, sizeof(path), "%s.srm", stem);
   if (write_all(path, ram, size) == 0)
-    memcpy(sram_shadow, ram, SDL_min(size, sram_shadow_size));
+    memcpy(sram_shadow, ram, MIN(size, sram_shadow_size));
 }
 
 static int save_state(int slot) {
@@ -1565,12 +1770,6 @@ static void rewind_pop(void) {
   core.retro_unserialize(rewind_ring + rewind_head * state_size, state_size);
 }
 
-/* The window re-mapped: the kiosk shell puts what maps on top */
-static void raise_window(void) {
-  SDL_HideWindow(window);
-  SDL_ShowWindow(window);
-}
-
 /* One request, answered; false once the launcher is gone */
 static bool control(bool *paused) {
   appctl_msg m;
@@ -1583,8 +1782,8 @@ static bool control(bool *paused) {
   switch (m.op) {
   case APPCTL_PAUSE:
     *paused = true;
-    SDL_PauseAudioDevice(audio, 1);
-    SDL_ClearQueuedAudio(audio);
+    if (audio != NULL)
+      snd_pcm_drop(audio);
     /* Home may be the last the game sees for a while */
     flush_sram();
     break;
@@ -1592,11 +1791,13 @@ static bool control(bool *paused) {
     *paused = false;
     for (unsigned i = 0; startup_options && i < host_option_at; i++)
       restart |= atomic_load(&shm->options[i].value) != started_with[i];
+    /* Mapped again: the kiosk shell puts what maps on top */
     if (m.arg)
-      raise_window();
-    /* Presses that were the launcher's */
-    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
-    SDL_PauseAudioDevice(audio, 0);
+      win_map(&window);
+    /* What is held now was pressed for the launcher */
+    launcher_held = pad_held(pad_fd);
+    if (audio != NULL)
+      snd_pcm_prepare(audio);
     break;
   case APPCTL_SAVE_STATE:
     m.result = save_state(m.arg);
@@ -1612,8 +1813,6 @@ static bool control(bool *paused) {
     options_changed = true;
     sync_own();
     save_options();
-    if (texture != NULL)
-      SDL_SetTextureScaleMode(texture, host_value(HOST_FILTER) ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
     break;
   default: m.result = -ENOSYS;
   }
@@ -1622,18 +1821,12 @@ static bool control(bool *paused) {
 }
 
 static void present(void) {
-  int w, h;
-  if (vk_on)
-    w = (int)vk.extent.width, h = (int)vk.extent.height;
-  else if (hw_on)
-    SDL_GL_GetDrawableSize(window, &w, &h);
-  else
-    SDL_GetRendererOutputSize(renderer, &w, &h);
-  SDL_Rect dst = {0, 0, w, h};
+  const int w = vk_on ? (int)vk.extent.width : window.w, h = vk_on ? (int)vk.extent.height : window.h;
+  rect dst = {0, 0, w, h};
   if (frame_w > 0 && frame_h > 0) {
     /* Integer scaling goes by the height: N64's 640x240 is a 4:3 picture */
     const float shown_w = aspect > 0 ? frame_h * aspect : frame_w;
-    const float fit = SDL_min(w / shown_w, (float)h / frame_h);
+    const float fit = MIN(w / shown_w, (float)h / frame_h);
     const unsigned scale = host_value(HOST_SCALE);
     if (scale != 2) {
       const float s = scale == 0 && fit >= 1 ? (float)(int)fit : fit;
@@ -1647,23 +1840,7 @@ static void present(void) {
     vk_present(dst.x, dst.y, dst.w, dst.h);
     return;
   }
-  if (hw_on) {
-    hw_present(dst.x, dst.y, dst.w, dst.h, w, h);
-    return;
-  }
-  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-  SDL_RenderClear(renderer);
-  if (texture != NULL && frame_w > 0 && frame_h > 0) {
-    SDL_SetTextureScaleMode(texture, host_value(HOST_FILTER) ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
-    SDL_RenderCopy(renderer, texture, NULL, &dst);
-  }
-  const int n_rects = overlay_rects(w, h);
-  for (int i = 0; i < n_rects; i++) {
-    const Uint8 v = orects[i].text ? 255 : 20;
-    SDL_SetRenderDrawColor(renderer, v, v, orects[i].text ? 255 : 26, 255);
-    SDL_RenderFillRect(renderer, &orects[i].r);
-  }
-  SDL_RenderPresent(renderer);
+  hw_present(dst.x, dst.y, dst.w, dst.h, w, h);
 }
 
 static bool open_ctl(void) {
@@ -1707,7 +1884,9 @@ static void shut_down(void) {
     hw.context_destroy();
   core.retro_unload_game();
   core.retro_deinit();
-  SDL_Quit();
+  if (audio != NULL)
+    snd_pcm_close(audio);
+  audio = NULL;
 }
 
 /* Run again in place with the options as they are now, where we are */
@@ -1789,10 +1968,11 @@ int main(int argc, char **argv) {
   core.retro_set_input_poll(input_poll);
   core.retro_set_input_state(input_state);
 
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
-    fprintf(stderr, "corehost: %s\n", SDL_GetError());
+  if (!win_connect(key)) {
+    fprintf(stderr, "corehost: no Wayland display\n");
     return 1;
   }
+  pad_fd = pad_open(0);
   core.retro_init();
 
   struct retro_game_info game = {.path = rom};
@@ -1833,51 +2013,58 @@ int main(int argc, char **argv) {
   core.retro_get_system_av_info(&av);
   fps = av.timing.fps > 0 ? av.timing.fps : 60;
   aspect = av.geometry.aspect_ratio;
-  sample_rate = (int)(av.timing.sample_rate + 0.5);
 
-  const Uint32 flags = SDL_WINDOW_RESIZABLE | (ctl >= 0 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-  if (vk_on) {
-    if (!vk_init(info.library_name, av.geometry.base_width * 3, av.geometry.base_height * 3, flags)) {
-      fprintf(stderr, "corehost: Vulkan: %s\n", SDL_GetError());
-      return 1;
-    }
-  } else if (hw_on) {
+  window = (win){.app_id = "corehost",
+                 .title = info.library_name,
+                 .fullscreen = ctl >= 0,
+                 .w = (int)av.geometry.base_width * 3,
+                 .h = (int)av.geometry.base_height * 3};
+  win_map(&window);
+  if (hw_on && !vk_on) {
     hw_resize(av.geometry.max_width, av.geometry.max_height);
-    if (!hw_init(info.library_name, av.geometry.base_width * 3, av.geometry.base_height * 3, flags)) {
-      fprintf(stderr, "corehost: GLES: %s\n", SDL_GetError());
+    if (!hw_init())
       return 1;
-    }
   } else {
-    window = SDL_CreateWindow(info.library_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                              av.geometry.base_width * 3, av.geometry.base_height * 3, flags);
-    renderer = window ? SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED) : NULL;
+    /* A software core's frames go the Vulkan core's way */
+    vk_on = true;
+    if (!vk_init())
+      return 1;
   }
-  if (window == NULL || (!hw_on && renderer == NULL)) {
-    fprintf(stderr, "corehost: %s\n", SDL_GetError());
-    return 1;
+  /* Swaps per frame and the stretch, as RetroArch picks them (its
+   * audio_max_timing_skew): the refresh rate's nearest multiple of the
+   * core's, if it is close */
+  const double refresh = win_refresh_mhz > 0 ? win_refresh_mhz / 1000.0 : fps;
+  const int64_t refresh_ns = (int64_t)(1e9 / refresh);
+  swaps = (unsigned)CLAMP((int)(refresh / fps + 0.5), 1, 4);
+  const double target = refresh / swaps;
+  const bool stretched = fabs(1 - fps / target) <= MAX_SKEW;
+  if (!stretched)
+    swaps = 1;
+  in_rate = av.timing.sample_rate * (stretched ? target / fps : 1);
+  fprintf(stderr, "corehost: %.3f fps at %.3f Hz: %u swap%s a frame, %s\n", fps, refresh, swaps,
+          swaps > 1 ? "s" : "", stretched ? "sound stretched to fit" : "paced by the sound");
+  /* 64 ms of sound in the device, as RetroArch has it */
+  if (snd_pcm_open(&audio, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0 ||
+      snd_pcm_set_params(audio, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 2, OUT_RATE, 1, 64000) < 0) {
+    fprintf(stderr, "corehost: no sound\n");
+    if (audio != NULL)
+      snd_pcm_close(audio);
+    audio = NULL;
+  } else {
+    snd_pcm_uframes_t period;
+    snd_pcm_get_params(audio, &audio_buffer, &period);
   }
-  SDL_AudioSpec want = {.freq = sample_rate, .format = AUDIO_S16SYS, .channels = 2, .samples = 512}, got;
-  audio = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
-  if (audio != 0)
-    SDL_PauseAudioDevice(audio, 0);
-  /* Three frames of sound queued, at most: the pace and the latency */
-  const Uint32 queue_max = (Uint32)(sample_rate / fps * 4 * 3);
 
   bool paused = false, running = true, fast = false;
   unsigned frame = 0;
-  Uint64 next = SDL_GetPerformanceCounter(), flushed = SDL_GetTicks64();
-  const Uint64 frame_ticks = (Uint64)(SDL_GetPerformanceFrequency() / fps);
+  uint64_t flushed = ms_now();
   while (running) {
-    SDL_Event ev;
-    /* Paused: wake for the launcher now and then, and for the window */
-    if (paused && SDL_WaitEventTimeout(&ev, 50))
-      SDL_PushEvent(&ev);
-    while (SDL_PollEvent(&ev)) {
-      if (ev.type == SDL_QUIT)
-        running = false;
-      else if (ev.type == SDL_CONTROLLERDEVICEADDED && pad == NULL)
-        pad = SDL_GameControllerOpen(ev.cdevice.which);
-    }
+    /* Paused: asleep until the launcher, the window or a signal */
+    struct pollfd fds[1] = {{ctl, POLLIN, 0}};
+    if (!win_wait(fds, ctl >= 0, paused ? -1 : 0))
+      running = false;
+    for (int why, value; win_woken(&why, &value);)
+      running &= why != WIN_QUIT;
     if (ctl >= 0 && !control(&paused))
       running = false;
     if (restart && running && !paused)
@@ -1906,16 +2093,16 @@ int main(int argc, char **argv) {
 
     /* The overlay: FPS (frames run a second, and the share of the time the
      * core took), what is going on, the last notice */
-    static Uint64 second_at, core_ticks;
+    static int64_t second_at, core_ns;
     static unsigned frames_run;
     static char fps_line[32];
-    const Uint64 run_at = SDL_GetPerformanceCounter();
-    if (run_at - second_at >= SDL_GetPerformanceFrequency()) {
+    const int64_t run_at = ns_now();
+    if (run_at - second_at >= 1000000000) {
       snprintf(fps_line, sizeof(fps_line), "%u FPS %d%%", frames_run,
-               (int)(core_ticks * 100 / (run_at - second_at)));
+               (int)(core_ns * 100 / (run_at - second_at)));
       second_at = run_at;
       frames_run = 0;
-      core_ticks = 0;
+      core_ns = 0;
     }
     int l = 0;
     memset(overlay, 0, sizeof(overlay));
@@ -1925,7 +2112,7 @@ int main(int argc, char **argv) {
       snprintf(overlay[l++], sizeof(overlay[0]), "<< Rewind");
     else if (fast)
       snprintf(overlay[l++], sizeof(overlay[0]), ">> Fast forward");
-    if (notice[0] && SDL_GetTicks64() < notice_until)
+    if (notice[0] && ms_now() < notice_until)
       snprintf(overlay[l++], sizeof(overlay[0]), "%s", notice);
 
     for (int i = 0; i < (fast && !rewinding ? FAST_SPEED : 1); i++, frames_run++) {
@@ -1935,7 +2122,7 @@ int main(int argc, char **argv) {
         rewind_push();
       core.retro_run();
     }
-    core_ticks += SDL_GetPerformanceCounter() - run_at;
+    core_ns += ns_now() - run_at;
     if (atomic_exchange(&redescribed, false)) {
       atomic_store(&shm->option_count, host_option_at);
       publish_and_load();
@@ -1946,22 +2133,27 @@ int main(int argc, char **argv) {
       unlink(path);
       resume_tries = 0;
     }
-    present();
-    if (audio != 0 && !muted) {
-      while (SDL_GetQueuedAudioSize(audio) > queue_max)
-        SDL_Delay(1);
-    } else {
-      next += frame_ticks;
-      const Uint64 now = SDL_GetPerformanceCounter();
-      if (next > now)
-        SDL_Delay((Uint32)((next - now) * 1000 / SDL_GetPerformanceFrequency()));
-      else
-        next = now;
+    /* Vsync, as the compositor's frame callbacks come: one each repaint
+     * (vblank) that showed our last commit. Waited for before the next
+     * commit, not after this one: the core's next frame runs while this one
+     * is shown, so a frame a little over a refresh costs a little, not a
+     * whole refresh (double buffering). Waited for in the loop, so the
+     * launcher, the window and signals are heard meanwhile. A hidden window
+     * gets none: two refreshes past the last commit at most, then on. */
+    static int64_t committed;
+    for (unsigned i = 0; i < swaps && running; i++) {
+      const int64_t until = committed + 2 * refresh_ns;
+      for (int64_t left; window.frame_pending && (left = until - ns_now()) > 0;)
+        if (!win_wait(fds, ctl >= 0, (int)(left / 1000000) + 1))
+          running = false;
+      win_frame(&window);
+      present();
+      committed = ns_now();
     }
     /* A crash costs at most this much play */
-    if (SDL_GetTicks64() - flushed > 10000) {
+    if (ms_now() - flushed > 10000) {
       flush_sram();
-      flushed = SDL_GetTicks64();
+      flushed = ms_now();
     }
   }
   shut_down();

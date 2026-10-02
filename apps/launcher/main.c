@@ -38,7 +38,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <SDL.h>
 
 #include "apps.h"
 #include "assets.h"
@@ -127,7 +126,10 @@ typedef struct {
   int wifi; /* bars 0-4, -1 without a wireless interface */
 } status;
 
-static SDL_Window *window, *osd;
+static void redraw(win *w);
+static win window = {.app_id = "launcher", .title = "Launcher", .w = 640, .h = 480, .configure = redraw};
+/* The kiosk shell knows it by app_id and title, and keeps it on top */
+static win osd = {.app_id = "launcher", .title = "osd", .w = OSD_W, .h = OSD_H};
 static gfx_target *screen, *osd_screen;
 static ui_context ctx;
 /* On screen or under the pause screen; NULL: home */
@@ -234,7 +236,7 @@ static atomic_bool listening;
 
 static void set_listening(bool on) { atomic_store(&listening, on); }
 
-static void push_button(int button, bool down) { ui_wake(UI_BUTTON, button << 1 | down); }
+static void push_button(int button, bool down) { win_wake(UI_BUTTON, button << 1 | down); }
 
 static void *pad_thread(void *data) {
   (void)data;
@@ -300,7 +302,8 @@ static void go_home(nav *ui) {
   capture.option = -1;
   set_listening(true);
   drop_backdrop();
-  SDL_ShowWindow(window);
+  if (!window.configured)
+    win_map(&window);
   nav_focus(ui, home_focus);
 }
 
@@ -320,7 +323,7 @@ static void start(nav *ui, str label, str icon, str exec, str arg, str dir) {
   if (r != NULL) {
     hand_over(ui, r);
     run_resume(r, true);
-    SDL_HideWindow(window);
+    win_unmap(&window);
     return;
   }
   r = run_launch(label, icon, exec, arg, dir);
@@ -347,15 +350,14 @@ static void pause_front(nav *ui) {
   grab(true);
   nav_focus(ui, in_settings ? front->settings_focus[settings_category] : front->menu_focus);
   /* kiosk-shell puts a toplevel on top when it maps: map again */
-  SDL_HideWindow(window);
-  SDL_ShowWindow(window);
+  win_map(&window);
 }
 
 static void resume_front(void) {
   paused = in_settings = false;
   set_listening(false);
   grab(false);
-  SDL_HideWindow(window);
+  win_unmap(&window);
   drop_backdrop();
   run_resume(front, false);
 }
@@ -421,7 +423,7 @@ static void *volume_thread(void *data) {
     snd_mixer_selem_get_playback_switch(elem, SND_MIXER_SCHN_FRONT_LEFT, &on);
     const int percent = on ? (int)((raw - min) * 100 / (max - min)) : 0;
     if (last >= 0 && percent != last) {
-      ui_wake(UI_VOLUME, percent);
+      win_wake(UI_VOLUME, percent);
     }
     last = percent;
     if (snd_mixer_wait(mixer, -1) < 0 || snd_mixer_handle_events(mixer) < 0)
@@ -472,15 +474,12 @@ static void read_status(status *s) {
 /* Speaker, then the level as a bar. Created on first use: a second
  * swapchain at startup delays the first frame. */
 static void show_volume(int percent) {
-  if (osd == NULL)
-    osd = SDL_CreateWindow("osd", SDL_WINDOWPOS_UNDEFINED,
-                           SDL_WINDOWPOS_UNDEFINED, OSD_W, OSD_H,
-                           SDL_WINDOW_HIDDEN | SDL_WINDOW_VULKAN);
-  if (osd != NULL && osd_screen == NULL)
-    osd_screen = gfx_target_create(osd, true);
+  if (!osd.configured)
+    win_map(&osd);
+  if (osd_screen == NULL)
+    osd_screen = gfx_target_create(&osd, true);
   if (osd_screen == NULL)
     return;
-  SDL_ShowWindow(osd);
   int w, h;
   if (!gfx_begin(osd_screen, &w, &h))
     return;
@@ -811,57 +810,60 @@ static void app_exited(nav *ui, running *r, size_t *page) {
   rescan(*page);
 }
 
-static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
+/* A frame is all it wants */
+static void redraw(win *w) {
+  (void)w;
+  win_wake(UI_LOADED, 0);
+}
+
+static void key(unsigned code, bool down) {
+  int button = -1;
+  switch (code) {
+  case KEY_UP: button = APPCTL_UP; break;
+  case KEY_DOWN: button = APPCTL_DOWN; break;
+  case KEY_LEFT: button = APPCTL_LEFT; break;
+  case KEY_RIGHT: button = APPCTL_RIGHT; break;
+  case KEY_ENTER: button = APPCTL_A; break;
+  case KEY_PAGEUP: button = APPCTL_L1; break;
+  case KEY_PAGEDOWN: button = APPCTL_R1; break;
+  case KEY_ESC: button = APPCTL_MENU; break;
+  case KEY_BACKSPACE: button = APPCTL_B; break;
+  case KEY_X: button = APPCTL_X; break;
+  case KEY_Y: button = APPCTL_Y; break;
+  case KEY_1: button = APPCTL_L2; break;
+  case KEY_2: button = APPCTL_R2; break;
+  case KEY_TAB: button = APPCTL_SELECT; break;
+  case KEY_SPACE: button = APPCTL_START; break;
+  }
+  if (button >= 0)
+    win_wake(UI_KEY, button << 1 | down);
+}
+
+/* False: quit */
+static bool input(nav *ui, int why, int value, size_t *page) {
   /* APPCTL_*, from the pad or a key */
   int button = -1;
   bool down = false, pad = false;
-  if (ev->type == ui_wake_event()) {
-    const int value = (int)(intptr_t)ev->user.data1;
-    switch (ev->user.code) {
-    case UI_VOLUME: show_volume(value); return true;
-    case UI_HASHED: rescan(*page); return true;
-    case UI_EXITED: {
-      running *r = run_find(value);
-      if (r != NULL)
-        app_exited(ui, r, page);
-      return true;
-    }
-    case UI_BUTTON:
-      button = value >> 1;
-      down = value & 1;
-      pad = true;
-      break;
-    default: return true; /* UI_LOADED */
-    }
-  }
-  switch (ev->type) {
-  case SDL_QUIT:
+  switch (why) {
+  case WIN_QUIT:
     save_page(*page);
     run_quit_all();
     return false;
-  case SDL_KEYUP:
-  case SDL_KEYDOWN: /* a keyboard, or the desktop */
-    down = ev->type == SDL_KEYDOWN;
-    if (ev->key.repeat && capture.option >= 0)
-      return true;
-    switch (ev->key.keysym.sym) {
-    case SDLK_UP: button = APPCTL_UP; break;
-    case SDLK_DOWN: button = APPCTL_DOWN; break;
-    case SDLK_LEFT: button = APPCTL_LEFT; break;
-    case SDLK_RIGHT: button = APPCTL_RIGHT; break;
-    case SDLK_RETURN: button = APPCTL_A; break;
-    case SDLK_PAGEUP: button = APPCTL_L1; break;
-    case SDLK_PAGEDOWN: button = APPCTL_R1; break;
-    case SDLK_ESCAPE: button = APPCTL_MENU; break;
-    case SDLK_BACKSPACE: button = APPCTL_B; break;
-    case SDLK_x: button = APPCTL_X; break;
-    case SDLK_y: button = APPCTL_Y; break;
-    case SDLK_1: button = APPCTL_L2; break;
-    case SDLK_2: button = APPCTL_R2; break;
-    case SDLK_TAB: button = APPCTL_SELECT; break;
-    case SDLK_SPACE: button = APPCTL_START; break;
-    }
+  case UI_VOLUME: show_volume(value); return true;
+  case UI_HASHED: rescan(*page); return true;
+  case UI_EXITED: {
+    running *r = run_find(value);
+    if (r != NULL)
+      app_exited(ui, r, page);
+    return true;
+  }
+  case UI_BUTTON:
+  case UI_KEY:
+    button = value >> 1;
+    down = value & 1;
+    pad = why == UI_BUTTON;
     break;
+  default: return true; /* UI_LOADED */
   }
   /* Recording a binding: every button is the combo's, Menu and B too */
   if (capture.option >= 0 && paused && in_settings) {
@@ -1005,20 +1007,14 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
 }
 
 int main(void) {
-  /* The kiosk shell knows the OSD by app_id and title; apps get their own */
-  setenv("SDL_VIDEO_WAYLAND_WMCLASS", "launcher", 1);
-  if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-    fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+  if (!win_connect(key)) {
+    fprintf(stderr, "launcher: no Wayland display\n");
     return 1;
   }
-  unsetenv("SDL_VIDEO_WAYLAND_WMCLASS");
-  window = SDL_CreateWindow("Launcher", SDL_WINDOWPOS_UNDEFINED,
-                            SDL_WINDOWPOS_UNDEFINED, 640, 480,
-                            SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
-  if (window == NULL || !gfx_init(window) ||
-      (screen = gfx_target_create(window, false)) == NULL ||
+  win_map(&window);
+  if (!gfx_init(&window) || (screen = gfx_target_create(&window, false)) == NULL ||
       !ui_init("sans-serif")) {
-    fprintf(stderr, "launcher: %s\n", SDL_GetError());
+    fprintf(stderr, "launcher: can't draw\n");
     return 1;
   }
   assets_init();
@@ -1041,7 +1037,6 @@ int main(void) {
   bool animating = true;
 
   for (;;) {
-    SDL_Event ev;
     /* A frame's time while animating. Idle: wake once a second for the
      * clock and the status, and draw only if either changed. Under the app:
      * only events. And to hide the OSD. */
@@ -1051,16 +1046,14 @@ int main(void) {
       if (wait < 0 || left < wait)
         wait = left;
     }
-    if (SDL_WaitEventTimeout(&ev, wait)) {
-      do
-        if (!input(&ui, &ev, &page))
-          return 0;
-      while (SDL_PollEvent(&ev));
-      animating = true;
-    }
+    if (!win_wait(NULL, 0, wait))
+      return 1;
+    for (int why, value; win_woken(&why, &value); animating = true)
+      if (!input(&ui, why, value, &page))
+        return 0;
     const uint64_t now = ms_now();
     if (osd_until != 0 && now >= osd_until) {
-      SDL_HideWindow(osd);
+      win_unmap(&osd);
       osd_until = 0;
     }
     /* Under the app, or hidden: nothing would show */

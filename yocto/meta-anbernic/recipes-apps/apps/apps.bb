@@ -10,12 +10,14 @@ S = "${UNPACKDIR}/apps"
 
 inherit meson pkgconfig deploy
 
-# common/ui: SDL2, Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
-# launcher: Wayland (Weston's capture protocol), ALSA, zlib. mediaplayer: GStreamer.
-# corehost: virtual/libgles2 for headers only, the functions come from SDL_GL_GetProcAddress.
-DEPENDS = "libsdl2 vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
+# No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev).
+# common/ui: Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
+# launcher: Weston's capture protocol, ALSA, zlib. mediaplayer: GStreamer.
+# corehost: Vulkan, EGL (virtual/libgles2 for headers only, the functions come
+# from eglGetProcAddress), ALSA, zlib.
+DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
     libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib \
-    gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/libgles2"
+    gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime
 PACKAGES =+ "launcher mediaplayer corehost"

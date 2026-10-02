@@ -3,6 +3,7 @@ LICENSE = "MIT"
 
 inherit image
 
+# libsdl2: for what lives in /data (mGBA, the bindless demo, SuperTuxKart, ports); our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
 # libav*, libgomp: RetroArch and its cores in /data (retroarch recipe); vulkan-loader, xkbcommon etc. come anyway
@@ -23,6 +24,7 @@ IMAGE_INSTALL = " \
     libglvnd \
     mesa-vulkan-drivers \
     vulkan-loader \
+    libsdl2 \
     vulkan-tools \
     glmark2 \
     vkmark \

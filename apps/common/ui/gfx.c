@@ -16,7 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <SDL_vulkan.h>
+#include <vulkan/vulkan_wayland.h>
+#include <wayland-client.h>
 
 #include "util.h"
 #include "quad_frag.h"
@@ -39,7 +40,7 @@ typedef struct {
 } frame;
 
 struct gfx_target {
-  SDL_Window *window;
+  win *window;
   VkSurfaceKHR surface;
   VkSurfaceFormatKHR format;
   bool translucent, stale;
@@ -424,15 +425,19 @@ static bool pick_queues(VkSurfaceKHR surface, uint32_t *graphics_index,
   return true;
 }
 
-bool gfx_init(SDL_Window *window) {
-  unsigned n_ext = 0;
-  if (!SDL_Vulkan_GetInstanceExtensions(window, &n_ext, NULL))
-    return false;
-  const char **exts = malloc(n_ext * sizeof(*exts));
-  SDL_Vulkan_GetInstanceExtensions(window, &n_ext, exts);
+static bool create_surface(win *window, VkSurfaceKHR *out) {
+  VkWaylandSurfaceCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+                                      .display = win_display,
+                                      .surface = window->surface};
+  return ok(vkCreateWaylandSurfaceKHR(instance, &ci, NULL, out), "surface");
+}
+
+bool gfx_init(win *window) {
+  static const char *exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME};
+  const uint32_t n_ext = COUNTOF(exts);
   VkApplicationInfo app = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = SDL_GetWindowTitle(window),
+      .pApplicationName = window->title,
       .apiVersion = VK_API_VERSION_1_3,
   };
   VkInstanceCreateInfo ici = {
@@ -441,13 +446,11 @@ bool gfx_init(SDL_Window *window) {
       .enabledExtensionCount = n_ext,
       .ppEnabledExtensionNames = exts,
   };
-  const bool created = ok(vkCreateInstance(&ici, NULL, &instance), "instance");
-  free(exts);
-  if (!created)
+  if (!ok(vkCreateInstance(&ici, NULL, &instance), "instance"))
     return false;
   /* The first window's surface picks the queue; it is kept for its target */
   VkSurfaceKHR surface;
-  if (!SDL_Vulkan_CreateSurface(window, instance, &surface))
+  if (!create_surface(window, &surface))
     return false;
 
   uint32_t n_pdev = 8;
@@ -679,8 +682,7 @@ static void destroy_swapchain_images(gfx_target *t) {
 
 /* Waits for this window's frames, so their images and semaphores are free */
 static bool create_swapchain(gfx_target *t) {
-  int w, h;
-  SDL_Vulkan_GetDrawableSize(t->window, &w, &h);
+  const int w = t->window->w, h = t->window->h;
   VkSurfaceCapabilitiesKHR caps;
   if (w <= 0 || h <= 0 ||
       !ok(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pdev, t->surface, &caps), "caps"))
@@ -765,7 +767,7 @@ static bool create_swapchain(gfx_target *t) {
   return true;
 }
 
-gfx_target *gfx_target_create(SDL_Window *window, bool translucent) {
+gfx_target *gfx_target_create(win *window, bool translucent) {
   gfx_target *t = NULL;
   for (size_t i = 0; i < target_count; i++)
     if (targets[i].window == window)
@@ -777,7 +779,7 @@ gfx_target *gfx_target_create(SDL_Window *window, bool translucent) {
   t->window = window;
   t->translucent = translucent;
   if (t->surface == VK_NULL_HANDLE &&
-      !SDL_Vulkan_CreateSurface(window, instance, &t->surface))
+      !create_surface(window, &t->surface))
     return NULL;
   VkBool32 present = VK_FALSE;
   vkGetPhysicalDeviceSurfaceSupportKHR(pdev, graphics_family, t->surface, &present);
@@ -864,10 +866,11 @@ void gfx_push(gfx_quad q) {
 }
 
 bool gfx_begin(gfx_target *t, int *w, int *h) {
-  int dw, dh;
-  SDL_Vulkan_GetDrawableSize(t->window, &dw, &dh);
+  /* Unmapped: nothing may be attached until it's configured again */
+  if (!t->window->configured)
+    return false;
   if (t->swapchain == VK_NULL_HANDLE || t->stale ||
-      (uint32_t)dw != t->extent.width || (uint32_t)dh != t->extent.height)
+      (uint32_t)t->window->w != t->extent.width || (uint32_t)t->window->h != t->extent.height)
     if (!create_swapchain(t))
       return false;
   frame *f = &t->frames[t->current];

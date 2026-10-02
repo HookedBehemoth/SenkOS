@@ -12,7 +12,6 @@ executable('launcher', 'main.c', 'apps.c', 'capture.c', 'romdb.c', 'running.c', 
   dependencies: [
     common_dep,
     ui_dep,
-    dependency('sdl2'),
     dependency('wayland-client'),
     dependency('alsa'),
     dependency('zlib'),

@@ -215,7 +215,7 @@ static void *hasher(void *data) {
       roms[i].crc = crc;
       roms[i].state = ok ? KNOWN : FAILED;
     }
-    ui_wake(UI_HASHED, 0);
+    win_wake(UI_HASHED, 0);
   }
   return 0;
 }

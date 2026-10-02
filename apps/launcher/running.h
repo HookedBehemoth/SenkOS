@@ -38,7 +38,7 @@ typedef struct {
 
 extern running runs[RUNNING_MAX];
 
-/* ui_wake(UI_EXITED, pid) when it is gone. NULL when there is no free slot
+/* win_wake(UI_EXITED, pid) when it is gone. NULL when there is no free slot
  * or the fork failed. */
 running *run_launch(str label, str icon, str exec, str arg, str dir);
 running *run_find(pid_t pid);

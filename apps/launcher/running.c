@@ -38,7 +38,7 @@ static void *exit_thread(void *data) {
   } else if (errno != ESRCH) {
     fprintf(stderr, "pidfd_open: %s\n", strerror(errno));
   }
-  ui_wake(UI_EXITED, pid);
+  win_wake(UI_EXITED, pid);
   return NULL;
 }
 
@@ -181,7 +181,7 @@ void run_resume(running *r, bool raise) {
     run_request(r, APPCTL_RESUME, raise);
 }
 
-/* SDL apps turn SIGTERM into SDL_QUIT and exit cleanly (corehost and mGBA
+/* Ours (win.h) and SDL's turn SIGTERM into a clean exit (corehost and mGBA
  * write their saves) */
 void run_quit(running *r) {
   r->quitting = true;

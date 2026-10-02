@@ -43,7 +43,7 @@ typedef struct {
   STRBUF(300) image;
 } romdb_game;
 
-/* ui_wake(UI_HASHED) when a CRC was computed, so the list can be rescanned */
+/* win_wake(UI_HASHED) when a CRC was computed, so the list can be rescanned */
 void romdb_init(void);
 /* The ROM's CRC if known; else false, and it is computed in the background */
 bool romdb_crc(str path, const struct stat *st, uint32_t *crc);
