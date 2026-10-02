@@ -1353,14 +1353,20 @@ static bool hw_init(void) {
   if (egl_display == EGL_NO_DISPLAY || !eglInitialize(egl_display, NULL, NULL) ||
       !eglBindAPI(EGL_OPENGL_ES_API) || !eglChooseConfig(egl_display, wanted, configs, 64, &n) || n == 0)
     return fail("no EGL config");
-  /* Opaque, without depth: Weston can scan it out instead of compositing
-   * it, and the core draws into its own framebuffer */
+  /* XRGB8888 exactly, without depth: what the display's planes take, so
+   * Weston scans it out instead of compositing it on the GPU every frame
+   * (behind the core's frame: missed vblanks). EGL sorts deeper colour
+   * first: "at least 8" gets XRGB2101010. The core draws into its own
+   * framebuffer. */
   config = configs[0];
   for (EGLint i = n - 1; i >= 0; i--) {
-    EGLint alpha, depth;
+    EGLint r, g, b, alpha, depth;
+    eglGetConfigAttrib(egl_display, configs[i], EGL_RED_SIZE, &r);
+    eglGetConfigAttrib(egl_display, configs[i], EGL_GREEN_SIZE, &g);
+    eglGetConfigAttrib(egl_display, configs[i], EGL_BLUE_SIZE, &b);
     eglGetConfigAttrib(egl_display, configs[i], EGL_ALPHA_SIZE, &alpha);
     eglGetConfigAttrib(egl_display, configs[i], EGL_DEPTH_SIZE, &depth);
-    if (alpha == 0 && depth == 0)
+    if (r == 8 && g == 8 && b == 8 && alpha == 0 && depth == 0)
       config = configs[i];
   }
   egl_window = wl_egl_window_create(window.surface, window.w, window.h);
@@ -2100,6 +2106,12 @@ int main(int argc, char **argv) {
     if (run_at - second_at >= 1000000000) {
       snprintf(fps_line, sizeof(fps_line), "%u FPS %d%%", frames_run,
                (int)(core_ns * 100 / (run_at - second_at)));
+      /* For measuring from outside (tools, ssh) */
+      static int log_fps = -1;
+      if (log_fps < 0)
+        log_fps = getenv("COREHOST_LOG_FPS") != NULL;
+      if (log_fps)
+        fprintf(stderr, "corehost: %s\n", fps_line);
       second_at = run_at;
       frames_run = 0;
       core_ns = 0;
