@@ -1,11 +1,12 @@
 #!/bin/sh
-# Build launcher/ for the handheld and swap it in as /data/OS/launcher over USB. weston.init
-# restarts the launcher when it exits, so killing the old one is the whole restart.
+# Build apps/ for the handheld (recipes-apps/apps) and swap the launcher in as /data/OS/launcher
+# over USB. weston.init restarts the launcher when it exits, so killing the old one is the whole
+# restart.
 # No /data/OS/launcher: the image's /usr/bin/launcher runs (`tools/ssh rm /data/OS/launcher`).
 set -e
 cd "$(dirname "$0")"
 # kas-container takes its work dir from the cwd
-(cd ../yocto && ./kas build --target launcher rg35xx-sp.yml)
+(cd ../yocto && ./kas build --target apps rg35xx-sp.yml)
 bin=${ANBERNIC_BUILD_ROOT:-/mnt/multimedia/anbernic-yocto}/build/tmp/deploy/images/rg35xx-sp/launcher
 # Copied, then checked: an interrupted copy leaves a short file that `cat` doesn't fail on
 size=$(wc -c < "$bin")

@@ -8,7 +8,7 @@ A small, fast-booting OS for the Anbernic **RG35XX-SP** (Allwinner H700).
 | Kernel | Linux 7.2 + H700 board patches, everything built in, no initramfs |
 | Root fs | read-only squashfs (lz4) per slot; `/data` ext4 for everything writable |
 | Userspace | busybox init, eudev, Weston (kiosk shell) on DRM, Mesa panfrost (GL/GLES) + PanVK (Vulkan) |
-| UI | [launcher/](../launcher) (SDL2, Vulkan); [mediaplayer/](../mediaplayer) (GStreamer, Cedrus); RetroArch, mGBA and games live on `/data` |
+| UI | [apps/launcher/](../apps/launcher) (SDL2, Vulkan); [apps/mediaplayer/](../apps/mediaplayer) (GStreamer, Cedrus); RetroArch, mGBA and games live on `/data` |
 | Build | Yocto (oe-core + meta-arm + meta-anbernic) via kas in a container |
 
 - [hardware.md](hardware.md): SoC, peripherals, how they map to devices

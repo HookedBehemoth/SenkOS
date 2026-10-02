@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a launcher game pack: one file per system with every No-Intro ROM's
 title and metadata (libretro-database) and its box art (libretro-thumbnails),
-looked up by the ROM's CRC32. The launcher mmaps it; see launcher/romdb.h for
+looked up by the ROM's CRC32. The launcher mmaps it; see apps/launcher/romdb.h for
 the layout.
 
 Box art is matched by name the way RetroArch does it, deduplicated by a
@@ -28,7 +28,7 @@ from PIL import Image, PngImagePlugin
 PngImagePlugin.MAX_TEXT_CHUNK = 64 << 20
 DB = 'https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/'
 FIELDS = ['genre', 'developer', 'publisher', 'franchise', 'releaseyear', 'maxusers']
-TILE = (0x1c, 0x1d, 0x23)  # TILE in launcher/main.c
+TILE = (0x1c, 0x1d, 0x23)  # TILE in apps/launcher/main.c
 SIZE = 128
 QUALITY = 35  # WebP; no visible loss at tile size, half of q80
 # pHash bits apart that still count as the same box: 4 already merges
@@ -36,7 +36,7 @@ QUALITY = 35  # WebP; no visible loss at tile size, half of q80
 SAME_HASH, SAME_COLOUR = 2, 10
 
 
-# launcher/romdb.h: header, then the sorted CRCs (the only thing searched),
+# apps/launcher/romdb.h: header, then the sorted CRCs (the only thing searched),
 # records in the same order, image offsets, lists, strings, WebP
 HEADER = struct.Struct('<8s14I')
 RECORD = struct.Struct('<IIIIHHHHHHHBB')
