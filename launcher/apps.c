@@ -17,6 +17,11 @@
 #define COREHOST(name, so) COREHOST_ENV(name, "", so)
 /* The cores' BIOS and asset files, in /data/bios (run from retroarch/cores) */
 #define BIOS "COREHOST_SYSTEM=\"${PWD%/*/*}/bios\" "
+/* Its memory stick beside the games: PPSSPP takes a folder named "psp" for
+ * the stick's PSP folder, so not the ROM folder itself */
+#define PSP_SAVE "COREHOST_SAVE=\"${1%/*}/memstick\" "
+/* GLES unless a core that has both is told otherwise */
+#define VULKAN "COREHOST_RENDER=vulkan "
 #define SYSTEM(title, dir, exts, pack_name, ...)                                         \
   {.name = title, .folder = "roms/" dir, .roms = exts, .system_dir = "retroarch/cores", \
    .pack = pack_name, .cores = (const core[]){__VA_ARGS__, {0}}}
@@ -41,15 +46,14 @@ category categories[] = {
     SYSTEM("Game Gear", "gg", ".gg;.zip;", "Sega - Game Gear",
            COREHOST("Genesis Plus GX", "genesis_plus_gx")),
     SYSTEM("Dreamcast", "dc", ".chd;.cdi;.gdi;.cue;", "Sega - Dreamcast",
-           COREHOST_ENV("Flycast", BIOS, "flycast")),
+           COREHOST_ENV("Flycast", BIOS, "flycast"), COREHOST_ENV("Flycast (Vulkan)", BIOS VULKAN, "flycast")),
     SYSTEM("PC Engine", "pce", ".pce;.cue;.chd;.zip;", "NEC - PC Engine - TurboGrafx 16",
            COREHOST("Beetle PCE Fast", "mednafen_pce_fast")),
     SYSTEM("PlayStation", "ps", ".cue;.chd;.pbp;.m3u;.bin;.img;", "Sony - PlayStation",
            COREHOST("PCSX ReARMed", "pcsx_rearmed")),
     SYSTEM("PSP", "psp", ".iso;.cso;.pbp;.chd;", "Sony - PlayStation Portable",
-           /* Its memory stick beside the games: PPSSPP takes a folder named
-           * "psp" for the stick's PSP folder, so not the ROM folder itself */
-           COREHOST_ENV("PPSSPP", BIOS "COREHOST_SAVE=\"${1%/*}/memstick\" ", "ppsspp")),
+           COREHOST_ENV("PPSSPP", BIOS PSP_SAVE, "ppsspp"),
+           COREHOST_ENV("PPSSPP (Vulkan)", BIOS PSP_SAVE VULKAN, "ppsspp")),
     SYSTEM("Arcade", "arcade", ".zip;.7z;", NULL,
            COREHOST("FinalBurn Neo", "fbneo")),
     SYSTEM("Neo Geo Pocket", "ngp", ".ngp;.ngc;.zip;", "SNK - Neo Geo Pocket Color",

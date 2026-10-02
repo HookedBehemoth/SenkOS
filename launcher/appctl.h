@@ -18,7 +18,7 @@
 
 #define APPCTL_ENV "LAUNCHER_CTL"
 #define APPCTL_MAGIC 0x4c544341u /* "ACTL" */
-#define APPCTL_VERSION 3
+#define APPCTL_VERSION 4
 
 enum {
   /* Stop running and wait; the app has stopped once it answers */
@@ -64,7 +64,8 @@ enum { APPCTL_CHOICE, APPCTL_BINDING };
 
 #define APPCTL_TEXT 48
 #define APPCTL_VALUES 64
-#define APPCTL_OPTIONS_MAX 64
+/* PPSSPP alone registers 76 options; leave room for the host's controls. */
+#define APPCTL_OPTIONS_MAX 128
 
 typedef struct {
   char key[APPCTL_TEXT];

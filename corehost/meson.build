@@ -5,6 +5,7 @@ executable('corehost', 'main.c',
   dependencies: [
     dependency('sdl2'),
     dependency('zlib'),
+    dependency('vulkan'),
     meson.get_compiler('c').find_library('dl', required: false),
   ],
   install: true)

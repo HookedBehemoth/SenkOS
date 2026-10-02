@@ -1,0 +1,37 @@
+Subject: [PATCH] MediaEngine: return EOF for empty custom FFmpeg reads
+
+Current libavformat requires a negative AVERROR when a custom read callback
+has no bytes. Returning zero spins forever in avio_r8 at the end of PSP
+movies (observed after Monster Hunter character creation). Reset temporary
+EOF/error when the PSP refills its ringbuffer so later movie data is read.
+Keep non-FFmpeg builds unchanged.
+
+Upstream-Status: Pending
+---
+--- a/Core/HW/MediaEngine.cpp
++++ b/Core/HW/MediaEngine.cpp
+@@ -232,7 +232,13 @@
+ 		if (size > 0)
+ 			mpeg->m_decodingsize = size;
+ 	}
++#ifdef USE_FFMPEG
++	// A zero read makes current libavformat retry forever at the end of a movie.
++	// An empty PSP ringbuffer is temporary EOF; addStreamData clears it on refill.
++	return size > 0 ? size : AVERROR_EOF;
++#else
+ 	return size;
++#endif
+ }
+ 
+ bool MediaEngine::SetupStreams() {
+@@ -467,6 +473,10 @@
+ 			m_demux->addStreamData(buffer, addSize);
+ 		}
+ #ifdef USE_FFMPEG
++		if (size > 0 && m_pIOContext) {
++			m_pIOContext->eof_reached = 0;
++			m_pIOContext->error = 0;
++		}
+ 		if (!m_pFormatCtx && m_pdata->getQueueSize() >= 2048) {
+ 			m_mpegheaderSize = m_pdata->get_front(m_mpegheader, sizeof(m_mpegheader));
+ 			int streamOffset = (int)(*(s32_be *)(m_mpegheader + 8));

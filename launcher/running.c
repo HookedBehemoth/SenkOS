@@ -141,8 +141,10 @@ size_t run_count(void) {
 }
 
 bool run_controlled(const running *r) {
+  /* v4 only appends option slots. v3 clients (e.g. the image's media player)
+   * still share the same messages and the first 64 slots in our larger memfd. */
   return r->shm != NULL && r->shm->magic == APPCTL_MAGIC &&
-         r->shm->version == APPCTL_VERSION;
+         (r->shm->version == APPCTL_VERSION || r->shm->version == 3);
 }
 
 int run_request(running *r, uint32_t op, int32_t arg) {

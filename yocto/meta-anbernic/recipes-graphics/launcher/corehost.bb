@@ -10,7 +10,7 @@ S = "${UNPACKDIR}/corehost"
 inherit meson pkgconfig deploy
 
 # virtual/libgles2: headers only, the functions come from SDL_GL_GetProcAddress
-DEPENDS = "libsdl2 zlib virtual/libgles2"
+DEPENDS = "libsdl2 zlib virtual/libgles2 vulkan-loader vulkan-headers"
 
 do_deploy() {
     install -m 0755 ${B}/corehost ${DEPLOYDIR}/corehost

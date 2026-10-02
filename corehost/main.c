@@ -7,7 +7,10 @@
  *
  * Video through SDL_Renderer (handheld cores are small), or for a core that
  * renders with GLES (N64, Dreamcast, PSP) a GLES context and a framebuffer
- * for it to draw into, blitted to the window. Audio queued to SDL and the
+ * for it to draw into, blitted to the window. Or Vulkan, the way RetroArch
+ * offers it: the core makes its device on our instance and surface, renders
+ * into its own image and hands that over; we blit it into the swapchain.
+ * Cores that can do both are offered GLES unless $COREHOST_RENDER=vulkan. Audio queued to SDL and the
  * pace taken from it, input from the first SDL game controller (the
  * built-in pad, by label: SDL_GAMECONTROLLERCONFIG) or the keyboard.
  *
@@ -43,6 +46,8 @@
 /* The context's own functions, from SDL_GL_GetProcAddress: nothing linked */
 #define GL_GLES_PROTOTYPES 0
 #include <GLES3/gl3.h>
+#include <SDL_vulkan.h>
+#include "libretro_vulkan.h"
 
 #include "../launcher/appctl.h"
 #include "libretro.h"
@@ -79,6 +84,8 @@ static SDL_Renderer *renderer;
 static SDL_Texture *texture;
 static Uint32 texture_format = SDL_PIXELFORMAT_RGB565;
 static int frame_w, frame_h;
+/* The frame's shape on screen, width / height; 0: square pixels */
+static float aspect;
 static SDL_AudioDeviceID audio;
 static SDL_GameController *pad;
 static double fps = 60;
@@ -87,7 +94,7 @@ static const char *core_path;
 
 /* SET_HW_RENDER: the core draws into fbo, at most max_w x max_h */
 static struct retro_hw_render_callback hw;
-static bool hw_on;
+static bool hw_on, vk_on;
 static SDL_GLContext gl_context;
 static GLuint fbo, fbo_color, fbo_depth;
 static unsigned max_w, max_h;
@@ -187,7 +194,11 @@ static appctl_option *option(const char *key) {
 }
 
 static unsigned host_value(int which) {
-  return atomic_load(&shm->options[host_option_at + which].value);
+  const unsigned at = host_option_at + which;
+  if (at >= atomic_load(&shm->option_count) ||
+      strcmp(shm->options[at].key, host_options[which].key) != 0)
+    return 0;
+  return atomic_load(&shm->options[at].value);
 }
 
 static uint16_t binding(int which) {
@@ -197,7 +208,7 @@ static uint16_t binding(int which) {
 /* The next slot, filled in by the caller and then published; NULL when full */
 static appctl_option *new_option(const char *key, const char *label, int category) {
   const uint32_t n = atomic_load(&shm->option_count);
-  if (n == APPCTL_OPTIONS_MAX)
+  if (n >= APPCTL_OPTIONS_MAX)
     return NULL;
   appctl_option *o = &shm->options[n];
   snprintf(o->key, sizeof(o->key), "%s", key);
@@ -458,6 +469,352 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
   return id == RETRO_DEVICE_ID_JOYPAD_MASK ? mask : (mask >> id) & 1;
 }
 
+/* The core's frames in flight: a fence, command buffer and acquire
+ * semaphore each. What it hands over for a frame is kept until we present. */
+#define VK_FRAMES 2
+#define VK_MAX 8
+static struct {
+  const struct retro_hw_render_context_negotiation_interface_vulkan *negotiation;
+  struct retro_hw_render_interface_vulkan iface;
+  VkInstance instance;
+  VkSurfaceKHR surface;
+  VkPhysicalDevice gpu;
+  VkDevice device;
+  VkQueue queue;
+  uint32_t family;
+  VkSwapchainKHR swapchain;
+  VkImage images[VK_MAX];
+  VkSemaphore rendered[VK_MAX]; /* per swapchain image: the present waits */
+  uint32_t image_count;
+  VkExtent2D extent;
+  VkFormat format;
+  VkPresentModeKHR mode;
+  VkCommandPool pool;
+  VkCommandBuffer cmd[VK_FRAMES];
+  VkFence fence[VK_FRAMES];
+  VkSemaphore acquired[VK_FRAMES];
+  uint32_t index;
+  SDL_mutex *queue_lock;
+  /* From the core for this frame */
+  struct retro_vulkan_image image;
+  bool have_image;
+  uint32_t src_family, wait_count, cmd_count;
+  VkSemaphore wait[VK_MAX], signal;
+  VkCommandBuffer core_cmd[VK_MAX];
+} vk;
+
+static void vk_set_image(void *handle, const struct retro_vulkan_image *image, uint32_t n,
+                         const VkSemaphore *semaphores, uint32_t src_family) {
+  (void)handle;
+  vk.image = *image;
+  vk.have_image = true;
+  vk.src_family = src_family;
+  vk.wait_count = SDL_min(n, VK_MAX);
+  memcpy(vk.wait, semaphores, vk.wait_count * sizeof(*semaphores));
+}
+static uint32_t vk_sync_index(void *handle) { return (void)handle, vk.index; }
+static uint32_t vk_sync_mask(void *handle) { return (void)handle, (1u << VK_FRAMES) - 1; }
+static void vk_set_command_buffers(void *handle, uint32_t n, const VkCommandBuffer *cmd) {
+  (void)handle;
+  vk.cmd_count = SDL_min(n, VK_MAX);
+  memcpy(vk.core_cmd, cmd, vk.cmd_count * sizeof(*cmd));
+}
+static void vk_wait_sync_index(void *handle) {
+  (void)handle;
+  vkWaitForFences(vk.device, 1, &vk.fence[vk.index], VK_TRUE, UINT64_MAX);
+}
+static void vk_lock(void *handle) { (void)handle, SDL_LockMutex(vk.queue_lock); }
+static void vk_unlock(void *handle) { (void)handle, SDL_UnlockMutex(vk.queue_lock); }
+static void vk_set_signal(void *handle, VkSemaphore semaphore) { (void)handle, vk.signal = semaphore; }
+
+static bool vk_swapchain(void) {
+  VkSurfaceCapabilitiesKHR caps;
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk.gpu, vk.surface, &caps);
+  int w, h;
+  SDL_Vulkan_GetDrawableSize(window, &w, &h);
+  vk.extent = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+  if (vk.extent.width == 0 || vk.extent.height == 0)
+    return false;
+  uint32_t count = caps.minImageCount + 1;
+  if (caps.maxImageCount != 0)
+    count = SDL_min(count, caps.maxImageCount);
+  VkSwapchainKHR old = vk.swapchain;
+  const VkSwapchainCreateInfoKHR info = {
+      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+      .surface = vk.surface,
+      .minImageCount = SDL_min(count, VK_MAX),
+      .imageFormat = vk.format,
+      .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+      .imageExtent = vk.extent,
+      .imageArrayLayers = 1,
+      .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .preTransform = caps.currentTransform,
+      .compositeAlpha = caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+                            ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+                            : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+      .presentMode = vk.mode,
+      .clipped = VK_TRUE,
+      .oldSwapchain = old,
+  };
+  vkDeviceWaitIdle(vk.device);
+  if (vkCreateSwapchainKHR(vk.device, &info, NULL, &vk.swapchain) != VK_SUCCESS)
+    return false;
+  if (old != VK_NULL_HANDLE)
+    vkDestroySwapchainKHR(vk.device, old, NULL);
+  vk.image_count = VK_MAX;
+  vkGetSwapchainImagesKHR(vk.device, vk.swapchain, &vk.image_count, vk.images);
+  return true;
+}
+
+/* Window, instance, the core's device, swapchain; then its context_reset */
+static bool vk_init(const char *title, int w, int h, Uint32 flags) {
+  window = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, w, h,
+                            flags | SDL_WINDOW_VULKAN);
+  unsigned n_ext = 0;
+  if (window == NULL || !SDL_Vulkan_GetInstanceExtensions(window, &n_ext, NULL))
+    return false;
+  const char *exts[16];
+  n_ext = SDL_min(n_ext, SDL_arraysize(exts));
+  SDL_Vulkan_GetInstanceExtensions(window, &n_ext, exts);
+  const VkApplicationInfo default_app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                         .pApplicationName = "corehost",
+                                         .apiVersion = VK_API_VERSION_1_1};
+  const VkApplicationInfo *app = vk.negotiation && vk.negotiation->get_application_info
+                                     ? vk.negotiation->get_application_info()
+                                     : NULL;
+  /* PPSSPP's negotiation metadata says 1.0, but its context independently
+   * queries the loader version and uses promoted functions (including VMA's
+   * memory requirements queries). Expose the loader's supported core API on
+   * our instance too, or those device function pointers can be NULL. */
+  VkApplicationInfo app_info = app ? *app : default_app;
+  uint32_t api_version = VK_API_VERSION_1_0;
+  PFN_vkEnumerateInstanceVersion enumerate_version =
+      (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion");
+  if (enumerate_version != NULL && enumerate_version(&api_version) == VK_SUCCESS)
+    app_info.apiVersion = SDL_max(app_info.apiVersion, api_version);
+  const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                                    .pApplicationInfo = &app_info,
+                                    .enabledExtensionCount = n_ext,
+                                    .ppEnabledExtensionNames = exts};
+  if (vkCreateInstance(&ici, NULL, &vk.instance) != VK_SUCCESS ||
+      !SDL_Vulkan_CreateSurface(window, vk.instance, &vk.surface))
+    return SDL_SetError("no Vulkan instance or surface"), false;
+
+  static const char *const device_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  struct retro_vulkan_context ctx = {0};
+  if (vk.negotiation && vk.negotiation->create_device) {
+    const VkPhysicalDeviceFeatures none = {0};
+    if (!vk.negotiation->create_device(&ctx, vk.instance, VK_NULL_HANDLE, vk.surface, vkGetInstanceProcAddr,
+                                       (const char **)device_exts, 1, NULL, 0, &none))
+      return SDL_SetError("the core made no Vulkan device"), false;
+  } else {
+    /* Ours: the first GPU's first queue that draws and presents */
+    uint32_t n = 1, families = 8;
+    VkQueueFamilyProperties qf[8];
+    vkEnumeratePhysicalDevices(vk.instance, &n, &ctx.gpu);
+    if (n == 0)
+      return SDL_SetError("no Vulkan device"), false;
+    vkGetPhysicalDeviceQueueFamilyProperties(ctx.gpu, &families, qf);
+    VkBool32 present = VK_FALSE;
+    for (ctx.queue_family_index = 0; ctx.queue_family_index < families; ctx.queue_family_index++) {
+      vkGetPhysicalDeviceSurfaceSupportKHR(ctx.gpu, ctx.queue_family_index, vk.surface, &present);
+      if (present && (qf[ctx.queue_family_index].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+        break;
+    }
+    const float priority = 1;
+    const VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                         .queueFamilyIndex = ctx.queue_family_index,
+                                         .queueCount = 1,
+                                         .pQueuePriorities = &priority};
+    const VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                                    .queueCreateInfoCount = 1,
+                                    .pQueueCreateInfos = &qci,
+                                    .enabledExtensionCount = 1,
+                                    .ppEnabledExtensionNames = device_exts};
+    if (ctx.queue_family_index == families || vkCreateDevice(ctx.gpu, &dci, NULL, &ctx.device) != VK_SUCCESS)
+      return SDL_SetError("no Vulkan queue for the window"), false;
+    vkGetDeviceQueue(ctx.device, ctx.queue_family_index, 0, &ctx.queue);
+  }
+  vk.gpu = ctx.gpu;
+  vk.device = ctx.device;
+  vk.queue = ctx.queue;
+  vk.family = ctx.queue_family_index;
+
+  /* BGRA8 if there is one; immediate or mailbox: the pace is the audio's */
+  uint32_t n = VK_MAX;
+  VkSurfaceFormatKHR formats[VK_MAX];
+  vkGetPhysicalDeviceSurfaceFormatsKHR(vk.gpu, vk.surface, &n, formats);
+  vk.format = n ? formats[0].format : VK_FORMAT_B8G8R8A8_UNORM;
+  for (uint32_t i = 0; i < n; i++)
+    if (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
+      vk.format = formats[i].format;
+  VkPresentModeKHR modes[VK_MAX];
+  n = VK_MAX;
+  vkGetPhysicalDeviceSurfacePresentModesKHR(vk.gpu, vk.surface, &n, modes);
+  vk.mode = VK_PRESENT_MODE_FIFO_KHR;
+  for (uint32_t i = 0; i < n; i++)
+    if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ||
+        (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR && vk.mode == VK_PRESENT_MODE_FIFO_KHR))
+      vk.mode = modes[i];
+  if (!vk_swapchain())
+    return SDL_SetError("no swapchain"), false;
+
+  const VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                       .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                       .queueFamilyIndex = vk.family};
+  vkCreateCommandPool(vk.device, &pci, NULL, &vk.pool);
+  const VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                           .commandPool = vk.pool,
+                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                           .commandBufferCount = VK_FRAMES};
+  vkAllocateCommandBuffers(vk.device, &cai, vk.cmd);
+  const VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                                 .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+  const VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  for (int i = 0; i < VK_FRAMES; i++) {
+    vkCreateFence(vk.device, &fci, NULL, &vk.fence[i]);
+    vkCreateSemaphore(vk.device, &sci, NULL, &vk.acquired[i]);
+  }
+  for (int i = 0; i < VK_MAX; i++)
+    vkCreateSemaphore(vk.device, &sci, NULL, &vk.rendered[i]);
+  vk.queue_lock = SDL_CreateMutex();
+
+  vk.iface = (struct retro_hw_render_interface_vulkan){
+      .interface_type = RETRO_HW_RENDER_INTERFACE_VULKAN,
+      .interface_version = RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION,
+      .instance = vk.instance,
+      .gpu = vk.gpu,
+      .device = vk.device,
+      .get_device_proc_addr = vkGetDeviceProcAddr,
+      .get_instance_proc_addr = vkGetInstanceProcAddr,
+      .queue = vk.queue,
+      .queue_index = vk.family,
+      .set_image = vk_set_image,
+      .get_sync_index = vk_sync_index,
+      .get_sync_index_mask = vk_sync_mask,
+      .set_command_buffers = vk_set_command_buffers,
+      .wait_sync_index = vk_wait_sync_index,
+      .lock_queue = vk_lock,
+      .unlock_queue = vk_unlock,
+      .set_signal_semaphore = vk_set_signal,
+  };
+  if (hw.context_reset != NULL)
+    hw.context_reset();
+  VkPhysicalDeviceProperties properties;
+  vkGetPhysicalDeviceProperties(vk.gpu, &properties);
+  fprintf(stderr, "corehost: Vulkan: %s, instance API %u.%u, %ux%u\n", properties.deviceName,
+          VK_API_VERSION_MAJOR(app_info.apiVersion), VK_API_VERSION_MINOR(app_info.apiVersion),
+          vk.extent.width, vk.extent.height);
+  return true;
+}
+
+static void vk_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
+                       uint32_t src_family, uint32_t dst_family, const VkImageSubresourceRange *range) {
+  const VkImageMemoryBarrier b = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+      .oldLayout = from,
+      .newLayout = to,
+      .srcQueueFamilyIndex = src_family,
+      .dstQueueFamilyIndex = dst_family,
+      .image = image,
+      .subresourceRange = *range,
+  };
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+                       NULL, 0, NULL, 1, &b);
+}
+
+/* The core's image onto the next swapchain image at x, y, w, h; the core's
+ * command buffers and semaphores go with it */
+static void vk_present(int x, int y, int w, int h) {
+  const uint32_t f = vk.index;
+  vkWaitForFences(vk.device, 1, &vk.fence[f], VK_TRUE, UINT64_MAX);
+  uint32_t at;
+  VkResult r = vkAcquireNextImageKHR(vk.device, vk.swapchain, UINT64_MAX, vk.acquired[f], VK_NULL_HANDLE, &at);
+  if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (!vk_swapchain())
+      return;
+    r = vkAcquireNextImageKHR(vk.device, vk.swapchain, UINT64_MAX, vk.acquired[f], VK_NULL_HANDLE, &at);
+  }
+  if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
+    return;
+  vkResetFences(vk.device, 1, &vk.fence[f]);
+
+  const VkCommandBuffer cmd = vk.cmd[f];
+  vkResetCommandBuffer(cmd, 0);
+  const VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                          .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+  vkBeginCommandBuffer(cmd, &begin);
+  const VkImageSubresourceRange color = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  const VkImage target = vk.images[at];
+  vk_barrier(cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+             VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
+  const VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
+  vkCmdClearColorImage(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &color);
+  if (vk.have_image && frame_w > 0 && frame_h > 0) {
+    const VkImage source = vk.image.create_info.image;
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+                                           vk.image.create_info.subresourceRange.baseArrayLayer, 1};
+    /* GENERAL may be read as it is; any other layout is ours until the fence */
+    const VkImageLayout layout = vk.image.image_layout;
+    const VkImageLayout read = layout == VK_IMAGE_LAYOUT_GENERAL ? layout : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    const bool transfer = vk.src_family != VK_QUEUE_FAMILY_IGNORED && vk.src_family != vk.family;
+    vk_barrier(cmd, source, layout, read, transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED,
+               transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED, &range);
+    const VkImageBlit blit = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, range.baseArrayLayer, 1},
+        .srcOffsets = {{0, 0, 0}, {frame_w, frame_h, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{x, y, 0}, {x + w, y + h, 1}},
+    };
+    vkCmdBlitImage(cmd, source, read, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   host_value(HOST_FILTER) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    vk_barrier(cmd, source, read, layout, transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED,
+               transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED, &range);
+  }
+  vk_barrier(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+             VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
+  vkEndCommandBuffer(cmd);
+
+  /* The core's command buffers first; with them, no waiting on its semaphores */
+  VkSemaphore waits[VK_MAX + 1] = {vk.acquired[f]}, signals[2] = {vk.rendered[at], vk.signal};
+  VkPipelineStageFlags stages[VK_MAX + 1];
+  VkCommandBuffer cmds[VK_MAX + 1];
+  uint32_t n_wait = 1, n_cmd = 0;
+  if (vk.cmd_count == 0)
+    for (uint32_t i = 0; i < vk.wait_count; i++)
+      waits[n_wait++] = vk.wait[i];
+  for (uint32_t i = 0; i < n_wait; i++)
+    stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  for (uint32_t i = 0; i < vk.cmd_count; i++)
+    cmds[n_cmd++] = vk.core_cmd[i];
+  cmds[n_cmd++] = cmd;
+  const VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                               .waitSemaphoreCount = n_wait,
+                               .pWaitSemaphores = waits,
+                               .pWaitDstStageMask = stages,
+                               .commandBufferCount = n_cmd,
+                               .pCommandBuffers = cmds,
+                               .signalSemaphoreCount = vk.signal != VK_NULL_HANDLE ? 2 : 1,
+                               .pSignalSemaphores = signals};
+  const VkPresentInfoKHR present = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                                    .waitSemaphoreCount = 1,
+                                    .pWaitSemaphores = &vk.rendered[at],
+                                    .swapchainCount = 1,
+                                    .pSwapchains = &vk.swapchain,
+                                    .pImageIndices = &at};
+  SDL_LockMutex(vk.queue_lock);
+  vkQueueSubmit(vk.queue, 1, &submit, vk.fence[f]);
+  r = vkQueuePresentKHR(vk.queue, &present);
+  SDL_UnlockMutex(vk.queue_lock);
+  if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
+    vk_swapchain();
+  vk.wait_count = vk.cmd_count = 0;
+  vk.signal = VK_NULL_HANDLE;
+  vk.index = (f + 1) % VK_FRAMES;
+}
+
 static uintptr_t hw_framebuffer(void) { return fbo; }
 
 /* RetroArch's own: lets a core's threads out of the frontend's waits on
@@ -646,7 +1003,13 @@ static bool environment(unsigned cmd, void *data) {
   case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
   case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
   case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
+    return true;
   case RETRO_ENVIRONMENT_SET_GEOMETRY: /* the frame's size comes with it */
+    aspect = ((const struct retro_game_geometry *)data)->aspect_ratio;
+    /* A core may replace its output images when geometry changes. Don't
+     * repeat the previous image until it hands us a fresh one. */
+    if (vk_on)
+      vk.have_image = false;
     return true;
   case GET_CLEAR_ALL_THREAD_WAITS_CB:
     *(retro_environment_t *)data = clear_thread_waits;
@@ -655,13 +1018,29 @@ static bool environment(unsigned cmd, void *data) {
     *(const char **)data = core_path;
     return true;
   /* GLES: what Mesa does best here, and what the cores do on ARM */
-  case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
-    *(unsigned *)data = RETRO_HW_CONTEXT_OPENGLES3;
+  case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
+    const char *render = getenv("COREHOST_RENDER");
+    *(unsigned *)data = render != NULL && strcmp(render, "vulkan") == 0 ? RETRO_HW_CONTEXT_VULKAN
+                                                                         : RETRO_HW_CONTEXT_OPENGLES3;
+    return true;
+  }
+  case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: {
+    const struct retro_hw_render_context_negotiation_interface_vulkan *n = data;
+    if (n->interface_type != RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN)
+      return false;
+    vk.negotiation = n;
+    return true;
+  }
+  case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
+    if (!vk_on || vk.device == VK_NULL_HANDLE)
+      return false;
+    *(const struct retro_hw_render_interface **)data = (const void *)&vk.iface;
     return true;
   case RETRO_ENVIRONMENT_SET_HW_RENDER: {
     struct retro_hw_render_callback *cb = data;
-    if (cb->context_type != RETRO_HW_CONTEXT_OPENGLES2 && cb->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
-        cb->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION)
+    vk_on = cb->context_type == RETRO_HW_CONTEXT_VULKAN;
+    if (!vk_on && cb->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
+        cb->context_type != RETRO_HW_CONTEXT_OPENGLES3 && cb->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION)
       return false;
     cb->get_current_framebuffer = hw_framebuffer;
     cb->get_proc_address = hw_proc;
@@ -672,6 +1051,9 @@ static bool environment(unsigned cmd, void *data) {
   case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
     /* ponytail: a new rate or sample rate is taken on the next start */
     const struct retro_system_av_info *av = data;
+    aspect = av->geometry.aspect_ratio;
+    if (vk_on)
+      vk.have_image = false;
     if (av->geometry.max_width > max_w || av->geometry.max_height > max_h)
       hw_resize(av->geometry.max_width, av->geometry.max_height);
     return true;
@@ -900,21 +1282,29 @@ static bool control(bool *paused) {
 
 static void present(void) {
   int w, h;
-  if (hw_on)
+  if (vk_on)
+    w = (int)vk.extent.width, h = (int)vk.extent.height;
+  else if (hw_on)
     SDL_GL_GetDrawableSize(window, &w, &h);
   else
     SDL_GetRendererOutputSize(renderer, &w, &h);
   SDL_Rect dst = {0, 0, w, h};
   if (frame_w > 0 && frame_h > 0) {
-    const float fit = SDL_min((float)w / frame_w, (float)h / frame_h);
+    /* Integer scaling goes by the height: N64's 640x240 is a 4:3 picture */
+    const float shown_w = aspect > 0 ? frame_h * aspect : frame_w;
+    const float fit = SDL_min(w / shown_w, (float)h / frame_h);
     const unsigned scale = host_value(HOST_SCALE);
     if (scale != 2) {
       const float s = scale == 0 && fit >= 1 ? (float)(int)fit : fit;
-      dst.w = (int)(frame_w * s);
+      dst.w = (int)(shown_w * s);
       dst.h = (int)(frame_h * s);
       dst.x = (w - dst.w) / 2;
       dst.y = (h - dst.h) / 2;
     }
+  }
+  if (vk_on) {
+    vk_present(dst.x, dst.y, dst.w, dst.h);
+    return;
   }
   if (hw_on) {
     hw_present(dst.x, dst.y, dst.w, dst.h, h);
@@ -933,6 +1323,12 @@ static bool open_ctl(void) {
   int sock, mem;
   const char *env = getenv(APPCTL_ENV);
   if (env != NULL && sscanf(env, "%d,%d", &sock, &mem) == 2) {
+    struct stat st;
+    if (fstat(mem, &st) != 0 || st.st_size != sizeof(appctl_shm)) {
+      fprintf(stderr, "corehost: incompatible launcher control table; restart the updated launcher\n");
+      close(mem);
+      return false;
+    }
     void *map = mmap(NULL, sizeof(appctl_shm), PROT_READ | PROT_WRITE, MAP_SHARED, mem, 0);
     close(mem);
     if (map != MAP_FAILED) {
@@ -1044,10 +1440,16 @@ int main(int argc, char **argv) {
   struct retro_system_av_info av;
   core.retro_get_system_av_info(&av);
   fps = av.timing.fps > 0 ? av.timing.fps : 60;
+  aspect = av.geometry.aspect_ratio;
   sample_rate = (int)(av.timing.sample_rate + 0.5);
 
   const Uint32 flags = SDL_WINDOW_RESIZABLE | (ctl >= 0 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-  if (hw_on) {
+  if (vk_on) {
+    if (!vk_init(info.library_name, av.geometry.base_width * 3, av.geometry.base_height * 3, flags)) {
+      fprintf(stderr, "corehost: Vulkan: %s\n", SDL_GetError());
+      return 1;
+    }
+  } else if (hw_on) {
     hw_resize(av.geometry.max_width, av.geometry.max_height);
     if (!hw_init(info.library_name, av.geometry.base_width * 3, av.geometry.base_height * 3, flags)) {
       fprintf(stderr, "corehost: GLES: %s\n", SDL_GetError());
@@ -1131,6 +1533,8 @@ int main(int argc, char **argv) {
   flush_sram();
   /* RetroArch's order, which cores count on: PPSSPP's unload frees what its
    * context_destroy uses */
+  if (vk_on && vk.device != VK_NULL_HANDLE)
+    vkDeviceWaitIdle(vk.device);
   if (hw_on && hw.context_destroy != NULL)
     hw.context_destroy();
   core.retro_unload_game();

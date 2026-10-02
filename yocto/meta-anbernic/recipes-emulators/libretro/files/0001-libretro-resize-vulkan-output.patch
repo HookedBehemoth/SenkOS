@@ -1,0 +1,84 @@
+Subject: [PATCH] libretro: rebuild Vulkan output images on resolution changes
+
+Vulkan was explicitly excluded from live resolution/crop changes, leaving
+the old small output images behind while reporting larger frames. Stop the
+render workers, drain deferred deletes, and rebuild the synthetic swapchain
+and backbuffers before restoring GPU resources. Destroy the old synthetic
+swapchain first because the wrapper stores only one global chain.
+
+Upstream-Status: Pending
+---
+--- a/libretro/libretro.cpp
++++ b/libretro/libretro.cpp
+@@ -1126,7 +1126,7 @@
+          environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avInfo);
+          updateAvInfo = false;
+          gpu->NotifyDisplayResized();
+-         if (ctx && ctx->GetGPUCore() != GPUCORE_VULKAN)
++         if (ctx)
+             resetHWContext = true;
+       }
+    }
+@@ -1136,7 +1136,7 @@
+       updateGeometry = true;
+       if (gpu)
+          gpu->NotifyDisplayResized();
+-      if (ctx && backend != RETRO_HW_CONTEXT_NONE && ctx->GetGPUCore() != GPUCORE_VULKAN)
++      if (ctx && backend != RETRO_HW_CONTEXT_NONE)
+          resetHWContext = true;
+    }
+ 
+@@ -1162,8 +1162,7 @@
+       environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+    }
+ 
+-   /* Must reset context to resize render area properly while running,
+-    * but not necessary with software, and not working with Vulkan.. (TODO) */
++   /* Hardware output images must match the new resolution and crop. */
+    if (resetHWContext)
+       ((LibretroHWRenderContext *)ctx)->ContextReset();
+ 
+--- a/libretro/LibretroVulkanContext.cpp
++++ b/libretro/LibretroVulkanContext.cpp
+@@ -28,7 +28,8 @@
+ 
+ void LibretroVulkanContext::SwapBuffers() {
+ 	vk_libretro_wait_for_presentation();
+-	LibretroHWRenderContext::SwapBuffers();
++	// The synthetic swapchain already applies the crop; report its actual extent.
++	video_cb(RETRO_HW_FRAME_BUFFER_VALID, vk->GetBackbufferWidth(), vk->GetBackbufferHeight(), 0);
+ }
+ 
+ static bool create_device(retro_vulkan_context *context, VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr, const char **required_device_extensions, unsigned num_required_device_extensions, const char **required_device_layers, unsigned num_required_device_layers, const VkPhysicalDeviceFeatures *required_features) {
+@@ -120,6 +121,31 @@
+    }
+    vk_libretro_set_hwrender_interface(vulkan);
+ 
++   if (draw_) {
++      // Stop rendering and release references before replacing output images.
++      if (gpu && Libretro::useEmuThread)
++         Libretro::EmuThreadPause();
++      if (gpu)
++         gpu->DeviceLost();
++      // DeviceLost restarts render workers; stop them after it, not before.
++      LostBackbuffer();
++      vk->PerformPendingDeletes();
++      // The libretro wrapper has one global swapchain. Destroy it first:
++      // InitSwapchain's usual oldSwapchain replacement would destroy the new one.
++      vk->DestroySwapchain();
++      vk->ReinitSurface();
++      if (!vk->InitSwapchain(VK_PRESENT_MODE_FIFO_KHR)) {
++         ERROR_LOG(Log::G3D, "Failed to resize libretro Vulkan output!");
++         return;
++      }
++      GotBackbuffer();
++      if (gpu)
++         gpu->DeviceRestore(draw_);
++      if (gpu && Libretro::useEmuThread)
++         Libretro::EmuThreadStart();
++      return;
++   }
++
+    LibretroHWRenderContext::ContextReset();
+ }
+ 
