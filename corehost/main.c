@@ -23,10 +23,16 @@
  * $COREHOST_SAVE.
  * Next to the ROM: STEM.srm (save RAM; a STEM.sav from the standalone
  * emulator is read when there is no .srm, never written) and STEM.state0.
- * Options are kept in $XDG_CONFIG_HOME/corehost/CORE.opt.
+ * Options are kept in $XDG_CONFIG_HOME/corehost/CORE.opt, over the image's
+ * defaults in /usr/share/corehost/CORE.opt (the N64's bindings).
  *
  * SIGTERM, the control socket closing (the launcher went away) and closing
  * the window all quit, after writing the save RAM.
+ *
+ * Cores that read their options only when the game starts (mupen's GLideN64)
+ * are restarted to apply them: back in the game after a changed option,
+ * corehost saves a state, runs itself again in place (same pid, same control
+ * channel) and loads it.
  */
 #include <dlfcn.h>
 #include <errno.h>
@@ -114,24 +120,41 @@ static struct {
   PFNGLISENABLEDPROC IsEnabled;
   PFNGLGETINTEGERVPROC GetIntegerv;
   PFNGLGETBOOLEANVPROC GetBooleanv;
+  PFNGLSCISSORPROC Scissor;
 } gl;
 
-static int ctl = -1;
+static int ctl = -1, ctl_mem = -1;
 static appctl_shm *shm;
 static bool options_changed;
-static char opt_path[512], stem[512];
+/* Restarted for options: the state to go on from, in this slot */
+#define RESTART_SLOT 99
+static char **args;
+static bool startup_options; /* the core reads its options only at load */
+static uint8_t started_with[APPCTL_OPTIONS_MAX];
+static bool restart;
+static char opt_path[512], stem[512], default_opt_path[512];
+/* This game's own bindings (Y in the launcher: their value is 1), in
+ * CORE/ROM.opt beside CORE.opt; the core's combo for each is kept to go back
+ * to */
+static char game_opt_path[1100];
+static bool own[APPCTL_OPTIONS_MAX];
+static uint16_t core_combo[APPCTL_OPTIONS_MAX];
+/* Rewind's ring, a whole state a slot; no slots: no rewind */
+static size_t state_size, rewind_slots, rewind_head, rewind_count;
 static uint8_t *sram_shadow;
 static size_t sram_shadow_size;
 
 /* Bindings: a combo of pad buttons each (appctl.h), recorded by the launcher.
- * The hotkeys, then the game's buttons: those the core describes (GBA: no X,
- * Y, L2, R2), under its names for them. The keyboard's keys are fixed, it is
- * for testing. */
+ * The hotkeys, then the game's buttons and each direction of its sticks:
+ * those the core describes (GBA: no X, Y, L2, R2; N64: one stick, no
+ * second), under its names for them. A row is one of the
+ * console's inputs, the combo is what presses it here. The keyboard's keys
+ * are fixed, it is for testing. */
 #define B(name) (1u << APPCTL_##name)
 static const struct {
   const char *key, *label;
   uint16_t buttons;
-  int id; /* libretro's; -1: a hotkey */
+  int id; /* libretro's joypad id; ANALOG_ID(..) for a stick; -1: a hotkey */
   SDL_Scancode keyboard;
 } bindings[] = {
     {"corehost_hotkey_fast", "Fast forward (toggle)", B(MENU) | B(R1), -1, 0},
@@ -155,25 +178,44 @@ static const struct {
     /* No sticks to click: unbound until the player binds them */
     {"corehost_map_l3", "Button L3", 0, RETRO_DEVICE_ID_JOYPAD_L3, SDL_SCANCODE_3},
     {"corehost_map_r3", "Button R3", 0, RETRO_DEVICE_ID_JOYPAD_R3, SDL_SCANCODE_4},
+/* Half an axis each: stick (left, right), axis (x, y), direction (-, +) */
+#define ANALOG_ID(stick, axis, plus) (16 + (stick) * 4 + (axis) * 2 + (plus))
+    {"corehost_map_lstick_left", "Left stick left", 0, ANALOG_ID(0, 0, 0), 0},
+    {"corehost_map_lstick_right", "Left stick right", 0, ANALOG_ID(0, 0, 1), 0},
+    {"corehost_map_lstick_up", "Left stick up", 0, ANALOG_ID(0, 1, 0), 0},
+    {"corehost_map_lstick_down", "Left stick down", 0, ANALOG_ID(0, 1, 1), 0},
+    {"corehost_map_rstick_left", "Right stick left", 0, ANALOG_ID(1, 0, 0), 0},
+    {"corehost_map_rstick_right", "Right stick right", 0, ANALOG_ID(1, 0, 1), 0},
+    {"corehost_map_rstick_up", "Right stick up", 0, ANALOG_ID(1, 1, 0), 0},
+    {"corehost_map_rstick_down", "Right stick down", 0, ANALOG_ID(1, 1, 1), 0},
 };
 enum { HOT_FAST, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, BINDINGS = SDL_arraysize(bindings) };
+enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
+_Static_assert(BINDINGS <= 32, "active is a bit per binding");
 
 /* Our own options, after the core's: these choices, then the bindings */
-enum { HOST_SCALE, HOST_FILTER, HOST_CHOICES };
+enum { HOST_SCALE, HOST_FILTER, HOST_FPS, HOST_CHOICES };
 static const struct {
   const char *key, *label, *values;
 } host_options[HOST_CHOICES] = {
     {"corehost_scale", "Scaling", "Integer|Fit|Stretch"},
     {"corehost_filter", "Filter", "Sharp|Smooth"},
+    {"corehost_fps", "Show FPS", "Off|On"},
 };
 static unsigned host_option_at; /* index of the first one in shm */
 /* Published once the game is loaded: the input descriptors are in by then */
 static bool host_published;
 static int binding_at[BINDINGS]; /* index in shm; -1: not shown, never pressed */
-/* SET_INPUT_DESCRIPTORS: the joypad ids the core uses (none told: all), and
- * its names for them */
+/* SET_INPUT_DESCRIPTORS: the ids (joypad, ANALOG_ID) the core uses (none
+ * told: all), and its names for them */
 static uint32_t described;
-static char described_as[16][APPCTL_TEXT];
+static char described_as[ANALOG_ID(2, 0, 0)][APPCTL_TEXT];
+/* The ids in the order told, the rows' order */
+static uint8_t described_order[ANALOG_ID(2, 0, 0)];
+static int described_count;
+/* Told after the rows were made (mupen: once its emulation thread starts):
+ * the main loop makes them again */
+static _Atomic bool redescribed;
 
 /* Warnings and errors: cores log at debug level freely */
 static void logf_(enum retro_log_level level, const char *fmt, ...) {
@@ -277,10 +319,28 @@ static void publish_host(void) {
     snprintf(desc, sizeof(desc), "%s; %s", host_options[i].label, host_options[i].values);
     add_option(host_options[i].key, desc, APPCTL_GRAPHICS);
   }
-  for (int i = 0; i < BINDINGS; i++) {
-    const int id = bindings[i].id;
+  /* A pad without sticks: the core's left stick gets the D-pad, its D-pad
+   * Menu + the D-pad */
+  const uint32_t lstick = 0xfu << ANALOG_ID(0, 0, 0);
+  const bool stick_on_dpad = (described & lstick) == lstick;
+  /* The game's buttons first, in the core's order (none told: ours), our
+   * hotkeys last */
+  int order[BINDINGS], n_order = 0;
+  for (int k = 0; k < described_count; k++)
+    for (int i = HOTKEYS; i < BINDINGS; i++)
+      if (bindings[i].id == described_order[k])
+        order[n_order++] = i;
+  for (int i = HOTKEYS; described_count == 0 && i < BINDINGS; i++)
+    order[n_order++] = i;
+  for (int i = 0; i < HOTKEYS; i++)
+    order[n_order++] = i;
+  for (int i = 0; i < BINDINGS; i++)
     binding_at[i] = -1;
-    if (id >= 0 && described != 0 && !(described >> id & 1))
+  for (int n = 0; n < n_order; n++) {
+    const int i = order[n];
+    const int id = bindings[i].id;
+    if ((id >= 0 && described != 0 && !(described >> id & 1)) ||
+        (i == HOT_REWIND && rewind_slots == 0))
       continue;
     appctl_option *o = new_option(bindings[i].key,
                                   id >= 0 && described_as[id][0] ? described_as[id] : bindings[i].label,
@@ -288,7 +348,13 @@ static void publish_host(void) {
     if (o == NULL)
       continue;
     o->kind = APPCTL_BINDING;
-    atomic_store(&o->buttons, bindings[i].buttons);
+    static const uint16_t dpad[4] = {B(LEFT), B(RIGHT), B(UP), B(DOWN)};
+    uint16_t def = bindings[i].buttons;
+    if (stick_on_dpad && id >= ANALOG_ID(0, 0, 0) && id < ANALOG_ID(1, 0, 0))
+      def = dpad[id - ANALOG_ID(0, 0, 0)];
+    else if (stick_on_dpad && id >= RETRO_DEVICE_ID_JOYPAD_UP && id <= RETRO_DEVICE_ID_JOYPAD_RIGHT)
+      def |= B(MENU);
+    atomic_store(&o->buttons, def);
     binding_at[i] = (int)atomic_load(&shm->option_count);
     publish();
   }
@@ -313,9 +379,10 @@ static bool parse_combo(const char *text, uint16_t *out) {
 }
 
 
-/* "key=value" lines; values that no longer exist are skipped */
-static void load_options(void) {
-  FILE *f = fopen(opt_path, "r");
+/* "key=value" lines; values that no longer exist are skipped. The game's
+ * file: bindings only, its own. */
+static void load_options_from(const char *path, bool game) {
+  FILE *f = fopen(path, "r");
   char line[256];
   while (f != NULL && fgets(line, sizeof(line), f)) {
     line[strcspn(line, "\n")] = '\0';
@@ -325,9 +392,14 @@ static void load_options(void) {
     *eq = '\0';
     appctl_option *o = option(line);
     uint16_t combo;
-    if (o != NULL && o->kind == APPCTL_BINDING && parse_combo(eq + 1, &combo))
+    if (o != NULL && o->kind == APPCTL_BINDING && parse_combo(eq + 1, &combo)) {
       atomic_store(&o->buttons, combo);
-    for (unsigned i = 0; o != NULL && i < o->count; i++)
+      if (game) {
+        atomic_store(&o->value, 1);
+        own[o - shm->options] = true;
+      }
+    }
+    for (unsigned i = 0; o != NULL && !game && i < o->count; i++)
       if (strcmp(o->values[i], eq + 1) == 0)
         atomic_store(&o->value, i);
   }
@@ -335,27 +407,74 @@ static void load_options(void) {
     fclose(f);
 }
 
+static void load_options(void) {
+  load_options_from(default_opt_path, false);
+  load_options_from(opt_path, false);
+}
+
+static void write_combo(FILE *f, const char *key, uint16_t combo) {
+  fprintf(f, "%s=", key);
+  for (int b = 0, first = 1; b < APPCTL_BUTTONS; b++)
+    if (combo & (1u << b)) {
+      fprintf(f, "%s%s", first ? "" : "+", appctl_button_names[b]);
+      first = 0;
+    }
+  fputc('\n', f);
+}
+
+/* After the launcher changed something: a binding made the game's own keeps
+ * the core's combo aside, one given back gets it again */
+static void sync_own(void) {
+  const uint32_t n = atomic_load(&shm->option_count);
+  for (uint32_t i = 0; i < n; i++) {
+    appctl_option *o = &shm->options[i];
+    if (o->kind != APPCTL_BINDING)
+      continue;
+    const bool now = atomic_load(&o->value) != 0;
+    if (!now && own[i])
+      atomic_store(&o->buttons, core_combo[i]);
+    else if (!now)
+      core_combo[i] = atomic_load(&o->buttons);
+    own[i] = now;
+  }
+}
+
 static void save_options(void) {
   FILE *f = fopen(opt_path, "w");
   if (f == NULL)
     return;
   const uint32_t n = atomic_load(&shm->option_count);
+  bool any_own = false;
   for (uint32_t i = 0; i < n; i++) {
     const appctl_option *o = &shm->options[i];
-    fprintf(f, "%s=", o->key);
-    if (o->kind == APPCTL_BINDING) {
-      const uint16_t combo = atomic_load(&o->buttons);
-      for (int b = 0, first = 1; b < APPCTL_BUTTONS; b++)
-        if (combo & (1u << b)) {
-          fprintf(f, "%s%s", first ? "" : "+", appctl_button_names[b]);
-          first = 0;
-        }
-      fputc('\n', f);
-    } else {
-      fprintf(f, "%s\n", o->values[atomic_load(&o->value) % APPCTL_VALUES]);
-    }
+    if (o->kind == APPCTL_BINDING)
+      write_combo(f, o->key, own[i] ? core_combo[i] : atomic_load(&o->buttons));
+    else
+      fprintf(f, "%s=%s\n", o->key, o->values[atomic_load(&o->value) % APPCTL_VALUES]);
+    any_own |= own[i];
   }
   fclose(f);
+  if (!any_own) {
+    unlink(game_opt_path);
+    return;
+  }
+  if ((f = fopen(game_opt_path, "w")) == NULL)
+    return;
+  for (uint32_t i = 0; i < n; i++)
+    if (own[i])
+      write_combo(f, shm->options[i].key, atomic_load(&shm->options[i].buttons));
+  fclose(f);
+}
+
+/* The host's rows anew, with what was saved: the core's file, then the
+ * game's own bindings */
+static void publish_and_load(void) {
+  publish_host();
+  load_options();
+  memset(own, 0, sizeof(own));
+  for (uint32_t i = 0; i < atomic_load(&shm->option_count); i++)
+    core_combo[i] = atomic_load(&shm->options[i].buttons);
+  load_options_from(game_opt_path, true);
 }
 
 static void video(const void *data, unsigned w, unsigned h, size_t pitch) {
@@ -455,18 +574,139 @@ static void update_bindings(void) {
 static int16_t buttons(void) {
   const Uint8 *keys = SDL_GetKeyboardState(NULL);
   int16_t mask = 0;
-  for (int i = HOTKEYS; i < BINDINGS; i++)
+  for (int i = HOTKEYS; i < ANALOG; i++)
     if ((active >> i & 1) || keys[bindings[i].keyboard])
       mask |= 1 << bindings[i].id;
   return mask;
 }
 
+/* Full tilt; both axes held: the diagonal of a round stick's gate */
+static int16_t stick(unsigned index, unsigned axis) {
+  const int at = ANALOG + index * 4;
+  const int x = (int)(active >> (at + 1) & 1) - (int)(active >> at & 1);
+  const int y = (int)(active >> (at + 3) & 1) - (int)(active >> (at + 2) & 1);
+  const int v = axis ? y : x;
+  return (int16_t)(v * (x && y ? 23170 : 32767));
+}
+
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
-  (void)index;
+  if (port == 0 && (device & RETRO_DEVICE_MASK) == RETRO_DEVICE_ANALOG &&
+      index <= RETRO_DEVICE_INDEX_ANALOG_RIGHT && id <= RETRO_DEVICE_ID_ANALOG_Y)
+    return stick(index, id);
   if (port != 0 || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD)
     return 0;
   const int16_t mask = buttons();
   return id == RETRO_DEVICE_ID_JOYPAD_MASK ? mask : (mask >> id) & 1;
+}
+
+/* The overlay: a few lines of text top left, in a dark box over the game
+ * (state saved, fast forward, FPS). Drawn as rectangles, the box and runs of
+ * a 5x7 font's pixels, which each video path fills its own way. */
+static const char font_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:%/-><";
+static const uint8_t font_rows[][7] = {
+    {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, /* A */
+    {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e}, /* B */
+    {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e}, /* C */
+    {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e}, /* D */
+    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}, /* E */
+    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10}, /* F */
+    {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f}, /* G */
+    {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, /* H */
+    {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e}, /* I */
+    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c}, /* J */
+    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, /* K */
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}, /* L */
+    {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11}, /* M */
+    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11}, /* N */
+    {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, /* O */
+    {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10}, /* P */
+    {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d}, /* Q */
+    {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11}, /* R */
+    {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}, /* S */
+    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, /* T */
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, /* U */
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04}, /* V */
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a}, /* W */
+    {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11}, /* X */
+    {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04}, /* Y */
+    {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f}, /* Z */
+    {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e}, /* 0 */
+    {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e}, /* 1 */
+    {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f}, /* 2 */
+    {0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e}, /* 3 */
+    {0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02}, /* 4 */
+    {0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e}, /* 5 */
+    {0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e}, /* 6 */
+    {0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, /* 7 */
+    {0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e}, /* 8 */
+    {0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c}, /* 9 */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c}, /* . */
+    {0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00}, /* : */
+    {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}, /* % */
+    {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x00}, /* / */
+    {0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00}, /* - */
+    {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08}, /* > */
+    {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02}, /* < */
+};
+
+#define OVERLAY_LINES 4
+#define OVERLAY_RECTS 1024
+static char overlay[OVERLAY_LINES][32];
+static char notice[32];
+static Uint64 notice_until;
+static struct {
+  SDL_Rect r;
+  bool text; /* else the box */
+} orects[OVERLAY_RECTS];
+
+static void notify(const char *text) {
+  snprintf(notice, sizeof(notice), "%s", text);
+  notice_until = SDL_GetTicks64() + 2000;
+}
+
+/* The overlay's rectangles for a w x h window; 0 when there is nothing */
+static int overlay_rects(int w, int h) {
+  (void)w;
+  const int px = SDL_max(1, h / 160); /* a font pixel: 3 at 480 lines */
+  int lines = 0, cols = 0;
+  for (int l = 0; l < OVERLAY_LINES; l++)
+    if (overlay[l][0]) {
+      lines++;
+      cols = SDL_max(cols, (int)strlen(overlay[l]));
+    }
+  if (lines == 0)
+    return 0;
+  const int x0 = px * 4, y0 = px * 4, pad = px * 2;
+  int n = 0;
+  orects[n].r = (SDL_Rect){x0, y0, cols * 6 * px - px + pad * 2, lines * 9 * px - 2 * px + pad * 2};
+  orects[n++].text = false;
+  int y = y0 + pad;
+  for (int l = 0; l < OVERLAY_LINES; l++) {
+    if (!overlay[l][0])
+      continue;
+    for (int c = 0; overlay[l][c]; c++) {
+      const char *at = strchr(font_chars, SDL_toupper((unsigned char)overlay[l][c]));
+      if (at == NULL || *at == '\0')
+        continue; /* a space, or one we don't have */
+      const uint8_t *rows = font_rows[at - font_chars];
+      const int x = x0 + pad + c * 6 * px;
+      for (int r = 0; r < 7; r++)
+        for (int b = 4; b >= 0; b--) {
+          if (!(rows[r] >> b & 1))
+            continue;
+          int len = 1; /* a run of set pixels, one rectangle */
+          while (b - len >= 0 && (rows[r] >> (b - len) & 1))
+            len++;
+          if (n < OVERLAY_RECTS) {
+            orects[n].r = (SDL_Rect){x + (4 - b) * px, y + r * px, len * px, px};
+            orects[n++].text = true;
+          }
+          b -= len - 1;
+        }
+    }
+    y += 9 * px;
+  }
+  return n;
 }
 
 /* The core's frames in flight: a fence, command buffer and acquire
@@ -501,6 +741,10 @@ static struct {
   uint32_t src_family, wait_count, cmd_count;
   VkSemaphore wait[VK_MAX], signal;
   VkCommandBuffer core_cmd[VK_MAX];
+  /* The overlay's colours, a 1x1 layer each (box, text), blitted out to
+   * its rectangles */
+  VkImage colors;
+  VkDeviceMemory colors_memory;
 } vk;
 
 static void vk_set_image(void *handle, const struct retro_vulkan_image *image, uint32_t n,
@@ -725,6 +969,40 @@ static void vk_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, V
                        NULL, 0, NULL, 1, &b);
 }
 
+/* The overlay's colour image, made the first time it is needed */
+static bool vk_colors(void) {
+  if (vk.colors != VK_NULL_HANDLE)
+    return true;
+  const VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                 .imageType = VK_IMAGE_TYPE_2D,
+                                 .format = vk.format,
+                                 .extent = {1, 1, 1},
+                                 .mipLevels = 1,
+                                 .arrayLayers = 2,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                 .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+  if (vkCreateImage(vk.device, &ici, NULL, &vk.colors) != VK_SUCCESS)
+    return false;
+  VkMemoryRequirements req;
+  vkGetImageMemoryRequirements(vk.device, vk.colors, &req);
+  VkPhysicalDeviceMemoryProperties mp;
+  vkGetPhysicalDeviceMemoryProperties(vk.gpu, &mp);
+  uint32_t type = 0;
+  while (type < mp.memoryTypeCount && !(req.memoryTypeBits >> type & 1))
+    type++;
+  const VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                    .allocationSize = req.size,
+                                    .memoryTypeIndex = type};
+  if (type == mp.memoryTypeCount || vkAllocateMemory(vk.device, &mai, NULL, &vk.colors_memory) != VK_SUCCESS ||
+      vkBindImageMemory(vk.device, vk.colors, vk.colors_memory, 0) != VK_SUCCESS) {
+    vkDestroyImage(vk.device, vk.colors, NULL);
+    vk.colors = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
+}
+
 /* The core's image onto the next swapchain image at x, y, w, h; the core's
  * command buffers and semaphores go with it */
 static void vk_present(int x, int y, int w, int h) {
@@ -772,6 +1050,31 @@ static void vk_present(int x, int y, int w, int h) {
                    host_value(HOST_FILTER) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     vk_barrier(cmd, source, read, layout, transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED,
                transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED, &range);
+  }
+  const int n_rects = overlay_rects((int)vk.extent.width, (int)vk.extent.height);
+  if (n_rects > 0 && vk_colors()) {
+    const VkImageSubresourceRange both = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
+    vk_barrier(cmd, vk.colors, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &both);
+    const VkClearColorValue shades[2] = {{.float32 = {0.08f, 0.08f, 0.1f, 1}}, {.float32 = {1, 1, 1, 1}}};
+    for (uint32_t l = 0; l < 2; l++) {
+      const VkImageSubresourceRange layer = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, l, 1};
+      vkCmdClearColorImage(cmd, vk.colors, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &shades[l], 1, &layer);
+    }
+    vk_barrier(cmd, vk.colors, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &both);
+    static VkImageBlit blits[OVERLAY_RECTS];
+    for (int i = 0; i < n_rects; i++) {
+      const SDL_Rect r = orects[i].r;
+      blits[i] = (VkImageBlit){
+          .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, orects[i].text, 1},
+          .srcOffsets = {{0, 0, 0}, {1, 1, 1}},
+          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+          .dstOffsets = {{r.x, r.y, 0}, {r.x + r.w, r.y + r.h, 1}},
+      };
+    }
+    vkCmdBlitImage(cmd, vk.colors, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)n_rects, blits, VK_FILTER_NEAREST);
   }
   vk_barrier(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
@@ -872,7 +1175,7 @@ static bool hw_init(const char *title, int w, int h, Uint32 flags) {
   if (!(GL(GenFramebuffers) && GL(BindFramebuffer) && GL(GenRenderbuffers) && GL(BindRenderbuffer) &&
         GL(RenderbufferStorage) && GL(FramebufferRenderbuffer) && GL(BlitFramebuffer) &&
         GL(ClearColor) && GL(Clear) && GL(ColorMask) && GL(Disable) && GL(Enable) &&
-        GL(IsEnabled) && GL(GetIntegerv) && GL(GetBooleanv)))
+        GL(IsEnabled) && GL(GetIntegerv) && GL(GetBooleanv) && GL(Scissor)))
     return SDL_SetError("no GLES 3 functions"), false;
 #undef GL
   gl.GenFramebuffers(1, &fbo);
@@ -887,7 +1190,7 @@ static bool hw_init(const char *title, int w, int h, Uint32 flags) {
 
 /* The frame onto the window, as present() places it. The core keeps its GL
  * state across frames: what this touches is put back. */
-static void hw_present(int x, int y, int w, int h, int win_h) {
+static void hw_present(int x, int y, int w, int h, int win_w, int win_h) {
   GLint draw, read;
   GLboolean mask[4];
   gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
@@ -906,6 +1209,21 @@ static void hw_present(int x, int y, int w, int h, int win_h) {
     gl.BlitFramebuffer(0, bottom, frame_w, top, x, win_h - y - h, x + w, win_h - y, GL_COLOR_BUFFER_BIT,
                        host_value(HOST_FILTER) ? GL_LINEAR : GL_NEAREST);
   }
+  /* The overlay: a scissored clear a rectangle, nothing of the core's touched
+   * but the scissor box */
+  const int n_rects = overlay_rects(win_w, win_h);
+  GLint box[4];
+  gl.GetIntegerv(GL_SCISSOR_BOX, box);
+  gl.Enable(GL_SCISSOR_TEST);
+  for (int i = 0; i < n_rects; i++) {
+    const SDL_Rect r = orects[i].r;
+    const float v = orects[i].text ? 1 : 0.08f;
+    gl.Scissor(r.x, win_h - r.y - r.h, r.w, r.h);
+    gl.ClearColor(v, v, orects[i].text ? 1 : 0.1f, 1);
+    gl.Clear(GL_COLOR_BUFFER_BIT);
+  }
+  gl.Disable(GL_SCISSOR_TEST);
+  gl.Scissor(box[0], box[1], box[2], box[3]);
   SDL_GL_SwapWindow(window);
   gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
   gl.BindFramebuffer(GL_READ_FRAMEBUFFER, read);
@@ -964,9 +1282,9 @@ static bool environment(unsigned cmd, void *data) {
         add_definition(d->key, d->desc_categorized ? d->desc_categorized : d->desc,
                        d->category_key, d->values, d->default_value);
     }
-    if (host_published)
-      publish_host();
     load_options();
+    if (host_published)
+      publish_and_load();
     /* true for v2: the categories are used */
     return true;
   }
@@ -993,12 +1311,29 @@ static bool environment(unsigned cmd, void *data) {
     *(const char **)data = dir[system];
     return true;
   }
-  case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
+  case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: /* again on a mapping change */
+    described = 0;
+    described_count = 0;
     for (const struct retro_input_descriptor *d = data; d->description != NULL; d++)
       if (d->port == 0 && d->device == RETRO_DEVICE_JOYPAD && d->id < 16) {
+        if (!(described >> d->id & 1))
+          described_order[described_count++] = (uint8_t)d->id;
         described |= 1u << d->id;
         snprintf(described_as[d->id], APPCTL_TEXT, "%s", d->description);
+      } else if (d->port == 0 && d->device == RETRO_DEVICE_ANALOG &&
+                 d->index <= RETRO_DEVICE_INDEX_ANALOG_RIGHT && d->id <= RETRO_DEVICE_ID_ANALOG_Y) {
+        /* "Control Stick X": a row for each way, "Control Stick X -" .. */
+        for (int plus = 0; plus < 2; plus++) {
+          const int a = ANALOG_ID(d->index, d->id, plus);
+          if (!(described >> a & 1))
+            described_order[described_count++] = (uint8_t)a;
+          described |= 1u << a;
+          snprintf(described_as[a], APPCTL_TEXT, "%s %s", d->description,
+                   d->id == RETRO_DEVICE_ID_ANALOG_X ? (plus ? "right" : "left") : (plus ? "down" : "up"));
+        }
       }
+    if (host_published)
+      atomic_store(&redescribed, true);
     return true;
   case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
   case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
@@ -1205,7 +1540,6 @@ static int load_state(int slot) {
 #define REWIND_BUDGET (32u << 20)
 #define REWIND_EVERY 3
 static uint8_t *rewind_ring;
-static size_t state_size, rewind_slots, rewind_head, rewind_count;
 
 static void rewind_init(void) {
   state_size = core.retro_serialize_size();
@@ -1256,20 +1590,27 @@ static bool control(bool *paused) {
     break;
   case APPCTL_RESUME:
     *paused = false;
+    for (unsigned i = 0; startup_options && i < host_option_at; i++)
+      restart |= atomic_load(&shm->options[i].value) != started_with[i];
     if (m.arg)
       raise_window();
     /* Presses that were the launcher's */
     SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
     SDL_PauseAudioDevice(audio, 0);
     break;
-  case APPCTL_SAVE_STATE: m.result = save_state(m.arg); break;
+  case APPCTL_SAVE_STATE:
+    m.result = save_state(m.arg);
+    notify(m.result == 0 ? "State saved" : "Save failed");
+    break;
   case APPCTL_LOAD_STATE:
     m.result = load_state(m.arg);
+    notify(m.result == 0 ? "State loaded" : m.result == -ENOENT ? "No state saved" : "Load failed");
     rewind_count = 0;
     break;
   case APPCTL_RESET: core.retro_reset(); break;
   case APPCTL_OPTIONS:
     options_changed = true;
+    sync_own();
     save_options();
     if (texture != NULL)
       SDL_SetTextureScaleMode(texture, host_value(HOST_FILTER) ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
@@ -1307,7 +1648,7 @@ static void present(void) {
     return;
   }
   if (hw_on) {
-    hw_present(dst.x, dst.y, dst.w, dst.h, h);
+    hw_present(dst.x, dst.y, dst.w, dst.h, w, h);
     return;
   }
   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -1315,6 +1656,12 @@ static void present(void) {
   if (texture != NULL && frame_w > 0 && frame_h > 0) {
     SDL_SetTextureScaleMode(texture, host_value(HOST_FILTER) ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
     SDL_RenderCopy(renderer, texture, NULL, &dst);
+  }
+  const int n_rects = overlay_rects(w, h);
+  for (int i = 0; i < n_rects; i++) {
+    const Uint8 v = orects[i].text ? 255 : 20;
+    SDL_SetRenderDrawColor(renderer, v, v, orects[i].text ? 255 : 26, 255);
+    SDL_RenderFillRect(renderer, &orects[i].r);
   }
   SDL_RenderPresent(renderer);
 }
@@ -1330,10 +1677,14 @@ static bool open_ctl(void) {
       return false;
     }
     void *map = mmap(NULL, sizeof(appctl_shm), PROT_READ | PROT_WRITE, MAP_SHARED, mem, 0);
-    close(mem);
     if (map != MAP_FAILED) {
       ctl = sock;
+      ctl_mem = mem; /* kept for a restart */
       shm = map;
+      /* Ours again after a restart: options are published anew */
+      atomic_store(&shm->option_count, 0);
+    } else {
+      close(mem);
     }
   }
   unsetenv(APPCTL_ENV);
@@ -1346,11 +1697,39 @@ static bool open_ctl(void) {
   return true;
 }
 
+static void shut_down(void) {
+  flush_sram();
+  /* RetroArch's order, which cores count on: PPSSPP's unload frees what its
+   * context_destroy uses */
+  if (vk_on && vk.device != VK_NULL_HANDLE)
+    vkDeviceWaitIdle(vk.device);
+  if (hw_on && hw.context_destroy != NULL)
+    hw.context_destroy();
+  core.retro_unload_game();
+  core.retro_deinit();
+  SDL_Quit();
+}
+
+/* Run again in place with the options as they are now, where we are */
+static void restart_core(void) {
+  if (save_state(RESTART_SLOT) != 0)
+    return; /* nothing to go on from: keep playing with the old options */
+  shut_down();
+  char env[32];
+  snprintf(env, sizeof(env), "%d,%d", ctl, ctl_mem);
+  setenv(APPCTL_ENV, env, 1);
+  setenv("COREHOST_RESTARTED", "1", 1);
+  execv("/proc/self/exe", args);
+  fprintf(stderr, "corehost: restart: %s\n", strerror(errno));
+  exit(1);
+}
+
 int main(int argc, char **argv) {
   if (argc != 3) {
     fprintf(stderr, "usage: %s CORE.so ROM\n", argv[0]);
     return 2;
   }
+  args = argv;
   const char *rom = argv[2];
   core_path = argv[1];
   snprintf(stem, sizeof(stem), "%s", rom);
@@ -1391,8 +1770,14 @@ int main(int argc, char **argv) {
     *slash = '/';
   }
   mkdir(opt_path, 0755);
+  snprintf(game_opt_path, sizeof(game_opt_path), "%s/%s", opt_path, info.library_name);
+  mkdir(game_opt_path, 0755);
+  const char *base = strrchr(stem, '/');
+  snprintf(game_opt_path, sizeof(game_opt_path), "%s/%s/%s.opt", opt_path, info.library_name,
+           base ? base + 1 : stem);
   const size_t len = strlen(opt_path);
   snprintf(opt_path + len, sizeof(opt_path) - len, "/%s.opt", info.library_name);
+  snprintf(default_opt_path, sizeof(default_opt_path), "%s/%s.opt", COREHOST_DEFAULTS, info.library_name);
 
   /* A core that registers no options still gets ours */
   struct retro_variable none = {NULL, NULL};
@@ -1433,9 +1818,16 @@ int main(int argc, char **argv) {
     return 1;
   }
   load_sram();
-  publish_host();
-  load_options();
-  rewind_init();
+  /* What the core read its options as */
+  startup_options = strcmp(info.library_name, "Mupen64Plus-Next") == 0 && ctl_mem >= 0;
+  for (unsigned i = 0; i < atomic_load(&shm->option_count); i++)
+    started_with[i] = atomic_load(&shm->options[i].value);
+  rewind_init(); /* before the bindings: no rewind, no row for it */
+  publish_and_load();
+  /* Restarted: the state is loaded once the core takes it (mupen: not while
+   * it boots), for a few seconds at most */
+  int resume_tries = getenv("COREHOST_RESTARTED") ? 300 : 0;
+  unsetenv("COREHOST_RESTARTED");
 
   struct retro_system_av_info av;
   core.retro_get_system_av_info(&av);
@@ -1488,6 +1880,9 @@ int main(int argc, char **argv) {
     }
     if (ctl >= 0 && !control(&paused))
       running = false;
+    if (restart && running && !paused)
+      restart_core();
+    restart = false;
     if (paused || !running)
       continue;
 
@@ -1499,18 +1894,57 @@ int main(int argc, char **argv) {
     if (pressed & (1u << HOT_FAST))
       fast = !fast;
     if (pressed & (1u << HOT_SAVE))
-      save_state(0);
-    if ((pressed & (1u << HOT_LOAD)) && load_state(0) == 0)
-      rewind_count = 0;
+      notify(save_state(0) == 0 ? "State saved" : "Save failed");
+    if (pressed & (1u << HOT_LOAD)) {
+      const int r = load_state(0);
+      notify(r == 0 ? "State loaded" : r == -ENOENT ? "No state saved" : "Load failed");
+      if (r == 0)
+        rewind_count = 0;
+    }
     const bool rewinding = active & (1u << HOT_REWIND);
     muted = fast || rewinding;
 
-    for (int i = 0; i < (fast && !rewinding ? FAST_SPEED : 1); i++) {
+    /* The overlay: FPS (frames run a second, and the share of the time the
+     * core took), what is going on, the last notice */
+    static Uint64 second_at, core_ticks;
+    static unsigned frames_run;
+    static char fps_line[32];
+    const Uint64 run_at = SDL_GetPerformanceCounter();
+    if (run_at - second_at >= SDL_GetPerformanceFrequency()) {
+      snprintf(fps_line, sizeof(fps_line), "%u FPS %d%%", frames_run,
+               (int)(core_ticks * 100 / (run_at - second_at)));
+      second_at = run_at;
+      frames_run = 0;
+      core_ticks = 0;
+    }
+    int l = 0;
+    memset(overlay, 0, sizeof(overlay));
+    if (host_value(HOST_FPS))
+      snprintf(overlay[l++], sizeof(overlay[0]), "%s", fps_line);
+    if (rewinding)
+      snprintf(overlay[l++], sizeof(overlay[0]), "<< Rewind");
+    else if (fast)
+      snprintf(overlay[l++], sizeof(overlay[0]), ">> Fast forward");
+    if (notice[0] && SDL_GetTicks64() < notice_until)
+      snprintf(overlay[l++], sizeof(overlay[0]), "%s", notice);
+
+    for (int i = 0; i < (fast && !rewinding ? FAST_SPEED : 1); i++, frames_run++) {
       if (rewinding)
         rewind_pop();
       else if (++frame % REWIND_EVERY == 0)
         rewind_push();
       core.retro_run();
+    }
+    core_ticks += SDL_GetPerformanceCounter() - run_at;
+    if (atomic_exchange(&redescribed, false)) {
+      atomic_store(&shm->option_count, host_option_at);
+      publish_and_load();
+    }
+    if (resume_tries > 0 && (load_state(RESTART_SLOT) == 0 || --resume_tries == 0)) {
+      char path[600];
+      snprintf(path, sizeof(path), "%s.state%d", stem, RESTART_SLOT);
+      unlink(path);
+      resume_tries = 0;
     }
     present();
     if (audio != 0 && !muted) {
@@ -1530,16 +1964,7 @@ int main(int argc, char **argv) {
       flushed = SDL_GetTicks64();
     }
   }
-  flush_sram();
-  /* RetroArch's order, which cores count on: PPSSPP's unload frees what its
-   * context_destroy uses */
-  if (vk_on && vk.device != VK_NULL_HANDLE)
-    vkDeviceWaitIdle(vk.device);
-  if (hw_on && hw.context_destroy != NULL)
-    hw.context_destroy();
-  core.retro_unload_game();
-  core.retro_deinit();
+  shut_down();
   free(data);
-  SDL_Quit();
   return 0;
 }

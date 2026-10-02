@@ -72,7 +72,9 @@ typedef struct {
   char label[APPCTL_TEXT];
   char values[APPCTL_VALUES][APPCTL_TEXT];
   uint8_t count;
-  _Atomic uint8_t value; /* index into values; the launcher writes it */
+  /* index into values; a binding's: 1 when it is this game's own, not the
+   * core's. The launcher writes it. */
+  _Atomic uint8_t value;
   uint8_t kind;
   uint8_t category;
   _Atomic uint16_t buttons; /* a binding's: 1 << APPCTL_A ...; 0: none */

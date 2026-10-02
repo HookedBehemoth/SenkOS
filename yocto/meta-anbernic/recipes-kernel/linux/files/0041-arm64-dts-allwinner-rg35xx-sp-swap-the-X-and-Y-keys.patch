@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Fri, 2 Oct 2026 18:30:00 +0200
+Subject: [PATCH] arm64: dts: allwinner: rg35xx-sp: swap the X and Y keys
+
+On the SP the key labelled X is on PA2 and Y on PA3, the other way round
+from the RG35XX 2024 dts it includes: X reported BTN_WEST and Y BTN_NORTH
+(seen in the launcher's binding recorder).
+
+Upstream-Status: Pending
+---
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-sp.dts b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-sp.dts
+index 53b8ddd12..9479d054d 100644
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-sp.dts
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-sp.dts
+@@ -27,6 +27,17 @@ lid-switch {
+ 	};
+ };
+ 
++/* The SP's X and Y keys are wired the other way round from the 2024's */
++&gpio_keys_gamepad {
++	button-x {
++		gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; /* PA2 */
++	};
++
++	button-y {
++		gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; /* PA3 */
++	};
++};
++
+ &r_i2c {
+ 	rtc_ext: rtc@51 {
+ 		compatible = "nxp,pcf8563";

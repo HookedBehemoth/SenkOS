@@ -53,6 +53,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0038-media-cedrus-Add-P010-capture-format-and-shared-10-b.patch \
     file://0039-media-cedrus-Add-VP9-P010-output-support.patch \
     file://0040-media-cedrus-Add-H265-P010-output-support.patch \
+    file://0041-arm64-dts-allwinner-rg35xx-sp-swap-the-X-and-Y-keys.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 

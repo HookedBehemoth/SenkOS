@@ -8,6 +8,7 @@ enum {
   ICON_HOUSE,
   ICON_IMAGE,
   ICON_PLAY,
+  ICON_ROTATE_CCW,
   ICON_SAVE_IN,
   ICON_SAVE_OUT,
   ICON_SPEAKER,
@@ -95,6 +96,14 @@ static const float icon_play[] = {
     ICON_MOVE, 6.0f, 3.0f, ICON_LINE, 20.0f, 12.0f, ICON_LINE, 6.0f,
     21.0f, ICON_LINE, 6.0f, 3.0f, ICON_CLOSE, ICON_END,
 };
+static const float icon_rotate_ccw[] = {
+    ICON_MOVE, 3.0f, 12.0f, ICON_CUBIC, 3.0f, 16.971f, 7.029f, 21.0f,
+    12.0f, 21.0f, ICON_CUBIC, 16.971f, 21.0f, 21.0f, 16.971f, 21.0f,
+    12.0f, ICON_CUBIC, 21.0f, 7.029f, 16.971f, 3.0f, 12.0f, 3.0f,
+    ICON_CUBIC, 9.484f, 3.009f, 7.069f, 3.991f, 5.260f, 5.740f, ICON_LINE,
+    3.0f, 8.0f, ICON_MOVE, 3.0f, 3.0f, ICON_LINE, 3.0f, 8.0f,
+    ICON_LINE, 8.0f, 8.0f, ICON_END,
+};
 static const float icon_save_in[] = {
     ICON_MOVE, 15.200f, 3.0f, ICON_CUBIC, 15.728f, 3.008f, 16.231f, 3.223f,
     16.600f, 3.600f, ICON_LINE, 20.400f, 7.400f, ICON_CUBIC, 20.777f, 7.769f,
@@ -146,6 +155,7 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_house,
     icon_image,
     icon_play,
+    icon_rotate_ccw,
     icon_save_in,
     icon_save_out,
     icon_speaker,

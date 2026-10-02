@@ -1,4 +1,4 @@
-play, cog, image, speaker, house and x are from Lucide (lucide-static
+play, rotate-ccw, cog, image, speaker, house and x are from Lucide (lucide-static
 0.469.0); save-in, save-out and dpad are drawn here in its style, the floppy
 taken from its "save". tools/icon-paths turns them into icons.inc.
 

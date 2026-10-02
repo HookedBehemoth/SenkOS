@@ -69,9 +69,11 @@ static const ui_color RING = {0x6a, 0x9c, 0xff, 0xff};
 static const SDL_Color RING_TEXT = {0x6a, 0x9c, 0xff, 0xff};
 /* The dot on a tile whose app is running */
 static const SDL_Color ACTIVE = {0x6a, 0x9c, 0xff, 0xff};
+/* A binding this game has its own of */
+static const SDL_Color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
 /* What a menu row does; RUN_COMMAND: sh -c its command */
-enum { RUN_COMMAND, RESUME, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE };
+enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE };
 typedef struct {
   char label[64];
   char command[256];
@@ -84,6 +86,7 @@ typedef struct {
  * those the app has options in. */
 static const entry pause_entries[] = {
     {"Resume", "", RESUME, ICON_PLAY},
+    {"Restart", "", RESTART, ICON_ROTATE_CCW},
     {"Save state", "", SAVE_STATE, ICON_SAVE_IN},
     {"Load state", "", LOAD_STATE, ICON_SAVE_OUT},
     {"System", "", SETTINGS, ICON_COG},
@@ -386,7 +389,7 @@ static void pause_front(nav *ui) {
   notice[0] = '\0';
   set_listening(true);
   grab(true);
-  nav_focus(ui, in_settings ? front->settings_focus : front->menu_focus);
+  nav_focus(ui, in_settings ? front->settings_focus[settings_category] : front->menu_focus);
   /* kiosk-shell puts a toplevel on top when it maps: map again */
   SDL_HideWindow(window);
   SDL_ShowWindow(window);
@@ -722,7 +725,7 @@ static const app *tiles(nav *ui, const category *c, ui_rect view) {
 }
 
 /* The app's options, a row each: left/right (or A) step a choice; A records
- * a binding, X clears it */
+ * a binding, X clears it, Y makes it this game's own (or the core's again) */
 static int settings_focus = -1;
 
 static bool has_settings(const running *r, int category) {
@@ -776,8 +779,9 @@ static void settings(nav *ui, running *r, ui_rect view) {
                o->count ? o->values[atomic_load(&o->value) % SDL_min(o->count, APPCTL_VALUES)] : "");
     const int y = (int)row.y + ((int)row.h - text_height(ROW_TEXT)) / 2;
     const int vw = text_width(ROW_TEXT, value);
+    const bool per_game = binding && atomic_load(&o->value);
     text_draw(ROW_TEXT, (int)row.x + MARGIN, y,
-              fit(ROW_TEXT, label, row.w - vw - MARGIN * 3), FG);
+              fit(ROW_TEXT, label, row.w - vw - MARGIN * 3), per_game ? PER_GAME : FG);
     text_draw(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, value,
               capture.option == (int)i ? RING_TEXT : flags & NAV_FOCUSED ? FG : DIM);
   }
@@ -1037,6 +1041,13 @@ static bool input(nav *ui, const SDL_Event *ev, size_t *page) {
     set_binding(front, settings_focus, 0);
     return true;
   }
+  if (in_settings && settings_focus >= 0 && button == SDL_CONTROLLER_BUTTON_Y &&
+      front->shm->options[settings_focus].kind == APPCTL_BINDING) {
+    appctl_option *o = &front->shm->options[settings_focus];
+    atomic_store(&o->value, !atomic_load(&o->value));
+    run_request(front, APPCTL_OPTIONS, 0);
+    return true;
+  }
   if (in_settings && settings_focus >= 0 &&
       (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
     step_option(front, settings_focus, button == SDL_CONTROLLER_BUTTON_DPAD_LEFT ? -1 : 1);
@@ -1183,7 +1194,7 @@ int main(void) {
         const bool on_binding = settings_focus >= 0 &&
                                 front->shm->options[settings_focus].kind == APPCTL_BINDING;
         const char *hint = capture.option >= 0 ? "Hold the buttons, then let go of the first"
-                           : on_binding        ? "A: record    X: clear"
+                           : on_binding        ? "A: record    X: clear    Y: this game"
                                                : NULL;
         if (hint != NULL)
           text_draw(ROW_TEXT, MARGIN * 2, h - MARGIN - text_height(ROW_TEXT), hint, DIM);
@@ -1193,7 +1204,7 @@ int main(void) {
         for (size_t i = 0; i < SDL_arraysize(pause_entries); i++) {
           const int a = pause_entries[i].action;
           if (a == SETTINGS ? run_controlled(front) && has_settings(front, category_of(&pause_entries[i]))
-              : a == SAVE_STATE || a == LOAD_STATE ? run_controlled(front) && front->shm->slots > 0
+              : a == SAVE_STATE || a == LOAD_STATE || a == RESTART ? run_controlled(front) && front->shm->slots > 0
               : run_controlled(front) || a == RESUME || a == HOME || a == QUIT)
             items[n++] = pause_entries[i];
         }
@@ -1230,7 +1241,7 @@ int main(void) {
     if (paused) {
       front->in_settings = in_settings;
       front->settings_category = settings_category;
-      *(in_settings ? &front->settings_focus : &front->menu_focus) = ui.focus;
+      *(in_settings ? &front->settings_focus[settings_category] : &front->menu_focus) = ui.focus;
     }
     gfx_end(screen);
     static bool presented;
@@ -1244,6 +1255,10 @@ int main(void) {
     int result = 0;
     switch (chosen ? chosen->action : -1) {
     case RESUME: resume_front(); break;
+    case RESTART:
+      run_request(front, APPCTL_RESET, 0);
+      resume_front();
+      break;
     case SAVE_STATE:
     case LOAD_STATE:
       result = run_request(front, chosen->action == SAVE_STATE ? APPCTL_SAVE_STATE : APPCTL_LOAD_STATE, 0);
@@ -1257,7 +1272,8 @@ int main(void) {
       in_settings = true;
       settings_category = category_of(chosen);
       settings_focus = -1;
-      nav_focus(&ui, 0);
+      /* Where this category was left; none yet: the top */
+      nav_focus(&ui, front->settings_focus[settings_category]);
       break;
     /* Paused it stays, in the background */
     case HOME: go_home(&ui); break;

@@ -1,0 +1,179 @@
+Subject: [PATCH] One libretro button per N64 button, no C-button options
+
+The independent C-button mapping, always: C-Up, C-Down, ... each a
+RetroPad button, no shift layer on R2. corehost lists the descriptors as
+rows, in their order, and the player binds a combo to each, so every row
+has to be a real N64 input, listed as the pad has them: stick, A, B, Z,
+Start, L, R, C buttons, D-pad. The C buttons are not also described on
+the right stick, and the options that only serve the RetroPad layout
+(which button is which C button, the mapping switch, the stick deadzone)
+are gone. The deadzone is 0 without its option, right for a stick that is
+buttons.
+
+Upstream-Status: Inappropriate [corehost policy]
+---
+diff -ru a/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c b/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c
+--- a/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c	2026-09-12 01:21:18.000000000 +0200
++++ b/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c	2026-10-02 18:38:35.266667119 +0200
+@@ -78,24 +78,22 @@
+    if (alternate_mapping)
+    {
+       #define independent_cbuttons_map(PAD) \
++      { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT,  RETRO_DEVICE_ID_ANALOG_X, "Control Stick X" },\
++      { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT,  RETRO_DEVICE_ID_ANALOG_Y, "Control Stick Y" },\
+       { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "A Button" },\
+       { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "B Button" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "C-Right" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "C-Left" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "C-Down" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "C-Up" },\
+       { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,     "Z Trigger" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "R Shoulder" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "L Shoulder" },\
+       { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },\
+-      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "L Shoulder" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "R Shoulder" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "C-Up" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "C-Down" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "C-Left" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "C-Right" },\
+       { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },\
+-      { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT,  RETRO_DEVICE_ID_ANALOG_X, "Control Stick X" },\
+-      { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT,  RETRO_DEVICE_ID_ANALOG_Y, "Control Stick Y" },\
+-      { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "C Buttons X" },\
+-      { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, "C Buttons Y" },
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },\
++      { PAD, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+ 
+       static struct retro_input_descriptor desc[] = {
+          independent_cbuttons_map(0)
+diff -ru a/libretro/libretro.c b/libretro/libretro.c
+--- a/libretro/libretro.c	2026-09-12 01:21:18.000000000 +0200
++++ b/libretro/libretro.c	2026-10-02 17:44:14.386795068 +0200
+@@ -123,7 +123,7 @@
+ int l_cbutton;
+ int d_cbutton;
+ int u_cbutton;
+-bool alternate_mapping;
++bool alternate_mapping = true; /* no option: one libretro button per N64 button */
+ 
+ static uint8_t* game_data = NULL;
+ static uint32_t game_size = 0;
+diff -ru a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
+--- a/libretro/libretro_core_options.h	2026-09-12 01:21:18.000000000 +0200
++++ b/libretro/libretro_core_options.h	2026-10-02 17:44:14.386564944 +0200
+@@ -1531,25 +1531,6 @@
+         "0"
+     },
+     {
+-        CORE_NAME "-astick-deadzone",
+-        "Analog Deadzone (percent)",
+-        NULL,
+-        "Size of the non responsive area around an analog stick.",
+-        NULL,
+-        "input",
+-        {
+-            {"0", NULL},
+-            {"5", NULL},
+-            {"10", NULL},
+-            {"15", NULL},
+-            {"20", NULL},
+-            {"25", NULL},
+-            {"30", NULL},
+-            { NULL, NULL },
+-        },
+-        "15"
+-    },
+-    {
+         CORE_NAME "-astick-sensitivity",
+         "Analog Sensitivity (percent)",
+         NULL,
+@@ -1583,84 +1564,6 @@
+         "100"
+     },
+     {
+-        CORE_NAME "-r-cbutton",
+-        "Right C Button",
+-        NULL,
+-        "Select Right C Button mapping.",
+-        NULL,
+-        "input",
+-        {
+-            {"C1", NULL},
+-            {"C2", NULL},
+-            {"C3", NULL},
+-            {"C4", NULL},
+-            { NULL, NULL },
+-        },
+-        "C1"
+-    },
+-    {
+-        CORE_NAME "-l-cbutton",
+-        "Left C Button",
+-        NULL,
+-        "Select Left C Button mapping.",
+-        NULL,
+-        "input",
+-        {
+-            {"C1", NULL},
+-            {"C2", NULL},
+-            {"C3", NULL},
+-            {"C4", NULL},
+-            { NULL, NULL },
+-        },
+-        "C2"
+-    },
+-    {
+-        CORE_NAME "-d-cbutton",
+-        "Down C Button",
+-        NULL,
+-        "Select Down C Button mapping.",
+-        NULL,
+-        "input",
+-        {
+-            {"C1", NULL},
+-            {"C2", NULL},
+-            {"C3", NULL},
+-            {"C4", NULL},
+-            { NULL, NULL },
+-        },
+-        "C3"
+-    },
+-    {
+-        CORE_NAME "-u-cbutton",
+-        "Up C Button",
+-        NULL,
+-        "Select Up C Button mapping.",
+-        NULL,
+-        "input",
+-        {
+-            {"C1", NULL},
+-            {"C2", NULL},
+-            {"C3", NULL},
+-            {"C4", NULL},
+-            { NULL, NULL },
+-        },
+-        "C4"
+-    },
+-    {
+-        CORE_NAME "-alt-map",
+-        "Independent C-button Controls",
+-        NULL,
+-        "Use an alternate control scheme, useful for some 3rdparty controllers.",
+-        NULL,
+-        "input",
+-        {
+-            {"False", NULL},
+-            {"True", NULL},
+-            { NULL, NULL },
+-        },
+-        "False"
+-    },
+-    {
+         CORE_NAME "-pak1",
+         "Player 1 Pak",
+         NULL,

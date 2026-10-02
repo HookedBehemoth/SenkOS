@@ -1,0 +1,17 @@
+corehost_map_lstick_left=Left
+corehost_map_lstick_right=Right
+corehost_map_lstick_up=Up
+corehost_map_lstick_down=Down
+corehost_map_b=A
+corehost_map_y=B
+corehost_map_start=Start
+corehost_map_select=L1
+corehost_map_r2=R1
+corehost_map_x=R2+X
+corehost_map_a=R2+B
+corehost_map_l=R2+Y
+corehost_map_r=R2+A
+corehost_map_up=R2+Up
+corehost_map_down=R2+Down
+corehost_map_left=R2+Left
+corehost_map_right=R2+Right

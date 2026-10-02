@@ -30,10 +30,10 @@ typedef struct {
   /* SIGTERM sent, exit not seen yet */
   bool quitting;
   /* Where its pause screen was left, for the next pause: in Settings or
-   * not, and the focus (a nav_id) in each */
+   * not, and the focus (a nav_id) in the menu and each category */
   bool in_settings;
   int settings_category; /* appctl's: which of the settings */
-  uint32_t menu_focus, settings_focus;
+  uint32_t menu_focus, settings_focus[APPCTL_CATEGORIES];
 } running;
 
 extern running runs[RUNNING_MAX];
