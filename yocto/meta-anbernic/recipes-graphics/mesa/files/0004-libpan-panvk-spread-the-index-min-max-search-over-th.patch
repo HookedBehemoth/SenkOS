@@ -1,0 +1,114 @@
+From: SenkOS
+Subject: [PATCH] libpan, panvk: spread the index min/max search over the
+ grid
+
+On JM, every indexed draw (vkCmdDrawIndexed too, through the indirect
+path) runs a min/max search over its indices on the GPU before its
+vertex and tiler jobs. Each thread scanned up to 1024 indices in a row,
+so a draw of a few hundred indices was one thread doing a few hundred
+dependent loads, each with the full memory latency: ~270 us a draw on
+Mali-G31 (one core). PPSSPP's ~90 indexed draws a frame kept the
+vertex/tiler slot 85% busy at 35 fps.
+
+Stride over the whole grid instead, so neighbouring threads read
+neighbouring indices and each thread loads only a few. Direct draws
+size the grid from indexCount; indirect ones from the bound index
+buffer as before, capped at 64 groups (the stride still covers the
+rest). PPSSPP: 60 fps, vertex/tiler 50%.
+
+Upstream-Status: Pending
+---
+--- a/src/panfrost/libpan/draw_helper.cl
++++ b/src/panfrost/libpan/draw_helper.cl
+@@ -597,25 +597,17 @@
+                                        uint32_t index_bytes_log2__3,
+                                        uint8_t primitive_restart__2)
+ {
+-   /* Max count of values to process per thread */
+-   const uint32_t max_count_per_thread = 1024;
+-
+    const uint32_t index_bit_size = (1 << index_bytes_log2__3) * 8;
+    const uint32_t start = cmd->firstIndex;
+    const uint32_t index_count = cmd->indexCount;
++   /* Strided over the whole grid: neighbouring threads read neighbouring
++    * indices, and a thread's serial loads are few however the grid was
++    * sized */
++   const uint32_t stride = cl_global_size.x;
+ 
+-   uint32_t base_idx = cl_global_id.x * max_count_per_thread;
+-
+-   /* If the thread is out of range, bail out */
+-   if (base_idx >= index_count)
++   if (cl_global_id.x >= index_count)
+       return;
+ 
+-   /* Compute expected max iteration to do in this thread */
+-   uint32_t count = MIN2(max_count_per_thread, index_count - base_idx);
+-
+-   /* Sanity check so nothing weird will happen */
+-   assert(base_idx + count <= index_count);
+-
+    uint32_t local_min = ((uint64_t)1 << index_bit_size) - 1;
+    uint32_t local_max = 0;
+ 
+@@ -623,8 +615,8 @@
+ #define MINMAX_SEARCH_CASE(sz)                                                 \
+    case sz: {                                                                  \
+       global uint##sz##_t *indices = (global uint##sz##_t *)index_buffer_ptr;  \
+-      for (uint32_t i = 0; i < count; i++) {                                   \
+-         uint32_t val = (uint32_t)indices[start + base_idx + i];               \
++      for (uint32_t i = cl_global_id.x; i < index_count; i += stride) {        \
++         uint32_t val = (uint32_t)indices[start + i];                          \
+          if (primitive_restart__2 && val == UINT##sz##_MAX)                    \
+             continue;                                                          \
+          local_min = min(local_min, val);                                      \
+--- a/src/panfrost/libpan/draw_helper.h
++++ b/src/panfrost/libpan/draw_helper.h
+@@ -21,6 +21,9 @@
+    PANLIB_VARY_BUF_MAX,
+ };
+ 
++/* Indices a thread of the min/max search is sized for; 64 threads a group */
++#define PANLIB_MINMAX_PER_THREAD 16
++
+ struct libpan_draw_helper_index_min_max_result {
+     uint32_t min;
+     uint32_t max;
+--- a/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c
++++ b/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c
+@@ -45,6 +45,8 @@
+    struct panvk_draw_info info;
+    unsigned vertex_range;
+    unsigned padded_vertex_count;
++   /* vkCmdDrawIndexed's indexCount, for sizing the min/max search */
++   uint32_t direct_index_count;
+    struct mali_invocation_packed invocation;
+    struct {
+       uint64_t varyings;
+@@ -1600,10 +1602,15 @@
+                         0, copy_desc_job_id, &write_job, false);
+       util_dynarray_append(&batch->jobs, write_job.cpu);
+ 
++      /* A direct draw's count is known; an indirect one's is at most what
++       * the bound index buffer holds. The search strides over the grid, so
++       * capped, it still covers them all. */
+       const uint32_t index_count =
+-         draw->info.index.buffer_size / draw->info.index.index_size;
+-      uint32_t wg_count = DIV_ROUND_UP(index_count, 65536);
+-      assert(wg_count <= 65536);
++         draw->direct_index_count
++            ? draw->direct_index_count
++            : draw->info.index.buffer_size / draw->info.index.index_size;
++      uint32_t wg_count =
++         CLAMP(DIV_ROUND_UP(index_count, 64 * PANLIB_MINMAX_PER_THREAD), 1, 64);
+ 
+       panlib_draw_index_minmax_search_helper_struct(
+          &precomp_ctx, panlib_1d_with_jm_deps(wg_count, 0, write_job_id),
+@@ -1838,6 +1845,7 @@
+          .indirect.stride = 0,
+          .prim = panvk_get_client_prim(cmdbuf),
+       },
++      .direct_index_count = indexCount,
+    };
+ 
+    panvk_cmd_draw_indirect(cmdbuf, &draw);

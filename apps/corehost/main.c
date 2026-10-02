@@ -808,10 +808,14 @@ static struct {
   uint32_t src_family, wait_count, cmd_count;
   VkSemaphore wait[VK_MAX], signal;
   VkCommandBuffer core_cmd[VK_MAX];
-  /* The overlay's colours, a 1x1 layer each (box, text), blitted out to
-   * its rectangles */
-  VkImage colors;
-  VkDeviceMemory colors_memory;
+  /* The overlay at a texel a font pixel: drawn into a host-visible buffer
+   * per frame in flight, copied into `ovl` and blitted out scaled, two
+   * operations however much text (a blit region is a render pass in PanVK) */
+  VkImage ovl;
+  VkDeviceMemory ovl_memory;
+  VkBuffer ovl_staging[VK_FRAMES];
+  VkDeviceMemory ovl_staging_memory[VK_FRAMES];
+  uint32_t *ovl_map[VK_FRAMES];
   /* A software core's frame: a host-visible buffer per frame in flight,
    * copied into `frame` (GENERAL, in the core's format) by its present */
   VkBuffer staging[VK_FRAMES];
@@ -1147,30 +1151,53 @@ static void sw_frame(const void *data, unsigned w, unsigned h, size_t pitch) {
   vk.have_image = true;
 }
 
-/* The overlay's colour image, made the first time it is needed */
-static bool vk_colors(void) {
-  if (vk.colors != VK_NULL_HANDLE)
+/* The overlay's image and staging buffers, made the first time it is needed */
+#define OVL_W 256
+#define OVL_H 64
+static bool vk_overlay(void) {
+  if (vk.ovl != VK_NULL_HANDLE)
     return true;
+  for (int f = 0; f < VK_FRAMES; f++) {
+    if (vk.ovl_map[f] != NULL)
+      continue;
+    const VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                    .size = OVL_W * OVL_H * 4,
+                                    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkMemoryRequirements req;
+    if (vk.ovl_staging[f] == VK_NULL_HANDLE && vkCreateBuffer(vk.device, &bci, NULL, &vk.ovl_staging[f]) != VK_SUCCESS)
+      return false;
+    vkGetBufferMemoryRequirements(vk.device, vk.ovl_staging[f], &req);
+    if (vk.ovl_staging_memory[f] == VK_NULL_HANDLE)
+      vk.ovl_staging_memory[f] = vk_memory(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    void *map;
+    if (vk.ovl_staging_memory[f] == VK_NULL_HANDLE ||
+        vkBindBufferMemory(vk.device, vk.ovl_staging[f], vk.ovl_staging_memory[f], 0) != VK_SUCCESS ||
+        vkMapMemory(vk.device, vk.ovl_staging_memory[f], 0, VK_WHOLE_SIZE, 0, &map) != VK_SUCCESS)
+      return false;
+    vk.ovl_map[f] = map;
+  }
   const VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                  .imageType = VK_IMAGE_TYPE_2D,
-                                 .format = vk.format,
-                                 .extent = {1, 1, 1},
+                                 .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                 .extent = {OVL_W, OVL_H, 1},
                                  .mipLevels = 1,
-                                 .arrayLayers = 2,
+                                 .arrayLayers = 1,
                                  .samples = VK_SAMPLE_COUNT_1_BIT,
                                  .tiling = VK_IMAGE_TILING_OPTIMAL,
                                  .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-  if (vkCreateImage(vk.device, &ici, NULL, &vk.colors) != VK_SUCCESS)
+  VkImage image;
+  if (vkCreateImage(vk.device, &ici, NULL, &image) != VK_SUCCESS)
     return false;
   VkMemoryRequirements req;
-  vkGetImageMemoryRequirements(vk.device, vk.colors, &req);
-  vk.colors_memory = vk_memory(req, 0);
-  if (vk.colors_memory == VK_NULL_HANDLE ||
-      vkBindImageMemory(vk.device, vk.colors, vk.colors_memory, 0) != VK_SUCCESS) {
-    vkDestroyImage(vk.device, vk.colors, NULL);
-    vk.colors = VK_NULL_HANDLE;
+  vkGetImageMemoryRequirements(vk.device, image, &req);
+  vk.ovl_memory = vk_memory(req, 0);
+  if (vk.ovl_memory == VK_NULL_HANDLE || vkBindImageMemory(vk.device, image, vk.ovl_memory, 0) != VK_SUCCESS) {
+    vkDestroyImage(vk.device, image, NULL);
+    vkFreeMemory(vk.device, vk.ovl_memory, NULL);
+    vk.ovl_memory = VK_NULL_HANDLE;
     return false;
   }
+  vk.ovl = image;
   return true;
 }
 
@@ -1235,30 +1262,38 @@ static void vk_present(int x, int y, int w, int h) {
     vk_barrier(cmd, source, read, layout, transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED,
                transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED, &range);
   }
-  const int n_rects = overlay_rects((int)vk.extent.width, (int)vk.extent.height);
-  if (n_rects > 0 && vk_colors()) {
-    const VkImageSubresourceRange both = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
-    vk_barrier(cmd, vk.colors, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &both);
-    const VkClearColorValue shades[2] = {{.float32 = {0.08f, 0.08f, 0.1f, 1}}, {.float32 = {1, 1, 1, 1}}};
-    for (uint32_t l = 0; l < 2; l++) {
-      const VkImageSubresourceRange layer = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, l, 1};
-      vkCmdClearColorImage(cmd, vk.colors, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &shades[l], 1, &layer);
-    }
-    vk_barrier(cmd, vk.colors, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &both);
-    static VkImageBlit blits[OVERLAY_RECTS];
+  /* Laid out at 160 lines: a texel a font pixel */
+  const int n_rects = overlay_rects(160, 160);
+  if (n_rects > 0 && vk_overlay()) {
+    const rect box = orects[0].r;
+    const int bw = MIN(box.w, OVL_W), bh = MIN(box.h, OVL_H);
+    uint32_t *pixels = vk.ovl_map[f];
     for (int i = 0; i < n_rects; i++) {
       const rect r = orects[i].r;
-      blits[i] = (VkImageBlit){
-          .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, orects[i].text, 1},
-          .srcOffsets = {{0, 0, 0}, {1, 1, 1}},
-          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-          .dstOffsets = {{r.x, r.y, 0}, {r.x + r.w, r.y + r.h, 1}},
-      };
+      /* RGBA in memory: the box 0.08, 0.08, 0.1; text white */
+      const uint32_t c = orects[i].text ? 0xffffffff : 0xff1a1414;
+      for (int y = MAX(r.y - box.y, 0); y < MIN(r.y - box.y + r.h, bh); y++)
+        for (int x = MAX(r.x - box.x, 0); x < MIN(r.x - box.x + r.w, bw); x++)
+          pixels[y * OVL_W + x] = c;
     }
-    vkCmdBlitImage(cmd, vk.colors, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)n_rects, blits, VK_FILTER_NEAREST);
+    vk_barrier(cmd, vk.ovl, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
+    const VkBufferImageCopy copy = {.bufferRowLength = OVL_W,
+                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .imageExtent = {(uint32_t)bw, (uint32_t)bh, 1}};
+    vkCmdCopyBufferToImage(cmd, vk.ovl_staging[f], vk.ovl, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    vk_barrier(cmd, vk.ovl, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
+    /* The same scale as GL's: a font pixel 3 at 480 lines */
+    const int px = MAX(1, (int)vk.extent.height / 160);
+    const VkImageBlit blit = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, 0, 0}, {bw, bh, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{box.x * px, box.y * px, 0}, {(box.x + bw) * px, (box.y + bh) * px, 1}},
+    };
+    vkCmdBlitImage(cmd, vk.ovl, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &blit, VK_FILTER_NEAREST);
   }
   vk_barrier(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, &color);
