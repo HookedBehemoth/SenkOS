@@ -5,7 +5,9 @@
  * (shutdown sends SIGTERM) is shown again at start.
  *
  * D-pad moves (left/right past the edge, or L1/R1, change page), A launches,
- * Start opens the menu (power), Select on a game picks its core.
+ * Start opens the menu (External storage, USB storage, power), Select on a
+ * game picks its core. External storage adds folders on the other card to
+ * systems: their games join the system's page while the card is in.
  * What it launched owns the screen (Weston kiosk shell); the gamepad is read
  * straight from evdev, so input is ignored meanwhile, but for Menu: released
  * with nothing pressed along (Menu and a button are the app's hotkeys), it
@@ -23,6 +25,7 @@
  * (assets.h). Runs on a desktop too: LAUNCHER_DATA=apps/launcher/testdata.
  */
 #include <alsa/asoundlib.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
@@ -74,14 +77,16 @@ static const gfx_color ACTIVE = {0x6a, 0x9c, 0xff, 0xff};
 /* A binding this game has its own of */
 static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
-/* What a menu row does; RUN_COMMAND: sh -c its command */
-enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE };
+/* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sleepd */
+enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
+       BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER };
 typedef struct {
   str label;
   str command;
   int action;
   int icon;     /* ICON_*, -1 for none */
-  int category; /* SETTINGS: appctl's */
+  int category; /* SETTINGS: appctl's; BROWSE_OPEN: the row; TOGGLE_SYSTEM: into categories */
+  bool checked; /* a check mark at the end */
 } entry;
 
 /* All of it for an app on the control channel, else Resume, Home and Quit.
@@ -103,11 +108,47 @@ static const entry pause_entries[] = {
 static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES];
 /* sleepd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
+    {.label = S("External storage"), .action = BROWSE, .icon = -1},
     {.label = S("Sleep"), .command = S("echo suspend > /run/power"), .action = RUN_COMMAND, .icon = -1},
     {.label = S("Reboot"), .command = S("echo reboot > /run/power"), .action = RUN_COMMAND, .icon = -1},
     {.label = S("Power off"), .command = S("echo poweroff > /run/power"), .action = RUN_COMMAND, .icon = -1},
 };
-static const size_t system_count = COUNTOF(system_entries);
+/* USB mass storage, by the ums script (sleepd runs it): the other card, or
+ * the main card's data partition (the UI starts again, without /data). While
+ * either is the host's, /run/ums says which. */
+static const entry ums_entries[] = {
+    {.label = S("USB storage: SD card"), .command = S("ums sd\n"), .action = POWER, .icon = -1},
+    {.label = S("USB storage: main card"), .command = S("ums data\n"), .action = POWER, .icon = -1},
+};
+static const entry ums_stop = {.label = S("Stop USB storage"), .command = S("ums stop\n"), .action = POWER, .icon = -1};
+static bool ums_on;
+
+/* A request to sleepd (/run/power); the menu stays, and shows what came of it */
+static void power(str request) {
+  const int fd = open("/run/power", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  if (fd >= 0) {
+    if (write(fd, request.p, request.n) != (ssize_t)request.n)
+      fprintf(stderr, "launcher: /run/power: %s\n", strerror(errno));
+    close(fd);
+  }
+}
+
+static bool ums_active(void) { return access("/run/ums", F_OK) == 0; }
+
+/* External storage, USB storage, then power */
+static size_t start_entries(entry *out) {
+  size_t n = 0;
+  if (!ums_on)
+    out[n++] = system_entries[0];
+  if (ums_on)
+    out[n++] = ums_stop;
+  else
+    for (size_t i = 0; i < COUNTOF(ums_entries); i++)
+      out[n++] = ums_entries[i];
+  for (size_t i = 1; i < COUNTOF(system_entries); i++)
+    out[n++] = system_entries[i];
+  return n;
+}
 static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = -1},
                                         {.label = S("Ignore for this app"), .action = IGNORE, .icon = -1}};
 /* The core picker's rows: one per core, PICK_CORE */
@@ -166,15 +207,16 @@ static struct {
   nav_id back;
 } failure;
 /* Over home: Start's menu, or Select on a game whose system has more than
- * one core: which runs it */
-enum { MODAL_NONE, MODAL_MENU, MODAL_CORES };
+ * one core: which runs it. Instead of home: External storage, and a folder's
+ * systems. */
+enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_BROWSE, MODAL_SYSTEMS };
 static struct {
   int kind;
   STRBUF(512) rom; /* MODAL_CORES: the game's arg, as a rescan reorders */
   nav_id back;
 } modal;
-/* The tile focused on the page, -1: none */
-static int tiles_focus = -1;
+/* The tile focused on the page, the row in the last menu; -1: none */
+static int tiles_focus = -1, menu_focus = -1;
 static uint64_t osd_until;
 
 
@@ -539,6 +581,7 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
     return NULL;
   }
   const entry *chosen = NULL;
+  menu_focus = -1;
   const float offset =
       nav_scroll_begin(ui, nav_str("menu"), view, UI_VERTICAL,
                        count * ROW + MARGIN * 2, ROW, 0);
@@ -548,8 +591,10 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
                        view.w - MARGIN * 2, ROW - 4};
     const unsigned flags = nav_item(ui, nav_int(i), r, view);
     nav_ring(ui, r, 8);
-    if (flags & NAV_FOCUSED)
+    if (flags & NAV_FOCUSED) {
       ui_rounded(r.x, r.y, r.w, r.h, FOCUS, 6, 0);
+      menu_focus = (int)i;
+    }
     int x = (int)r.x + MARGIN;
     if (entries[i].icon >= 0) {
       ui_icon(entries[i].icon, ICON_PX, x, (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
@@ -557,6 +602,8 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
     }
     ui_text(ROW_TEXT, x, (int)r.y + ((int)r.h - ui_text_height(ROW_TEXT)) / 2,
               entries[i].label, FG);
+    if (entries[i].checked)
+      ui_icon(ICON_CHECK, ICON_PX, (int)(r.x + r.w) - MARGIN - ICON_PX, (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
     if (flags & NAV_ACTIVATED)
       chosen = &entries[i];
   }
@@ -734,9 +781,8 @@ static app *picked_game(category *c) {
   return NULL;
 }
 
-/* The game's system's cores, the one it runs with ticked */
+/* The game's system's cores, the one it runs with checked */
 static entry core_rows[CORES_MAX];
-static STRBUF(64) core_labels[CORES_MAX];
 static const entry *core_dialog(nav *ui, int w, int h, category *c) {
   const app *a = picked_game(c);
   if (a == NULL) {
@@ -745,10 +791,160 @@ static const entry *core_dialog(nav *ui, int w, int h, category *c) {
   }
   const size_t n = MIN(apps_core_count(c), CORES_MAX);
   for (size_t i = 0; i < n; i++) {
-    sb_set(core_labels[i], c->cores[i].name, (int)i == a->core ? S("  \u2713") : S(""));
-    core_rows[i] = (entry){.label = sb_str(core_labels[i]), .action = PICK_CORE, .icon = -1};
+    core_rows[i] = (entry){.label = c->cores[i].name, .action = PICK_CORE, .icon = -1, .checked = (int)i == a->core};
   }
   return dialog_box(ui, w, h, sb_str(a->name), S("Run with"), core_rows, n);
+}
+
+/* External storage: the card's partitions (where sdcard.rules mounts them)
+ * and every source at the top, browse_dir "", then a folder's folders. B goes
+ * up. */
+#define MEDIA "/run/media"
+enum { BROWSE_MAX = 256 };
+static STRBUF(256) browse_dir;
+static struct {
+  STRBUF(256) path;
+  STRBUF(96) name;
+} browse_rows[BROWSE_MAX];
+static size_t browse_count;
+/* MODAL_SYSTEMS: the folder, and the focus in External storage to go back to */
+static STRBUF(256) pick_path;
+static nav_id pick_back;
+
+/* A partition by its label (udev's links), else its name.
+ * ponytail: udev writes a space in a label as \x20; shown as is. */
+static str card_label(str dev) {
+  static STRBUF(64) label;
+  sb_set(label, dev);
+  DIR *dir = opendir("/dev/disk/by-label");
+  for (struct dirent *d; dir != NULL && (d = readdir(dir)) != NULL;) {
+    char link[300], target[64];
+    snprintf(link, sizeof(link), "/dev/disk/by-label/%s", d->d_name);
+    const ssize_t n = readlink(link, target, sizeof(target));
+    const str t = {target, n > 0 ? (size_t)n : 0};
+    if (d->d_name[0] != '.' && str_eq(str_at(t, str_rfind(t, '/') + 1), dev)) {
+      sb_set(label, str_c(d->d_name));
+      break;
+    }
+  }
+  if (dir != NULL)
+    closedir(dir);
+  return sb_str(label);
+}
+
+/* "/run/media/mmcblk1p2/roms" as "STORAGE/roms" */
+static str shown(str path) {
+  static STRBUF(300) out;
+  const str media = S(MEDIA "/");
+  if (path.n <= media.n || memcmp(path.p, media.p, media.n) != 0)
+    return path;
+  str rest = str_at(path, media.n);
+  const str dev = str_cut(&rest, '/');
+  sb_set(out, card_label(dev), rest.n > 0 ? S("/") : S(""), rest);
+  return sb_str(out);
+}
+
+/* Tabs and newlines would break launcher-folders' lines */
+static int is_folder(const struct dirent *d) {
+  return d->d_type == DT_DIR && d->d_name[0] != '.' && strpbrk(d->d_name, "\t\n") == NULL;
+}
+
+static void browse_add(str path, str name) {
+  for (size_t i = 0; i < browse_count; i++)
+    if (str_eq(sb_str(browse_rows[i].path), path))
+      return;
+  if (browse_count < BROWSE_MAX && sb_set(browse_rows[browse_count].path, path)) {
+    sb_set(browse_rows[browse_count].name, name);
+    browse_count++;
+  }
+}
+
+/* ponytail: BROWSE_MAX rows; a folder with more wants a virtual list */
+static void browse(nav *ui, str dir) {
+  sb_set(browse_dir, dir);
+  browse_count = 0;
+  STRBUF(256) base;
+  sb_set(base, dir.n > 0 ? dir : S(MEDIA));
+  struct dirent **list = NULL;
+  const int n = scandir(base.p, &list, is_folder, alphasort);
+  for (int i = 0; i < n; i++) {
+    STRBUF(256) path;
+    const str name = str_c(list[i]->d_name);
+    if (sb_set(path, sb_str(base), S("/"), name))
+      browse_add(sb_str(path), dir.n > 0 ? name : shown(sb_str(path)));
+    free(list[i]);
+  }
+  free(list);
+  for (size_t i = 0; dir.n == 0 && i < source_count; i++)
+    browse_add(sb_str(sources[i].path), shown(sb_str(sources[i].path)));
+  nav_focus(ui, 0);
+}
+
+/* Row `i` of menu() in the top-level scope `scope` */
+static nav_id menu_row(nav_id scope, size_t i) {
+  return nav_child(nav_child(scope, nav_str("menu")), nav_int(i));
+}
+
+/* To the folder above, on the one we were in; the card's top is the top's */
+static void browse_up(nav *ui) {
+  STRBUF(256) from, parent;
+  sb_set(from, sb_str(browse_dir));
+  str up = str_head(sb_str(from), str_rfind(sb_str(from), '/'));
+  sb_set(parent, str_eq(up, S(MEDIA)) ? S("") : up);
+  browse(ui, sb_str(parent));
+  for (size_t i = 0; i < browse_count; i++)
+    if (str_eq(sb_str(browse_rows[i].path), sb_str(from)))
+      nav_focus(ui, menu_row(nav_str(browse_dir.p), i));
+}
+
+/* The systems' rows, on the system the folder's name says if any */
+static void pick_systems(nav *ui, str path) {
+  sb_set(pick_path, path);
+  pick_back = ui->focus;
+  modal.kind = MODAL_SYSTEMS;
+  const int guess = apps_guess(path);
+  size_t row = 0;
+  for (int i = 0; i < guess; i++)
+    row += categories[i].roms.n > 0;
+  nav_focus(ui, guess >= 0 ? menu_row(nav_str("systems"), row) : 0);
+}
+
+/* Instead of home: a folder's rows, each with the systems it's a source of;
+ * or that folder's systems, its own checked */
+static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const status *st) {
+  static entry rows[BROWSE_MAX];
+  static STRBUF(200) labels[BROWSE_MAX];
+  const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
+  const entry *chosen = NULL;
+  str hint;
+  if (modal.kind == MODAL_BROWSE) {
+    top_bar(w, browse_dir.n > 0 ? shown(sb_str(browse_dir)) : S("External storage"), st);
+    for (size_t i = 0; i < browse_count; i++) {
+      sb_set(labels[i], sb_str(browse_rows[i].name));
+      bool first = true;
+      for (size_t k = 0; k < source_count; k++)
+        if (str_eq(sb_str(sources[k].path), sb_str(browse_rows[i].path))) {
+          sb_add(labels[i], first ? S("  \u00b7  ") : S(", "), categories[sources[k].category].name);
+          first = false;
+        }
+      rows[i] = (entry){.label = sb_str(labels[i]), .action = BROWSE_OPEN, .icon = -1, .category = (int)i};
+    }
+    NAV_SCOPE(ui, nav_str(browse_dir.p)) { chosen = menu(ui, rows, browse_count, list); }
+    hint = browse_count > 0 ? S("A: open    X: systems    B: back") : S("B: back");
+  } else {
+    top_bar(w, shown(sb_str(pick_path)), st);
+    size_t n = 0;
+    for (size_t i = 0; i < category_count && n < BROWSE_MAX; i++) {
+      if (categories[i].roms.n == 0)
+        continue;
+      rows[n++] = (entry){.label = categories[i].name, .action = TOGGLE_SYSTEM, .icon = -1,
+                          .category = (int)i, .checked = sources_has(sb_str(pick_path), i)};
+    }
+    NAV_SCOPE(ui, nav_str("systems")) { chosen = menu(ui, rows, n, list); }
+    hint = S("A: add or take out    B: done");
+  }
+  ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, DIM);
+  return chosen;
 }
 
 /* The Running page: a category of what runs, built each frame */
@@ -768,13 +964,14 @@ static void list_running(void) {
   }
 }
 
-/* Running only while something does */
+/* Running only while something does. External storage stays open. */
 static void turn_page(size_t *page, int by) {
   do
     *page = (*page + PAGES + by) % PAGES;
   while ((*page == 0 && run_count() == 0) ||
          (*page >= 1 && !apps_present(&categories[*page - 1])));
-  modal.kind = MODAL_NONE;
+  if (modal.kind != MODAL_BROWSE && modal.kind != MODAL_SYSTEMS)
+    modal.kind = MODAL_NONE;
   rescan(*page);
 }
 
@@ -933,6 +1130,20 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     nav_focus(ui, failure.back);
     return true;
   }
+  if (button == APPCTL_B && modal.kind == MODAL_SYSTEMS) {
+    modal.kind = MODAL_BROWSE;
+    nav_focus(ui, pick_back);
+    return true;
+  }
+  if (button == APPCTL_B && modal.kind == MODAL_BROWSE && browse_dir.n > 0) {
+    browse_up(ui);
+    return true;
+  }
+  if (button == APPCTL_X && modal.kind == MODAL_BROWSE && menu_focus >= 0 &&
+      (size_t)menu_focus < browse_count) {
+    pick_systems(ui, sb_str(browse_rows[menu_focus].path));
+    return true;
+  }
   /* B, or Start again on the menu */
   if (dialog && (button == APPCTL_B ||
                  (button == APPCTL_START && modal.kind == MODAL_MENU))) {
@@ -1027,11 +1238,16 @@ int main(void) {
   open_pad();
   spawn("volume", volume_thread, NULL);
   static nav ui = {.animate = true, .duration = 150};
+  sources_load();
+  uint64_t present = sources_present();
   size_t page = load_page();
   rescan(page);
   status st;
   read_status(&st);
   uint64_t status_at = ms_now();
+  /* Started again for the main card's USB storage: the way back first */
+  if ((ums_on = ums_active()))
+    modal.kind = MODAL_MENU;
   /* The clock shows minutes: a frame when one passes, not every second */
   time_t shown_minute = 0;
   bool animating = true;
@@ -1072,8 +1288,24 @@ int main(void) {
       const status was = st;
       read_status(&st);
       status_at = now;
+      const bool ums_was = ums_on;
+      ums_on = ums_active();
+      /* The menu's rows changed: on Stop, or on the card that was */
+      if (ums_on != ums_was && modal.kind == MODAL_MENU)
+        nav_focus(&ui, menu_row(nav_str("start"), ums_on ? 0 : 1));
       dirty |= was.battery != st.battery || was.charging != st.charging ||
-               was.wifi != st.wifi || time(NULL) / 60 != shown_minute;
+               was.wifi != st.wifi || time(NULL) / 60 != shown_minute || ums_on != ums_was;
+      /* A card came or went, or a source was added: the page again, or
+       * another if it has nothing left.
+       * ponytail: polled with the status; inotify on /run/media if a second is too slow. */
+      const uint64_t now_present = sources_present();
+      if (now_present != present) {
+        present = now_present;
+        if (page >= 1 && !apps_present(&categories[page - 1]))
+          turn_page(&page, 1);
+        rescan(page);
+        dirty = true;
+      }
     }
     if (!dirty)
       continue;
@@ -1093,7 +1325,9 @@ int main(void) {
     const entry *chosen = NULL;
     const app *picked = NULL;
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
-    if (paused) {
+    if (!paused && (modal.kind == MODAL_BROWSE || modal.kind == MODAL_SYSTEMS)) {
+      chosen = folders_screen(&ui, w, h, view, &st);
+    } else if (paused) {
       STRBUF(128) title;
       sb_set(title, sb_str(front->label), S(" \u00b7 "), category_names[settings_category]);
       top_bar(w, in_settings ? sb_str(title) : sb_str(front->label), &st);
@@ -1139,7 +1373,9 @@ int main(void) {
       nav_set_inert(&ui, failure.shown);
       if (modal.kind == MODAL_MENU)
         NAV_SCOPE(&ui, nav_str("start")) {
-          chosen = dialog_box(&ui, w, h, S("Menu"), S(""), system_entries, system_count);
+          static entry items[COUNTOF(system_entries) + COUNTOF(ums_entries)];
+          chosen = dialog_box(&ui, w, h, S("Menu"), ums_on ? S("Connected as USB storage") : S(""), items,
+                              start_entries(items));
         }
       if (modal.kind == MODAL_CORES && page >= 1)
         NAV_SCOPE(&ui, nav_str("cores")) { chosen = core_dialog(&ui, w, h, &categories[page - 1]); }
@@ -1201,6 +1437,19 @@ int main(void) {
       nav_focus(&ui, modal.back);
       break;
     }
+    case POWER: power(chosen->command); break;
+    case BROWSE:
+      modal.kind = MODAL_BROWSE;
+      browse(&ui, S(""));
+      break;
+    case BROWSE_OPEN: {
+      STRBUF(256) dir;
+      sb_set(dir, sb_str(browse_rows[chosen->category].path));
+      browse(&ui, sb_str(dir));
+      break;
+    }
+    /* Games join or leave once the status is next read */
+    case TOGGLE_SYSTEM: sources_toggle(sb_str(pick_path), (size_t)chosen->category); break;
     case IGNORE: ignore(sb_str(failure.key)); /* fall through */
     case DISMISS:
       failure.shown = false;

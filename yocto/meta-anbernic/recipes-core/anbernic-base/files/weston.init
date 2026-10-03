@@ -17,6 +17,27 @@ if [ "$1" = session ]; then
 		sleep 1
 	done
 fi
+# seatd, then the session as player. Again (`restart`) after `ums` stopped it: seatd still runs.
+ui() {
+	export HOME=/data
+	. /etc/profile.d/wayland.sh
+	. /etc/profile.d/panvk.sh
+	. /etc/profile.d/zz-data.sh
+	mkdir -p -m 0700 $XDG_RUNTIME_DIR
+	chown player:player $XDG_RUNTIME_DIR
+	# Mesa (kmsro) opens the panfrost render node itself, as the player, not through seatd. devtmpfs
+	# creates it 0600 root and udev (S04, after us) only later makes it 0666: Weston's EGL init lost
+	# that race once Mesa got small enough to load before udev ran. Same mode udev's default rule sets.
+	chgrp video /dev/dri/renderD*
+	chmod 0666 /dev/dri/renderD*
+	(
+		echo 0 > $c/ui/cgroup.procs
+		[ -S /run/seatd.sock ] || seatd -g seat </dev/null >/dev/null 2>&1 &
+		while [ ! -S /run/seatd.sock ]; do usleep 5000; done
+		exec su -p -s /bin/sh player -c "$0 session"
+	) </dev/null >/var/log/launcher.log 2>&1 &
+}
+[ "$1" = restart ] && { c=/sys/fs/cgroup/session; ui; exit 0; }
 [ "$1" = start ] || exit 0
 
 # Mesa in one sequential read, from the start: Weston's GL init page-faulting it in from squashfs
@@ -56,20 +77,4 @@ mkdir -p -m 1777 /var/volatile/tmp
 
 /etc/init.d/data-init start
 
-export HOME=/data
-. /etc/profile.d/wayland.sh
-. /etc/profile.d/panvk.sh
-. /etc/profile.d/zz-data.sh
-mkdir -p -m 0700 $XDG_RUNTIME_DIR
-chown player:player $XDG_RUNTIME_DIR
-# Mesa (kmsro) opens the panfrost render node itself, as the player, not through seatd. devtmpfs
-# creates it 0600 root and udev (S04, after us) only later makes it 0666: Weston's EGL init lost
-# that race once Mesa got small enough to load before udev ran. Same mode udev's default rule sets.
-chgrp video /dev/dri/renderD*
-chmod 0666 /dev/dri/renderD*
-(
-	echo 0 > $c/ui/cgroup.procs
-	seatd -g seat </dev/null >/dev/null 2>&1 &
-	while [ ! -S /run/seatd.sock ]; do usleep 5000; done
-	exec su -p -s /bin/sh player -c "$0 session"
-) </dev/null >/var/log/launcher.log 2>&1 &
+ui

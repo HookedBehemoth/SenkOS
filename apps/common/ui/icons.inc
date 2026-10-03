@@ -3,6 +3,7 @@
  * Ops then their points, in the 24x24 box, y down. */
 enum { ICON_MOVE, ICON_LINE, ICON_CUBIC, ICON_CLOSE, ICON_END };
 enum {
+  ICON_CHECK,
   ICON_COG,
   ICON_DPAD,
   ICON_HOUSE,
@@ -18,6 +19,10 @@ enum {
 
 /* The paths: icons.c's */
 #ifdef ICON_PATHS
+static const float icon_check[] = {
+    ICON_MOVE, 20.0f, 6.0f, ICON_LINE, 9.0f, 17.0f, ICON_LINE, 4.0f,
+    12.0f, ICON_END,
+};
 static const float icon_cog[] = {
     ICON_MOVE, 12.220f, 2.0f, ICON_LINE, 11.780f, 2.0f, ICON_CUBIC, 10.675f,
     2.0f, 9.780f, 2.895f, 9.780f, 4.0f, ICON_LINE, 9.780f, 4.180f,
@@ -150,6 +155,7 @@ static const float icon_x[] = {
     6.0f, ICON_LINE, 18.0f, 18.0f, ICON_END,
 };
 static const float *const icon_paths[ICON_COUNT] = {
+    icon_check,
     icon_cog,
     icon_dpad,
     icon_house,

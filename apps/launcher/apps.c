@@ -24,51 +24,51 @@
 #define PSP_SAVE "COREHOST_SAVE=\"${1%/*}/memstick\" "
 /* GLES unless a core that has both is told otherwise */
 #define VULKAN "COREHOST_RENDER=vulkan "
-#define SYSTEM(title, dir, exts, pack_name, ...)                                         \
-  {.name = S(title), .folder = S("roms/" dir), .roms = S(exts), .system_dir = S("retroarch/cores"), \
-   .pack = S(pack_name), .cores = (const core[]){__VA_ARGS__, {.name = {0}}}}
+#define SYSTEM(title, dir, aliases, exts, pack_name, ...)                                         \
+  {.name = S(title), .folder = S("roms/" dir), .names = S(aliases), .roms = S(exts),               \
+   .system_dir = S("retroarch/cores"), .pack = S(pack_name), .cores = (const core[]){__VA_ARGS__, {.name = {0}}}}
 
 category categories[] = {
-    SYSTEM("Game Boy Advance", "gba", ".gba;.zip;", "Nintendo - Game Boy Advance",
+    SYSTEM("Game Boy Advance", "gba", "gba;", ".gba;.zip;", "Nintendo - Game Boy Advance",
            COREHOST("mGBA", "mgba")),
-    SYSTEM("Game Boy", "gb", ".gb;.zip;", "Nintendo - Game Boy",
+    SYSTEM("Game Boy", "gb", "gb;", ".gb;.zip;", "Nintendo - Game Boy",
            COREHOST("Gambatte", "gambatte"), COREHOST("mGBA", "mgba")),
-    SYSTEM("Game Boy Color", "gbc", ".gbc;.gb;.zip;", "Nintendo - Game Boy Color",
+    SYSTEM("Game Boy Color", "gbc", "gbc;", ".gbc;.gb;.zip;", "Nintendo - Game Boy Color",
            COREHOST("Gambatte", "gambatte"), COREHOST("mGBA", "mgba")),
-    SYSTEM("NES", "nes", ".nes;.fds;.unf;.unif;.zip;", "Nintendo - Nintendo Entertainment System",
+    SYSTEM("NES", "nes", "nes;fc;famicom;fds;", ".nes;.fds;.unf;.unif;.zip;", "Nintendo - Nintendo Entertainment System",
            COREHOST("FCEUmm", "fceumm")),
-    SYSTEM("SNES", "snes", ".sfc;.smc;.zip;", "Nintendo - Super Nintendo Entertainment System",
+    SYSTEM("SNES", "snes", "snes;sfc;superfamicom;snesmsu1;", ".sfc;.smc;.zip;", "Nintendo - Super Nintendo Entertainment System",
            COREHOST("Snes9x", "snes9x")),
-    SYSTEM("Nintendo 64", "n64", ".n64;.v64;.z64;.zip;", "Nintendo - Nintendo 64",
+    SYSTEM("Nintendo 64", "n64", "n64;n64dd;", ".n64;.v64;.z64;.zip;", "Nintendo - Nintendo 64",
            COREHOST("Mupen64Plus-Next", "mupen64plus_next")),
-    SYSTEM("Mega Drive", "md", ".md;.gen;.smd;.bin;.zip;", "Sega - Mega Drive - Genesis",
+    SYSTEM("Mega Drive", "md", "md;genesis;megadrive;", ".md;.gen;.smd;.bin;.zip;", "Sega - Mega Drive - Genesis",
            COREHOST("Genesis Plus GX", "genesis_plus_gx")),
-    SYSTEM("Master System", "ms", ".sms;.zip;", "Sega - Master System - Mark III",
+    SYSTEM("Master System", "ms", "ms;sms;mastersystem;", ".sms;.zip;", "Sega - Master System - Mark III",
            COREHOST("Genesis Plus GX", "genesis_plus_gx")),
-    SYSTEM("Game Gear", "gg", ".gg;.zip;", "Sega - Game Gear",
+    SYSTEM("Game Gear", "gg", "gg;gamegear;", ".gg;.zip;", "Sega - Game Gear",
            COREHOST("Genesis Plus GX", "genesis_plus_gx")),
-    SYSTEM("Dreamcast", "dc", ".chd;.cdi;.gdi;.cue;", "Sega - Dreamcast",
+    SYSTEM("Dreamcast", "dc", "dc;dreamcast;", ".chd;.cdi;.gdi;.cue;", "Sega - Dreamcast",
            COREHOST_ENV("Flycast", BIOS, "flycast"), COREHOST_ENV("Flycast (Vulkan)", BIOS VULKAN, "flycast")),
-    SYSTEM("PC Engine", "pce", ".pce;.cue;.chd;.zip;", "NEC - PC Engine - TurboGrafx 16",
+    SYSTEM("PC Engine", "pce", "pce;pcengine;pcenginecd;tg16;tg16cd;turbografx16;", ".pce;.cue;.chd;.zip;", "NEC - PC Engine - TurboGrafx 16",
            COREHOST("Beetle PCE Fast", "mednafen_pce_fast")),
-    SYSTEM("PlayStation", "ps", ".cue;.chd;.pbp;.m3u;.bin;.img;", "Sony - PlayStation",
+    SYSTEM("PlayStation", "ps", "ps;psx;ps1;playstation;", ".cue;.chd;.pbp;.m3u;.bin;.img;", "Sony - PlayStation",
            COREHOST("PCSX ReARMed", "pcsx_rearmed")),
-    SYSTEM("PSP", "psp", ".iso;.cso;.pbp;.chd;", "Sony - PlayStation Portable",
+    SYSTEM("PSP", "psp", "psp;", ".iso;.cso;.pbp;.chd;", "Sony - PlayStation Portable",
            COREHOST_ENV("PPSSPP", BIOS PSP_SAVE, "ppsspp"),
            COREHOST_ENV("PPSSPP (Vulkan)", BIOS PSP_SAVE VULKAN, "ppsspp")),
-    SYSTEM("Arcade", "arcade", ".zip;.7z;", "",
+    SYSTEM("Arcade", "arcade", "arcade;mame;fbneo;fba;neogeo;cps1;cps2;cps3;", ".zip;.7z;", "",
            COREHOST("FinalBurn Neo", "fbneo")),
-    SYSTEM("Neo Geo Pocket", "ngp", ".ngp;.ngc;.zip;", "SNK - Neo Geo Pocket Color",
+    SYSTEM("Neo Geo Pocket", "ngp", "ngp;ngpc;", ".ngp;.ngc;.zip;", "SNK - Neo Geo Pocket Color",
            COREHOST("Beetle NGP", "mednafen_ngp")),
-    SYSTEM("WonderSwan", "ws", ".ws;.wsc;.zip;", "Bandai - WonderSwan Color",
+    SYSTEM("WonderSwan", "ws", "ws;wsc;wonderswan;wonderswancolor;", ".ws;.wsc;.zip;", "Bandai - WonderSwan Color",
            COREHOST("Beetle WonderSwan", "mednafen_wswan")),
-    SYSTEM("Atari 2600", "atari2600", ".a26;.bin;.zip;", "Atari - 2600",
+    SYSTEM("Atari 2600", "atari2600", "atari2600;a2600;", ".a26;.bin;.zip;", "Atari - 2600",
            COREHOST("Stella 2014", "stella2014")),
-    SYSTEM("Atari Lynx", "lynx", ".lnx;.o;.zip;", "Atari - Lynx",
+    SYSTEM("Atari Lynx", "lynx", "lynx;atarilynx;", ".lnx;.o;.zip;", "Atari - Lynx",
            COREHOST("Handy", "handy")),
     /* Not games, but a folder of files run by one player all the same;
      * $MEDIAPLAYER tries out another build */
-    {.name = S("Videos"), .folder = S("videos"), .roms = S(".mp4;.mkv;.webm;.mov;.m4v;.avi;.ts;"),
+    {.name = S("Videos"), .folder = S("videos"), .names = S("videos;movies;"), .roms = S(".mp4;.mkv;.webm;.mov;.m4v;.avi;.ts;"),
      .system_dir = S("videos"),
      .cores = (const core[]){{S("Media player"), S("exec \"${MEDIAPLAYER:-mediaplayer}\" \"$1\"")}, {.name = {0}}}},
     {.name = S("Ports"), .folder = S("OS/apps/ports")},
@@ -300,25 +300,97 @@ static int by_name(const void *a, const void *b) {
   return strcasecmp(((const app *)a)->name.p, ((const app *)b)->name.p);
 }
 
-bool apps_present(const category *c) {
-  STRBUF(256) folder;
+source sources[SOURCES_MAX];
+size_t source_count;
+
+static bool is_dir(const char *path) {
   struct stat st;
-  return c->roms.n == 0 || (sb_set(folder, root(), S("/"), c->folder) &&
-                            stat(folder.p, &st) == 0 && S_ISDIR(st.st_mode));
+  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+bool apps_present(const category *c) {
+  STRBUF(256) folder;
+  if (c->roms.n == 0 || (sb_set(folder, root(), S("/"), c->folder) && is_dir(folder.p)))
+    return true;
+  for (size_t i = 0; i < source_count; i++)
+    if (&categories[sources[i].category] == c && is_dir(sources[i].path.p))
+      return true;
+  return false;
+}
+
+static void scan_folder(category *c, str picks, str folder) {
+  DIR *dir = opendir(folder.p);
+  if (dir == NULL)
+    return;
+  struct dirent *d;
+  while ((d = readdir(dir)) != NULL)
+    scan_entry(c, picks, folder, str_c(d->d_name));
+  closedir(dir);
+}
+
+/* The category's folder, then its sources */
 void apps_scan(category *c) {
   c->count = 0;
   STRBUF(256) folder;
   sb_set(folder, root(), S("/"), c->folder);
-  DIR *dir = opendir(folder.p);
-  if (dir == NULL)
-    return;
   const str picks = c->roms.n > 0 ? str_read(state_file("-cores", "r")) : (str){0};
-  struct dirent *d;
-  while ((d = readdir(dir)) != NULL)
-    scan_entry(c, picks, sb_str(folder), str_c(d->d_name));
-  closedir(dir);
+  scan_folder(c, picks, sb_str(folder));
+  for (size_t i = 0; i < source_count; i++)
+    if (&categories[sources[i].category] == c)
+      scan_folder(c, picks, sb_str(sources[i].path));
   free((char *)picks.p);
   qsort(c->apps, c->count, sizeof(*c->apps), by_name);
+}
+
+void sources_load(void) {
+  const str text = str_read(state_file("-folders", "r"));
+  source_count = 0;
+  for (str rest = text; rest.n > 0 && source_count < SOURCES_MAX;) {
+    str path = str_cut(&rest, '\n');
+    const str system = str_cut(&path, '\t');
+    for (size_t i = 0; i < category_count && path.n > 0 && path.p[0] == '/'; i++)
+      if (categories[i].roms.n > 0 && str_eq(categories[i].folder, system) &&
+          sb_set(sources[source_count].path, path)) {
+        sources[source_count++].category = i;
+        break;
+      }
+  }
+  free((char *)text.p);
+}
+
+int apps_guess(str folder) {
+  const str name = str_at(folder, str_rfind(folder, '/') + 1);
+  for (size_t i = 0; i < category_count; i++)
+    for (str names = categories[i].names, item; cfg_item(&names, &item);)
+      if (str_ieq(item, name))
+        return (int)i;
+  return -1;
+}
+
+bool sources_has(str path, size_t category) {
+  for (size_t i = 0; i < source_count; i++)
+    if (sources[i].category == category && str_eq(sb_str(sources[i].path), path))
+      return true;
+  return false;
+}
+
+void sources_toggle(str path, size_t category) {
+  const bool had = sources_has(path, category);
+  FILE *f = state_file("-folders", "w");
+  if (f == NULL)
+    return;
+  for (size_t i = 0; i < source_count; i++)
+    if (sources[i].category != category || !str_eq(sb_str(sources[i].path), path))
+      str_fput(f, categories[sources[i].category].folder, S("\t"), sb_str(sources[i].path), S("\n"));
+  if (!had)
+    str_fput(f, categories[category].folder, S("\t"), path, S("\n"));
+  fclose(f);
+  sources_load();
+}
+
+uint64_t sources_present(void) {
+  uint64_t present = 0;
+  for (size_t i = 0; i < source_count; i++)
+    present |= (uint64_t)is_dir(sources[i].path.p) << i;
+  return present;
 }

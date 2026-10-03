@@ -5,6 +5,7 @@
  * put the handheld to sleep at boot. The actual suspend is /usr/sbin/suspend.
  * Also the unprivileged launcher's way to suspend, reboot or power off: a line
  * "suspend", "reboot" or "poweroff" written to the FIFO /run/power (anbernic.init).
+ * And to USB mass storage: "ums sd", "ums data" or "ums stop" runs /usr/sbin/ums.
  */
 #include <fcntl.h>
 #include <glob.h>
@@ -90,6 +91,13 @@ int main(void)
 				system("reboot");
 			else if (strncmp(req, "poweroff", 8) == 0)
 				system("poweroff");
+			/* In the background: `ums data` takes the UI down and up again */
+			else if (strncmp(req, "ums sd", 6) == 0)
+				system("/usr/sbin/ums sd &");
+			else if (strncmp(req, "ums data", 8) == 0)
+				system("/usr/sbin/ums data &");
+			else if (strncmp(req, "ums stop", 8) == 0)
+				system("/usr/sbin/ums stop &");
 		}
 		for (int i = 0; i < n; i++)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {

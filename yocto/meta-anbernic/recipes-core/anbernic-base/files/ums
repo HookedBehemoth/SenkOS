@@ -1,0 +1,135 @@
+#!/bin/sh
+# USB mass storage, for the launcher (sleepd runs `ums WHAT` on "ums WHAT" in /run/power):
+#   sd    the other card, whole, its partitions unmounted
+#   data  the main card's data partition: the UI stops, /data is unmounted and the UI starts
+#         again without it (the image's launcher). Meanwhile /data is a tmpfs with a copy of
+#         dropbear's host key, which it reads for every connection, and room for HOME.
+#   stop [sd|data]  back, mounted again; the UI starts again with /data. Both without one.
+#   watch           while the host has any: what it ejects is stopped, all of it once the host
+#                   is gone (started by sd and data)
+# The gadget (anbernic.init) has mass storage in place of its serial port meanwhile, LUN 0 the
+# data partition, LUN 1 the other card. /run/ums lists what the host has, for the launcher.
+g=/sys/kernel/config/usb_gadget/g1
+f=$g/functions/mass_storage.0
+root=$(readlink -f /sys/dev/block/$(mountpoint -d /))
+disk=/dev/$(basename $(dirname $root))
+case $disk in *[0-9]) disk=${disk}p ;; esac
+log() { echo "ums: $*" > /dev/kmsg; }
+has() { grep -qx "$1" /run/ums 2>/dev/null; }
+# One at a time. What this starts that stays (the UI, syslogd, the watch) must not keep the lock:
+# started with 9>&-.
+case "$1" in watch) ;; *) exec 9> /run/ums.lock; flock 9 ;; esac
+
+# Every player process (the session: Weston, the launcher, games, which save on SIGTERM)
+ui_stop() {
+	su -s /bin/sh player -c 'kill -TERM -1' 2>/dev/null
+	i=0
+	while pgrep -u player >/dev/null && [ $i -lt 100 ]; do usleep 20000; i=$((i + 1)); done
+	su -s /bin/sh player -c 'kill -KILL -1' 2>/dev/null
+	usleep 100000
+}
+
+# The gadget's third function: mass_storage.0 or acm.usb0. The host sees it unplugged and
+# plugged in again (ssh over NCM reconnects).
+gadget() {
+	[ -e $g/configs/c.1/$1 ] && return
+	udc=$(cat $g/UDC)
+	echo > $g/UDC
+	rm -f $g/configs/c.1/mass_storage.0 $g/configs/c.1/acm.usb0
+	ln -s $g/functions/$1 $g/configs/c.1/
+	echo $udc > $g/UDC
+}
+
+watch() {
+	pgrep -f "$0 watch" >/dev/null || $0 watch </dev/null >/dev/null 2>&1 9>&- &
+}
+
+# The other card's partitions mounted again (sdcard.rules); once the gadget let go, udev
+# re-reads them and may have mounted some itself
+sd_mount() {
+	udevadm settle
+	udevadm trigger --action=add --subsystem-match=block --sysname-match='mmcblk1p*'
+}
+
+case "$1" in
+sd)
+	has sd || [ ! -e /sys/block/mmcblk1 ] && exit 0
+	for m in /run/media/mmcblk1p*; do
+		[ -d "$m" ] || continue
+		while mountpoint -q "$m" && umount "$m"; do :; done
+		if mountpoint -q "$m"; then
+			log "$m is busy"
+			failed=1
+		else
+			rmdir "$m"
+		fi
+	done
+	[ -n "$failed" ] && { sd_mount; exit 1; }
+	echo /dev/mmcblk1 > $f/lun.1/file || { sd_mount; exit 1; }
+	echo sd >> /run/ums
+	gadget mass_storage.0
+	watch
+	;;
+data)
+	has data && exit 0
+	ui_stop
+	sync
+	rm -rf /run/data
+	mkdir -p /run/data
+	cp -a /data/dropbear /run/data/
+	chown player:player /run/data
+	/etc/init.d/syslog stop
+	umount /var/volatile/log
+	if ! umount /data; then
+		log "/data is busy"
+		mount --bind /data/log/0 /var/volatile/log
+		/etc/init.d/syslog start 9>&-
+		/etc/init.d/weston restart 9>&-
+		exit 1
+	fi
+	# Weston logs there as the player
+	chown player:player /var/volatile/log
+	/etc/init.d/syslog start 9>&-
+	mount --bind /run/data /data
+	echo ${disk}4 > $f/lun.0/file
+	echo data >> /run/ums
+	gadget mass_storage.0
+	watch
+	/etc/init.d/weston restart 9>&-
+	;;
+stop)
+	# The host may still have them: taken away all the same. Off the list first: a UI
+	# started again reads it.
+	sd= data=
+	[ "$2" != data ] && has sd && sd=1 && sed -i '/^sd$/d' /run/ums
+	[ "$2" != sd ] && has data && data=1 && sed -i '/^data$/d' /run/ums
+	[ -s /run/ums ] || { rm -f /run/ums; gadget acm.usb0; }
+	if [ -n "$sd" ]; then
+		echo 1 > $f/lun.1/forced_eject
+		sd_mount
+	fi
+	if [ -n "$data" ]; then
+		echo 1 > $f/lun.0/forced_eject
+		ui_stop
+		umount /data
+		ab mount
+		/etc/init.d/syslog stop
+		mount --bind /data/log/0 /var/volatile/log
+		/etc/init.d/syslog start 9>&-
+		/etc/init.d/weston restart 9>&-
+	fi
+	;;
+watch)
+	# An ejected LUN has no file any more. No host for 3 s (unplugged, or a desktop's "safely
+	# remove", which powers the port off rather than ejecting): all of it.
+	gone=0
+	while [ -e /run/ums ]; do
+		sleep 1
+		has sd && [ -z "$(cat $f/lun.1/file)" ] && $0 stop sd
+		has data && [ -z "$(cat $f/lun.0/file)" ] && $0 stop data
+		read state < /sys/class/udc/$(cat $g/UDC)/state
+		[ "$state" = configured ] && gone=0 || gone=$((gone + 1))
+		[ $gone -ge 3 ] && $0 stop
+	done
+	;;
+esac

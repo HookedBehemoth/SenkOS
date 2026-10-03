@@ -13,11 +13,14 @@
  *   ROM wins over the pack's. A system has one or more emulators (cores):
  *   the first runs a game unless Select on it picked another, which is kept
  *   in $XDG_STATE_HOME/launcher-cores.
+ * - Sources: folders on the other card added to a system; their games join
+ *   its page while the folder is there.
  */
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "str.h"
@@ -40,6 +43,8 @@ typedef struct {
 typedef struct {
   str name;
   str folder; /* under the data root */
+  /* What a folder of its games is called elsewhere (another OS's card): "n64;n64dd;" */
+  str names;
   /* Game systems: ROM extensions (".gba;.zip;"), the emulators' directory
    * under the data root, the game pack's name in OS/packs (romdb.h, "" for
    * none): titles and box art; and the emulators, ended by an empty one */
@@ -59,5 +64,22 @@ bool apps_present(const category *c);
 size_t apps_core_count(const category *c);
 /* Runs `a` with core `index` from now on */
 void apps_set_core(category *c, app *a, int index);
+/* Kept in $XDG_STATE_HOME/launcher-folders, a line "system's folder\tpath"
+ * each. A folder may be a source of more than one system. */
+enum { SOURCES_MAX = 64 };
+typedef struct {
+  STRBUF(256) path;
+  size_t category;
+} source;
+extern source sources[SOURCES_MAX];
+extern size_t source_count;
+void sources_load(void);
+/* The system a folder's games are for, by its name; -1 for none */
+int apps_guess(str folder);
+bool sources_has(str path, size_t category);
+/* Adds it, or takes it out if it was there */
+void sources_toggle(str path, size_t category);
+/* A bit per source whose folder is there: it changes when a card comes or goes */
+uint64_t sources_present(void);
 /* $XDG_STATE_HOME/launcher`suffix`, its directories made for writing */
 FILE *state_file(const char *suffix, const char *mode);
