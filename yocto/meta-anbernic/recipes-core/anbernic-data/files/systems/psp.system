@@ -1,0 +1,8 @@
+[System]
+Name=PSP
+Folder=roms/psp
+Aliases=psp;
+Patterns=*.iso;*.cso;*.pbp;*.chd;
+MimeType=application/x-psp-rom;
+Pack=Sony - PlayStation Portable
+Order=130

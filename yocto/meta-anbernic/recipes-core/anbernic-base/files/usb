@@ -1,6 +1,6 @@
 #!/bin/sh
 # Storage for a PC: the launcher's Storage settings (sleepd runs `usb WHAT` on "usb WHAT" in
-# /run/power). Saved in /data/.config/usb, in effect in /run/usb (what the launcher shows):
+# /run/power). Saved in /data/OS/config/usb, in effect in /run/usb (what the launcher shows):
 # "on|off MODE [sd] [data]".
 #   mtp   MTP (umtprd) in the gadget's third slot (ACM's) while on: the PC finds it plugged in
 #   ums   USB mass storage (`ums`) of what's chosen, sd and/or data, once a PC is there
@@ -140,13 +140,13 @@ apply() {
 set_usb() {
 	echo "$*" > /run/usb
 	apply
-	mkdir -p /data/.config && cp /run/usb /data/.config/usb
+	mkdir -p /data/OS/config && cp /run/usb /data/OS/config/usb
 }
 
 case "$1" in
 plug|'')
 	if [ -z "$1" ]; then
-		cp /data/.config/usb /run/usb 2>/dev/null || echo "on mtp sd" > /run/usb
+		cp /data/OS/config/usb /run/usb 2>/dev/null || echo "on mtp sd" > /run/usb
 		chmod 644 /run/usb
 	fi
 	# The PC configures the gadget within a few seconds of the cable

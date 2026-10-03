@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PPSSPP
+Comment=PSP, OpenGL ES
+Exec=corehost /usr/lib/libretro/ppsspp_libretro.so %f
+MimeType=application/x-psp-rom;
+Categories=Game;Emulator;

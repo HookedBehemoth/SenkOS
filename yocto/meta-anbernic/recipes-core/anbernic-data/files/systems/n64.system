@@ -1,0 +1,8 @@
+[System]
+Name=Nintendo 64
+Folder=roms/n64
+Aliases=n64;n64dd;
+Patterns=*.n64;*.v64;*.z64;*.zip;
+MimeType=application/x-n64-rom;
+Pack=Nintendo - Nintendo 64
+Order=60

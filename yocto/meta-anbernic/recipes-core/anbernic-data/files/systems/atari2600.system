@@ -1,0 +1,8 @@
+[System]
+Name=Atari 2600
+Folder=roms/atari2600
+Aliases=atari2600;a2600;
+Patterns=*.a26;*.bin;*.zip;
+MimeType=application/x-atari-2600-rom;
+Pack=Atari - 2600
+Order=170

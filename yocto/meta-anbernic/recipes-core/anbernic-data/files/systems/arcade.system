@@ -1,0 +1,7 @@
+[System]
+Name=Arcade
+Folder=roms/arcade
+Aliases=arcade;mame;fbneo;fba;neogeo;cps1;cps2;cps3;
+Patterns=*.zip;*.7z;
+MimeType=application/x-arcade-rom;
+Order=140

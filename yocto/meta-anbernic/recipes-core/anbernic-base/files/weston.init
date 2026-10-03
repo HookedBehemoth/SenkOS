@@ -3,23 +3,25 @@
 # coldplug included, libinput adds input devices as udev gets to them.
 # /data first: logs, user init scripts and HOME (fontconfig, Mesa's shader cache) live there.
 # Then seatd, and as player (`session`): Weston on the LCD (DRM backend, kiosk shell: every
-# client fullscreen) and the launcher: /data/OS/launcher when there is one (tools/deploy-launcher),
-# else the image's. The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
+# client fullscreen) and the launcher (one in /data/OS/overlay replaces the image's: `overlay`,
+# tools/deploy-launcher). The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
 if [ "$1" = session ]; then
 	weston --backend=drm --shell=kiosk --modules=volume-keys.so --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1 &
 	while :; do
 		# SDL gives up on wayland if the socket isn't there yet
 		while [ ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]; do usleep 20000; done
-		launcher=/data/OS/launcher
-		[ -x $launcher ] || launcher=/usr/bin/launcher
-		$launcher
+		launcher
 		sleep 1
 	done
 fi
 # seatd, then the session as player. Again (`restart`) after `ums` stopped it: seatd still runs.
 ui() {
 	export HOME=/data
+	# Settings in OS/config (corehost's, the media player's, the launcher's); state and caches
+	# stay in HOME's .local/state and .cache. The cores' saves in OS/saves/CORE, what they need
+	# (BIOS files, PPSSPP's assets) in OS/assets/emulator.
+	export XDG_CONFIG_HOME=/data/OS/config COREHOST_SAVE=/data/OS/saves COREHOST_SYSTEM=/data/OS/assets/emulator
 	. /etc/profile.d/wayland.sh
 	. /etc/profile.d/panvk.sh
 	. /etc/profile.d/zz-data.sh
@@ -62,16 +64,30 @@ echo 1024 > $c/apps/pids.max
 chown player:player $c/cgroup.procs $c/ui/cgroup.procs $c/apps/cgroup.procs
 
 ab mount	# /uboot, /data: mount points exist in the (read-only) image
-# HOME. ponytail: the player owns /data, so it could swap /data/OS/init.d (run as root below);
-# this guards against mistakes, not a hostile app. A root-owned /data with HOME in it would.
-chown player:player /data
+# What root runs or trusts from /data is root's, so a game (as player) can't break the OS:
+# /data (HOME) and /data/OS are root:player 1775, the player creates in them but can't rename
+# or delete root's entries (sticky). Edited as root (ssh), or from a PC over UMS.
+chown root:player /data /data/OS
+chmod 1775 /data /data/OS
+for d in init.d overlay profile.d dropbear; do
+	d=/data/OS/$d
+	[ -L $d ] && rm $d
+	mkdir -p $d
+	chown -R root:root $d
+	chmod -R go-w $d
+done
+overlay	# /data/OS/overlay over the rootfs, before anything runs from it
 
-# Persistent /var/log: the last 5 boots in /data/log/0..4, 0 = this one. Apps log there too.
-l=/data/log
+# Persistent /var/log: the last 5 boots in /data/OS/log/0..4, 0 = this one. Apps log there too.
+l=/data/OS/log
 rm -rf $l/4
 for i in 3 2 1 0; do [ -d $l/$i ] && mv $l/$i $l/$((i + 1)); done
 mkdir -p $l/0 /var/volatile/log
-chown player:player $l/0
+# The card's, so the player's: what root writes (syslogd, login, the launcher's redirect) goes
+# into files made for it here, which keep their owner (dmesg: anbernic.init). The rest (a
+# rotated messages.0) from the boots before.
+for f in messages wtmp launcher.log; do : > $l/0/$f; done
+chown -R player:player $l
 mount --bind $l/0 /var/volatile/log
 mkdir -p -m 1777 /var/volatile/tmp
 

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Beetle PCE Fast
+Comment=PC Engine and TurboGrafx-16
+Exec=corehost /usr/lib/libretro/mednafen_pce_fast_libretro.so %f
+MimeType=application/x-pc-engine-rom;
+Categories=Game;Emulator;

@@ -1,0 +1,8 @@
+[System]
+Name=NES
+Folder=roms/nes
+Aliases=nes;fc;famicom;fds;
+Patterns=*.nes;*.fds;*.unf;*.unif;*.zip;
+MimeType=application/x-nes-rom;
+Pack=Nintendo - Nintendo Entertainment System
+Order=40

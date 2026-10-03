@@ -3,10 +3,11 @@ LICENSE = "MIT"
 
 inherit image
 
-# libsdl2: for what lives in /data (mGBA, the bindless demo, SuperTuxKart, ports); our apps don't use it
+# libsdl2: for what lives in /data (the bindless demo, SuperTuxKart, ports); our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
-# libav*, libgomp: RetroArch and its cores in /data (retroarch recipe); vulkan-loader, xkbcommon etc. come anyway
+# libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
+# The libretro cores: run by corehost, as the emulators in anbernic-data (anbernic-base) say
 IMAGE_INSTALL = " \
     base-files \
     base-passwd \
@@ -49,6 +50,9 @@ IMAGE_INSTALL = " \
     libcrypto \
     libavcodec libavformat libavdevice libavfilter libavutil libswresample libswscale \
     libgomp \
+    libretro-fceumm libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx \
+    libretro-beetle-pce-fast libretro-pcsx-rearmed libretro-fbneo libretro-beetle-ngp libretro-beetle-wswan \
+    libretro-stella2014 libretro-handy libretro-mupen64plus-next libretro-flycast libretro-ppsspp \
 "
 IMAGE_LINGUAS = ""
 # Weston is started by anbernic-base (as player, via seatd; kiosk shell)
@@ -66,7 +70,7 @@ ROOTFS_BOOTSTRAP_INSTALL = ""
 # /data is mounted in rcS (S40anbernic), before dropbear: generate it once per card instead.
 ROOTFS_POSTPROCESS_COMMAND:append = " dropbear_key_on_data"
 dropbear_key_on_data () {
-	sed -i 's#^DROPBEAR_RSAKEY_DIR=.*#DROPBEAR_RSAKEY_DIR=/data/dropbear#' ${IMAGE_ROOTFS}/etc/default/dropbear
+	sed -i 's#^DROPBEAR_RSAKEY_DIR=.*#DROPBEAR_RSAKEY_DIR=/data/OS/dropbear#' ${IMAGE_ROOTFS}/etc/default/dropbear
 }
 
 # /etc/init.d/weston (anbernic-base) starts seatd right before Weston; its own script would

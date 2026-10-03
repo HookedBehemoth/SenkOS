@@ -4,6 +4,7 @@
 #include "util.h"
 
 #include <dirent.h>
+#include <fnmatch.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,70 +13,21 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Cores run in corehost: the launcher is their UI. $COREHOST
- * (/data/OS/profile.d) tries out another build. `env` before it: what the
- * core needs set (sh assignments). */
-#define COREHOST_ENV(name, env, so) {S(name), S(env "exec \"${COREHOST:-corehost}\" ./" so "_libretro.so \"$1\"")}
-#define COREHOST(name, so) COREHOST_ENV(name, "", so)
-/* The cores' BIOS and asset files, in /data/bios (run from retroarch/cores) */
-#define BIOS "COREHOST_SYSTEM=\"${PWD%/*/*}/bios\" "
-/* Its memory stick beside the games: PPSSPP takes a folder named "psp" for
- * the stick's PSP folder, so not the ROM folder itself */
-#define PSP_SAVE "COREHOST_SAVE=\"${1%/*}/memstick\" "
-/* GLES unless a core that has both is told otherwise */
-#define VULKAN "COREHOST_RENDER=vulkan "
-#define SYSTEM(title, dir, aliases, exts, pack_name, ...)                                         \
-  {.name = S(title), .folder = S("roms/" dir), .names = S(aliases), .roms = S(exts),               \
-   .system_dir = S("retroarch/cores"), .pack = S(pack_name), .cores = (const core[]){__VA_ARGS__, {.name = {0}}}}
+/* The image's systems, emulators and players; apps/systems and
+ * apps/emulators on the card over them */
+#define SYSTEMS "/usr/share/anbernic/systems"
+#define EMULATORS "/usr/share/anbernic/emulators"
 
-category categories[] = {
-    SYSTEM("Game Boy Advance", "gba", "gba;", ".gba;.zip;", "Nintendo - Game Boy Advance",
-           COREHOST("mGBA", "mgba")),
-    SYSTEM("Game Boy", "gb", "gb;", ".gb;.zip;", "Nintendo - Game Boy",
-           COREHOST("Gambatte", "gambatte"), COREHOST("mGBA", "mgba")),
-    SYSTEM("Game Boy Color", "gbc", "gbc;", ".gbc;.gb;.zip;", "Nintendo - Game Boy Color",
-           COREHOST("Gambatte", "gambatte"), COREHOST("mGBA", "mgba")),
-    SYSTEM("NES", "nes", "nes;fc;famicom;fds;", ".nes;.fds;.unf;.unif;.zip;", "Nintendo - Nintendo Entertainment System",
-           COREHOST("FCEUmm", "fceumm")),
-    SYSTEM("SNES", "snes", "snes;sfc;superfamicom;snesmsu1;", ".sfc;.smc;.zip;", "Nintendo - Super Nintendo Entertainment System",
-           COREHOST("Snes9x", "snes9x")),
-    SYSTEM("Nintendo 64", "n64", "n64;n64dd;", ".n64;.v64;.z64;.zip;", "Nintendo - Nintendo 64",
-           COREHOST("Mupen64Plus-Next", "mupen64plus_next")),
-    SYSTEM("Mega Drive", "md", "md;genesis;megadrive;", ".md;.gen;.smd;.bin;.zip;", "Sega - Mega Drive - Genesis",
-           COREHOST("Genesis Plus GX", "genesis_plus_gx")),
-    SYSTEM("Master System", "ms", "ms;sms;mastersystem;", ".sms;.zip;", "Sega - Master System - Mark III",
-           COREHOST("Genesis Plus GX", "genesis_plus_gx")),
-    SYSTEM("Game Gear", "gg", "gg;gamegear;", ".gg;.zip;", "Sega - Game Gear",
-           COREHOST("Genesis Plus GX", "genesis_plus_gx")),
-    SYSTEM("Dreamcast", "dc", "dc;dreamcast;", ".chd;.cdi;.gdi;.cue;", "Sega - Dreamcast",
-           COREHOST_ENV("Flycast", BIOS, "flycast"), COREHOST_ENV("Flycast (Vulkan)", BIOS VULKAN, "flycast")),
-    SYSTEM("PC Engine", "pce", "pce;pcengine;pcenginecd;tg16;tg16cd;turbografx16;", ".pce;.cue;.chd;.zip;", "NEC - PC Engine - TurboGrafx 16",
-           COREHOST("Beetle PCE Fast", "mednafen_pce_fast")),
-    SYSTEM("PlayStation", "ps", "ps;psx;ps1;playstation;", ".cue;.chd;.pbp;.m3u;.bin;.img;", "Sony - PlayStation",
-           COREHOST("PCSX ReARMed", "pcsx_rearmed")),
-    SYSTEM("PSP", "psp", "psp;", ".iso;.cso;.pbp;.chd;", "Sony - PlayStation Portable",
-           COREHOST_ENV("PPSSPP", BIOS PSP_SAVE, "ppsspp"),
-           COREHOST_ENV("PPSSPP (Vulkan)", BIOS PSP_SAVE VULKAN, "ppsspp")),
-    SYSTEM("Arcade", "arcade", "arcade;mame;fbneo;fba;neogeo;cps1;cps2;cps3;", ".zip;.7z;", "",
-           COREHOST("FinalBurn Neo", "fbneo")),
-    SYSTEM("Neo Geo Pocket", "ngp", "ngp;ngpc;", ".ngp;.ngc;.zip;", "SNK - Neo Geo Pocket Color",
-           COREHOST("Beetle NGP", "mednafen_ngp")),
-    SYSTEM("WonderSwan", "ws", "ws;wsc;wonderswan;wonderswancolor;", ".ws;.wsc;.zip;", "Bandai - WonderSwan Color",
-           COREHOST("Beetle WonderSwan", "mednafen_wswan")),
-    SYSTEM("Atari 2600", "atari2600", "atari2600;a2600;", ".a26;.bin;.zip;", "Atari - 2600",
-           COREHOST("Stella 2014", "stella2014")),
-    SYSTEM("Atari Lynx", "lynx", "lynx;atarilynx;", ".lnx;.o;.zip;", "Atari - Lynx",
-           COREHOST("Handy", "handy")),
-    /* Not games, but a folder of files run by one player all the same;
-     * $MEDIAPLAYER tries out another build */
-    {.name = S("Videos"), .folder = S("videos"), .names = S("videos;movies;"), .roms = S(".mp4;.mkv;.webm;.mov;.m4v;.avi;.ts;"),
-     .system_dir = S("videos"),
-     .cores = (const core[]){{S("Media player"), S("exec \"${MEDIAPLAYER:-mediaplayer}\" \"$1\"")}, {.name = {0}}}},
-    {.name = S("Ports"), .folder = S("OS/apps/ports")},
-    {.name = S("Applications"), .folder = S("OS/apps/applications")},
-    {.name = S("Benchmarks"), .folder = S("OS/apps/benchmarks")},
+/* The systems (apps_init), then the app folders */
+enum { CATEGORIES_MAX = 64 };
+static category all[CATEGORIES_MAX];
+category *categories = all;
+size_t category_count;
+static const category app_folders[] = {
+    {.name = S("Ports"), .folder = S("apps/ports")},
+    {.name = S("Applications"), .folder = S("apps/applications")},
+    {.name = S("Benchmarks"), .folder = S("apps/benchmarks")},
 };
-const size_t category_count = sizeof(categories) / sizeof(categories[0]);
 
 static const str image_exts[] = {S(".png"), S(".jpg"), S(".jpeg"), S(".webp"), S(".bmp")};
 
@@ -88,14 +40,15 @@ static str root(void) {
   return r;
 }
 
-FILE *state_file(const char *suffix, const char *mode) {
+/* $`var`/launcher`suffix`, else $HOME/`fallback`/launcher`suffix` */
+static FILE *xdg_file(const char *var, const char *fallback, const char *suffix, const char *mode) {
   char path[512];
-  const char *state = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
-  if (state != NULL && state[0] == '/')
-    snprintf(path, sizeof(path), "%s/launcher%s", state, suffix);
+  const char *dir = getenv(var), *home = getenv("HOME");
+  if (dir != NULL && dir[0] == '/')
+    snprintf(path, sizeof(path), "%s/launcher%s", dir, suffix);
   else
-    snprintf(path, sizeof(path), "%s/.local/state/launcher%s", home ? home : "/tmp", suffix);
-  /* mkdir -p of the two levels under $HOME that may be missing */
+    snprintf(path, sizeof(path), "%s/%s/launcher%s", home ? home : "/tmp", fallback, suffix);
+  /* mkdir -p of what may be missing */
   for (char *slash = strchr(path + 1, '/'); mode[0] != 'r' && slash; slash = strchr(slash + 1, '/')) {
     *slash = '\0';
     mkdir(path, 0755);
@@ -104,38 +57,59 @@ FILE *state_file(const char *suffix, const char *mode) {
   return fopen(path, mode);
 }
 
-size_t apps_core_count(const category *c) {
-  size_t n = 0;
-  while (c->cores != NULL && c->cores[n].name.p != NULL)
-    n++;
-  return n;
+FILE *state_file(const char *suffix, const char *mode) {
+  return xdg_file("XDG_STATE_HOME", ".local/state", suffix, mode);
+}
+
+FILE *config_file(const char *suffix, const char *mode) {
+  return xdg_file("XDG_CONFIG_HOME", ".config", suffix, mode);
+}
+
+/* Runs the game with core `index`: in its Path, else the game's folder. None:
+ * nothing to run it with (main.c says so). */
+static void use_core(const category *c, app *a, int index) {
+  a->core = index;
+  if (c->core_count == 0) {
+    a->exec.n = a->exec.p[0] = 0;
+    return;
+  }
+  sb_set(a->exec, sb_str(c->cores[index].exec));
+  if (c->cores[index].dir.n > 0)
+    sb_set(a->dir, sb_str(c->cores[index].dir));
+  else
+    sb_set(a->dir, str_head(sb_str(a->arg), str_rfind(sb_str(a->arg), '/')));
 }
 
 /* The core picked for `rom` in `picks` (launcher-cores: a line
- * "ROM\tcore name" each, the last one standing); else the first.
- * ponytail: only ever appended to; compact it if it grows. */
+ * "ROM\tcore name" each); else the first */
 static int core_of(const category *c, str picks, str rom) {
-  int index = 0;
-  const size_t cores = apps_core_count(c);
   while (picks.n > 0) {
     str name = str_cut(&picks, '\n');
     if (!str_eq(str_cut(&name, '\t'), rom))
       continue;
-    for (size_t i = 0; i < cores; i++)
-      if (str_eq(name, c->cores[i].name))
-        index = (int)i;
+    for (size_t i = 0; i < c->core_count; i++)
+      if (str_eq(name, sb_str(c->cores[i].name)))
+        return (int)i;
   }
-  return index;
+  return 0;
 }
 
+/* The game's line replaced: the others as they were, then its own */
 void apps_set_core(category *c, app *a, int index) {
-  FILE *f = state_file("-cores", "a");
+  const str text = str_read(config_file("-cores", "r"));
+  FILE *f = config_file("-cores", "w");
   if (f != NULL) {
-    str_fput(f, sb_str(a->arg), S("\t"), c->cores[index].name, S("\n"));
+    for (str rest = text; rest.n > 0;) {
+      const str line = str_cut(&rest, '\n');
+      str name = line;
+      if (!str_eq(str_cut(&name, '\t'), sb_str(a->arg)))
+        str_fput(f, line, S("\n"));
+    }
+    str_fput(f, sb_str(a->arg), S("\t"), sb_str(c->cores[index].name), S("\n"));
     fclose(f);
   }
-  a->core = index;
-  sb_set(a->exec, c->cores[index].exec);
+  free((char *)text.p);
+  use_core(c, a, index);
 }
 
 static bool is_file(const char *path) {
@@ -174,24 +148,27 @@ static app *add(category *c) {
   return a;
 }
 
-/* Field codes (%f, %U, ...) are for file managers; %% is a percent sign.
- * Returns the new length. */
-static size_t strip_field_codes(char *s, size_t n) {
-  size_t out = 0;
-  for (size_t in = 0; in < n; in++) {
-    if (s[in] == '%' && in + 1 < n) {
-      if (s[++in] == '%')
-        s[out++] = '%';
+/* Field codes (%f, %U, ...) are for file managers: the file's become "$1"
+ * for an emulator (`file`), the rest go; %% is a percent sign */
+static void field_codes(app *a, bool file) {
+  STRBUF(sizeof(a->exec.p)) out = {0};
+  for (size_t i = 0; i < a->exec.n; i++) {
+    if (a->exec.p[i] != '%' || i + 1 == a->exec.n) {
+      sb_add(out, (str){&a->exec.p[i], 1});
       continue;
     }
-    s[out++] = s[in];
+    const char code = a->exec.p[++i];
+    if (code == '%')
+      sb_add(out, S("%"));
+    else if (file && strchr("fFuU", code) != NULL)
+      sb_add(out, S("\"$1\""));
   }
-  s[out] = '\0';
-  return out;
+  sb_set(a->exec, sb_str(out));
 }
 
-/* The [Desktop Entry] group; false for anything that isn't a shown app */
-static bool parse_desktop(const char *path, str folder, app *a) {
+/* The [Desktop Entry] group; false for anything that isn't a shown app.
+ * `mimes`: an emulator's MimeType, NULL for an app. */
+static bool parse_desktop(const char *path, str folder, app *a, str *mimes) {
   const str text = str_read(fopen(path, "r"));
   if (text.p == NULL)
     return false;
@@ -210,6 +187,8 @@ static bool parse_desktop(const char *path, str folder, app *a) {
       sb_set(a->dir, r.value);
     else if (str_eq(r.key, S("Icon")))
       sb_set(icon, r.value);
+    else if (str_eq(r.key, S("MimeType")) && mimes != NULL)
+      *mimes = str_dup(r.value);
     else if (str_eq(r.key, S("Keywords")) || str_eq(r.key, S("Categories")))
       for (str item; cfg_item(&r.value, &item);)
         sb_add(a->tags, item, S(";"));
@@ -220,7 +199,7 @@ static bool parse_desktop(const char *path, str folder, app *a) {
       shown = false;
   }
   free((char *)text.p);
-  a->exec.n = strip_field_codes(a->exec.p, a->exec.n);
+  field_codes(a, mimes != NULL);
   if (a->dir.n == 0)
     sb_set(a->dir, folder);
   if (icon.n > 0) {
@@ -240,13 +219,14 @@ static str stem(str name) {
   return dot != 0 ? str_head(name, dot) : name;
 }
 
-static bool has_ext(str name, str exts) {
-  const size_t dot = str_rfind(name, '.');
-  if (dot == 0 || dot == name.n)
-    return false;
-  for (str ext; cfg_item(&exts, &ext);)
-    if (str_ieq(ext, str_at(name, dot)))
+/* `name` matches one of `patterns` ("*.gba;*.zip;"), case aside */
+static bool matches(str name, str patterns) {
+  for (str pattern; cfg_item(&patterns, &pattern);) {
+    char p[64];
+    snprintf(p, sizeof(p), "%.*s", (int)pattern.n, pattern.p);
+    if (fnmatch(p, name.p, FNM_CASEFOLD) == 0)
       return true;
+  }
   return false;
 }
 
@@ -258,18 +238,16 @@ static void scan_entry(category *c, str picks, str folder, str name) {
     return;
   app *a;
   if (c->roms.n > 0) {
-    if (!has_ext(name, c->roms) || (a = add(c)) == NULL)
+    if (!matches(name, c->roms) || (a = add(c)) == NULL)
       return;
     sb_set(a->name, stem(name));
     sb_set(a->arg, sb_str(path));
-    a->core = core_of(c, picks, sb_str(path));
-    sb_set(a->exec, c->cores[a->core].exec);
-    sb_set(a->dir, root(), S("/"), c->system_dir);
+    use_core(c, a, core_of(c, picks, sb_str(path)));
     find_image(a, stem(sb_str(path)));
     uint32_t crc;
     romdb_game game;
     STRBUF(512) pack;
-    if (c->pack.n > 0 && sb_set(pack, root(), S("/OS/packs/"), c->pack, S(".pack")) &&
+    if (c->pack.n > 0 && sb_set(pack, root(), S("/OS/assets/thumbnails/"), c->pack, S(".pack")) &&
         romdb_crc(sb_str(path), &st, &crc) && romdb_find(sb_str(pack), crc, &game)) {
       sb_set(a->name, game.title);
       if (a->icon.n == 0)
@@ -279,7 +257,7 @@ static void scan_entry(category *c, str picks, str folder, str name) {
     return;
   }
   if (str_iends(name, S(".desktop"))) {
-    if ((a = add(c)) != NULL && parse_desktop(path.p, folder, a))
+    if ((a = add(c)) != NULL && parse_desktop(path.p, folder, a, NULL))
       c->count++;
     return;
   }
@@ -310,7 +288,7 @@ static bool is_dir(const char *path) {
 
 bool apps_present(const category *c) {
   STRBUF(256) folder;
-  if (c->roms.n == 0 || (sb_set(folder, root(), S("/"), c->folder) && is_dir(folder.p)))
+  if (sb_set(folder, root(), S("/"), c->folder) && is_dir(folder.p))
     return true;
   for (size_t i = 0; i < source_count; i++)
     if (&categories[sources[i].category] == c && is_dir(sources[i].path.p))
@@ -328,12 +306,119 @@ static void scan_folder(category *c, str picks, str folder) {
   closedir(dir);
 }
 
+static bool shares_item(str a, str b) {
+  for (str item; cfg_item(&a, &item);)
+    for (str rest = b, other; cfg_item(&rest, &other);)
+      if (str_eq(item, other))
+        return true;
+  return false;
+}
+
+static int by_core_name(const void *a, const void *b) {
+  return strcasecmp(((const core *)a)->name.p, ((const core *)b)->name.p);
+}
+
+/* `each` on the files named *`ext` in the card's folder `mine` (under the
+ * data root), then in the image's `image`, but for those the card has one of
+ * the same name of: it replaces the image's, or hides it (Hidden=true) */
+static void layered(const char *mine, const char *image, str ext, void (*each)(const char *path, void *ctx),
+                    void *ctx) {
+  STRBUF(256) card;
+  sb_set(card, root(), S("/"), str_c(mine));
+  STRBUF(4096) seen = {0};
+  for (int pass = 0; pass < 2; pass++) {
+    const char *folder = pass == 0 ? card.p : image;
+    DIR *dir = opendir(folder);
+    if (dir == NULL)
+      continue;
+    for (struct dirent *d; (d = readdir(dir)) != NULL;) {
+      const str name = str_c(d->d_name);
+      STRBUF(512) path;
+      if (name.p[0] == '.' || !str_iends(name, ext) || !sb_set(path, str_c(folder), S("/"), name))
+        continue;
+      if (pass == 0)
+        sb_add(seen, name, S(";"));
+      else if (shares_item(name, sb_str(seen)))
+        continue;
+      each(path.p, ctx);
+    }
+    closedir(dir);
+  }
+}
+
+/* An emulator for the system `ctx`, if its MimeType says so */
+static void add_core(const char *path, void *ctx) {
+  category *c = ctx;
+  static app e;
+  memset(&e, 0, sizeof(e));
+  str mimes = {0};
+  if (parse_desktop(path, S(""), &e, &mimes) && shares_item(mimes, c->mimes) && c->core_count < CORES_MAX) {
+    core *k = &c->cores[c->core_count++];
+    sb_set(k->name, sb_str(e.name));
+    sb_set(k->exec, sb_str(e.exec));
+    sb_set(k->dir, sb_str(e.dir));
+  }
+  free((char *)mimes.p);
+}
+
+/* A system: its [System] group. Incomplete or hidden ones aren't. */
+static void add_system(const char *path, void *ctx) {
+  (void)ctx;
+  const str text = str_read(fopen(path, "r"));
+  if (text.p == NULL || category_count == CATEGORIES_MAX - COUNTOF(app_folders)) {
+    free((char *)text.p);
+    return;
+  }
+  category *c = &categories[category_count];
+  memset(c, 0, sizeof(*c));
+  bool hidden = false;
+  cfg_reader r = cfg_init(text);
+  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;) {
+    if (e != CFG_VALUE || !str_eq(r.section, S("System")))
+      continue;
+    str *field = str_eq(r.key, S("Name"))       ? &c->name
+                 : str_eq(r.key, S("Folder"))   ? &c->folder
+                 : str_eq(r.key, S("Aliases"))  ? &c->names
+                 : str_eq(r.key, S("Patterns")) ? &c->roms
+                 : str_eq(r.key, S("MimeType")) ? &c->mimes
+                 : str_eq(r.key, S("Pack"))     ? &c->pack
+                                                : NULL;
+    if (field != NULL)
+      *field = str_dup(r.value);
+    else if (str_eq(r.key, S("Order")))
+      c->order = (int)strtol(r.value.p, NULL, 10);
+    else if (str_eq(r.key, S("Hidden")) && str_eq(r.value, S("true")))
+      hidden = true;
+  }
+  free((char *)text.p);
+  if (!hidden && c->name.n > 0 && c->folder.n > 0 && c->roms.n > 0 && c->mimes.n > 0)
+    category_count++;
+}
+
+static int by_order(const void *a, const void *b) {
+  const category *x = a, *y = b;
+  return x->order != y->order ? (x->order > y->order) - (x->order < y->order) : strcasecmp(x->name.p, y->name.p);
+}
+
+void apps_init(void) {
+  category_count = 0;
+  layered("apps/systems", SYSTEMS, S(".system"), add_system, NULL);
+  qsort(categories, category_count, sizeof(*categories), by_order);
+  for (size_t i = 0; i < COUNTOF(app_folders); i++)
+    categories[category_count++] = app_folders[i];
+}
+
 /* The category's folder, then its sources */
 void apps_scan(category *c) {
   c->count = 0;
+  if (c->roms.n > 0) {
+    c->core_count = 0;
+    layered("apps/emulators", EMULATORS, S(".desktop"), add_core, c);
+    qsort(c->cores, c->core_count, sizeof(*c->cores), by_core_name);
+  }
   STRBUF(256) folder;
   sb_set(folder, root(), S("/"), c->folder);
-  const str picks = c->roms.n > 0 ? str_read(state_file("-cores", "r")) : (str){0};
+  const str picks = c->roms.n > 0 ? str_read(config_file("-cores", "r")) : (str){0};
   scan_folder(c, picks, sb_str(folder));
   for (size_t i = 0; i < source_count; i++)
     if (&categories[sources[i].category] == c)
@@ -343,7 +428,7 @@ void apps_scan(category *c) {
 }
 
 void sources_load(void) {
-  const str text = str_read(state_file("-folders", "r"));
+  const str text = str_read(config_file("-folders", "r"));
   source_count = 0;
   for (str rest = text; rest.n > 0 && source_count < SOURCES_MAX;) {
     str path = str_cut(&rest, '\n');
@@ -376,7 +461,7 @@ bool sources_has(str path, size_t category) {
 
 void sources_toggle(str path, size_t category) {
   const bool had = sources_has(path, category);
-  FILE *f = state_file("-folders", "w");
+  FILE *f = config_file("-folders", "w");
   if (f == NULL)
     return;
   for (size_t i = 0; i < source_count; i++)

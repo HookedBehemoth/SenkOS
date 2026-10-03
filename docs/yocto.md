@@ -6,7 +6,7 @@ because the host (Arch, Python 3.14) isn't a supported Yocto host.
 ```
 cd yocto
 ./kas build rg35xx-sp.yml                     # image
-./kas build --target retroarch rg35xx-sp.yml  # one recipe
+./kas build --target apps rg35xx-sp.yml       # one recipe
 ./kas shell rg35xx-sp.yml                     # bitbake shell
 ```
 
@@ -37,7 +37,7 @@ recipes-core/images/               anbernic-image
 recipes-core/anbernic-base/        init glue: USB gadget, A/B slots + /data, logs, watchdog, Weston, SD automount
 recipes-core/sleepd/               suspend on lid / power key
 recipes-graphics/                  launcher, Weston trims + kiosk-shell OSD layer, volume keys module, SDL2/vulkan-tools tweaks
-recipes-emulators/, recipes-games/ RetroArch + cores, mGBA, SuperTuxKart: deployed to /data, not in the image
+recipes-emulators/, recipes-games/ libretro cores (in the image), mGBA, SuperTuxKart (deployed to /data)
 ```
 
 ## Flashing a card

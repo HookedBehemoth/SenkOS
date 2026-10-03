@@ -1,0 +1,8 @@
+[System]
+Name=Master System
+Folder=roms/ms
+Aliases=ms;sms;mastersystem;
+Patterns=*.sms;*.zip;
+MimeType=application/x-sms-rom;
+Pack=Sega - Master System - Mark III
+Order=80

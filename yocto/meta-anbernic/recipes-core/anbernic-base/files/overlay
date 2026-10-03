@@ -1,0 +1,21 @@
+#!/bin/sh
+# Rootfs overlays: /data/OS/overlay/usr/bin/launcher is /usr/bin/launcher, and so on for each
+# directory of the rootfs in there (usr, etc, ...). Copied into RAM (/run/overlay), an overlayfs
+# each: /data stays free to unmount (USB storage), and the rootfs is writable until reboot.
+# At boot (weston.init), and again after OS/overlay changed (tools/deploy-launcher): what's in
+# it is copied in. ponytail: what's deleted from OS/overlay stays until the next boot.
+for d in /data/OS/overlay/*/; do
+	d=${d%/}
+	n=${d##*/}
+	[ -d /$n ] && [ ! -L /$n ] || continue
+	if ! grep -q " /$n overlay " /proc/mounts; then
+		# /data, /run, /proc and the like aren't the rootfs's
+		mountpoint -q /$n && continue
+		mkdir -p /run/overlay/$n/upper /run/overlay/$n/work
+		mount -t overlay overlay -o lowerdir=/$n,upperdir=/run/overlay/$n/upper,workdir=/run/overlay/$n/work /$n ||
+			continue
+	fi
+	# -f: a running executable can't be written, only replaced
+	cp -af $d/. /$n/
+done
+exit 0

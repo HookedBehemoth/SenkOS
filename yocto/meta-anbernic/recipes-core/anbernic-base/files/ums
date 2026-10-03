@@ -77,14 +77,14 @@ data)
 	ui_stop
 	sync
 	rm -rf /run/data
-	mkdir -p /run/data
-	cp -a /data/dropbear /run/data/
+	mkdir -p /run/data/OS
+	cp -a /data/OS/dropbear /run/data/OS/
 	chown player:player /run/data
 	/etc/init.d/syslog stop
 	umount /var/volatile/log
 	if ! umount /data; then
 		log "/data is busy"
-		mount --bind /data/log/0 /var/volatile/log
+		mount --bind /data/OS/log/0 /var/volatile/log
 		/etc/init.d/syslog start 9>&-
 		/etc/init.d/weston restart 9>&-
 		exit 1
@@ -116,7 +116,7 @@ stop)
 		umount /data
 		ab mount
 		/etc/init.d/syslog stop
-		mount --bind /data/log/0 /var/volatile/log
+		mount --bind /data/OS/log/0 /var/volatile/log
 		/etc/init.d/syslog start 9>&-
 		/etc/init.d/weston restart 9>&-
 	fi

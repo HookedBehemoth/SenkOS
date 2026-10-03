@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=FinalBurn Neo
+Comment=Arcade
+Exec=corehost /usr/lib/libretro/fbneo_libretro.so %f
+MimeType=application/x-arcade-rom;
+Categories=Game;Emulator;

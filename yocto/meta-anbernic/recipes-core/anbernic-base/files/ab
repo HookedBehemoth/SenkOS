@@ -39,6 +39,11 @@ mount)
 		fi
 		echo "ab: formatting ${disk}4 for /data" > /dev/console
 		mkfs.ext4 -q -F -L data -E nodiscard ${disk}4
+		# What a new card starts with (anbernic-data); the marker goes once it's there
+		mount -t ext4 -o noatime ${disk}4 /data
+		cp -a /usr/share/anbernic/data/. /data/
+		chown -R player:player /data
+		sync
 		rm /uboot/data-new
 		sync
 	fi

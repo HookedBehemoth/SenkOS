@@ -1,0 +1,8 @@
+[System]
+Name=PC Engine
+Folder=roms/pce
+Aliases=pce;pcengine;pcenginecd;tg16;tg16cd;turbografx16;
+Patterns=*.pce;*.cue;*.chd;*.zip;
+MimeType=application/x-pc-engine-rom;
+Pack=NEC - PC Engine - TurboGrafx 16
+Order=110

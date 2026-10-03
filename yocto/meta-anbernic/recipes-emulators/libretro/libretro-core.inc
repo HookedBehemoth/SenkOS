@@ -1,5 +1,5 @@
-# A libretro core from a plain libretro Makefile: one <core>_libretro.so. Not in the image: deployed
-# to retroarch-data/ (copied to /data, see the retroarch recipe). Recipes set LIBRETRO_REPO/LIBRETRO_REV and the checksum.
+# A libretro core from a plain libretro Makefile: one <core>_libretro.so in /usr/lib/libretro, run by
+# corehost (an emulator's .desktop in anbernic-data). Recipes set LIBRETRO_REPO/LIBRETRO_REV and the checksum.
 SUMMARY ?= "libretro core ${LIBRETRO_CORE}"
 PV = "0+git${@d.getVar('LIBRETRO_REV')[:10]}"
 SRC_URI = "https://github.com/libretro/${LIBRETRO_REPO}/archive/${LIBRETRO_REV}.tar.gz;downloadfilename=${LIBRETRO_REPO}-${LIBRETRO_REV}.tar.gz"
@@ -26,9 +26,3 @@ do_install() {
 }
 FILES:${PN} = "${libdir}/libretro"
 
-inherit deploy
-do_deploy() {
-	install -d ${DEPLOYDIR}/retroarch-data/retroarch/cores
-	${STRIP} -o ${DEPLOYDIR}/retroarch-data/retroarch/cores/${LIBRETRO_CORE}_libretro.so ${D}${libdir}/libretro/${LIBRETRO_CORE}_libretro.so
-}
-addtask deploy after do_install before do_build

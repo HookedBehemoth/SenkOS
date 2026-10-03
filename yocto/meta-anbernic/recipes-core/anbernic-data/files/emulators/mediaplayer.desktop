@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Media player
+Comment=Videos: GStreamer, hardware decoding where Cedrus can
+Exec=mediaplayer %f
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-m4v;video/x-msvideo;video/mp2t;
+Categories=AudioVideo;Player;

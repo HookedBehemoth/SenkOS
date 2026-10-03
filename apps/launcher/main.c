@@ -184,8 +184,7 @@ static size_t storage_entries(entry *out) {
 }
 static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = -1},
                                         {.label = S("Ignore for this app"), .action = IGNORE, .icon = -1}};
-/* The core picker's rows: one per core, PICK_CORE */
-enum { CORES_MAX = 8 };
+/* The core picker's rows: one per core, PICK_CORE (CORES_MAX: apps.h) */
 
 /* Running (only while something is), then the categories */
 #define PAGES (category_count + 1)
@@ -232,7 +231,7 @@ static gfx_image backdrop;
  * app in the ignore list; `back` is the focus under the dialog. */
 static struct {
   bool shown;
-  STRBUF(64) label;
+  STRBUF(96) title;
   STRBUF(96) why;
   STRBUF(1300) key;
   nav_id back;
@@ -797,12 +796,21 @@ static const entry *dialog_box(nav *ui, int w, int h, str title, str line2,
   return menu(ui, entries, count, view);
 }
 
-/* After an app ended badly: what and how, then OK / Ignore */
+/* After an app ended badly: what and how, then OK / Ignore. No key: nothing
+ * to ignore (no emulator for a game). */
 static const entry *failure_dialog(nav *ui, int w, int h) {
-  STRBUF(96) title;
-  sb_set(title, sb_str(failure.label), S(" stopped"));
-  return dialog_box(ui, w, h, sb_str(title), sb_str(failure.why), failure_entries,
-                    COUNTOF(failure_entries));
+  return dialog_box(ui, w, h, sb_str(failure.title), sb_str(failure.why), failure_entries,
+                    failure.key.n > 0 ? COUNTOF(failure_entries) : 1);
+}
+
+static void show_failure(nav *ui, str title, str why, str key) {
+  if (!failure.shown)
+    failure.back = ui->focus;
+  failure.shown = true;
+  sb_set(failure.title, title);
+  sb_set(failure.why, why);
+  sb_set(failure.key, key);
+  nav_focus(ui, 0);
 }
 
 static app *picked_game(category *c) {
@@ -820,9 +828,9 @@ static const entry *core_dialog(nav *ui, int w, int h, category *c) {
     modal.kind = MODAL_NONE;
     return NULL;
   }
-  const size_t n = MIN(apps_core_count(c), CORES_MAX);
+  const size_t n = c->core_count;
   for (size_t i = 0; i < n; i++) {
-    core_rows[i] = (entry){.label = c->cores[i].name, .action = PICK_CORE, .icon = -1, .checked = (int)i == a->core};
+    core_rows[i] = (entry){.label = sb_str(c->cores[i].name), .action = PICK_CORE, .icon = -1, .checked = (int)i == a->core};
   }
   return dialog_box(ui, w, h, sb_str(a->name), S("Run with"), core_rows, n);
 }
@@ -1030,13 +1038,9 @@ static void app_exited(nav *ui, running *r, size_t *page) {
   if (had_screen)
     go_home(ui);
   if (!ok && !ignored(sb_str(key))) {
-    if (!failure.shown)
-      failure.back = ui->focus;
-    failure.shown = true;
-    sb_set(failure.label, sb_str(label));
-    sb_set(failure.why, why);
-    sb_set(failure.key, sb_str(key));
-    nav_focus(ui, 0);
+    STRBUF(96) title;
+    sb_set(title, sb_str(label), S(" stopped"));
+    show_failure(ui, sb_str(title), why, sb_str(key));
   }
   if (*page == 0 && run_count() == 0)
     turn_page(page, 1);
@@ -1200,7 +1204,7 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   /* Select on a game: which core runs it, when there's a choice */
   if (button == APPCTL_SELECT && !paused && !dialog && *page >= 1 && tiles_focus >= 0 &&
       (size_t)tiles_focus < categories[*page - 1].count &&
-      apps_core_count(&categories[*page - 1]) > 1) {
+      categories[*page - 1].core_count > 1) {
     modal.kind = MODAL_CORES;
     modal.back = ui->focus;
     sb_set(modal.rom, sb_str(categories[*page - 1].apps[tiles_focus].arg));
@@ -1278,6 +1282,7 @@ int main(void) {
   open_pad();
   spawn("volume", volume_thread, NULL);
   static nav ui = {.animate = true, .duration = 150};
+  apps_init();
   sources_load();
   uint64_t present = sources_present();
   size_t page = load_page();
@@ -1503,6 +1508,11 @@ int main(void) {
     if (picked != NULL && page == 0) {
       const running *r = running_of[picked - running_apps];
       start(&ui, sb_str(r->label), sb_str(r->icon), sb_str(r->exec), sb_str(r->arg), sb_str(r->dir));
+    } else if (picked != NULL && picked->exec.n == 0) {
+      STRBUF(96) why;
+      const category *c = &categories[page - 1];
+      sb_set(why, str_eq(c->folder, S("videos")) ? S("No player for ") : S("No emulator for "), c->name);
+      show_failure(&ui, sb_str(picked->name), sb_str(why), S(""));
     } else if (picked != NULL) {
       start(&ui, sb_str(picked->name), sb_str(picked->icon), sb_str(picked->exec),
             sb_str(picked->arg), sb_str(picked->dir));

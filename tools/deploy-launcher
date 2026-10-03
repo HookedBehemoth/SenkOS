@@ -1,15 +1,16 @@
 #!/bin/sh
-# Build apps/ for the handheld (recipes-apps/apps) and swap the launcher in as /data/OS/launcher
-# over USB. weston.init restarts the launcher when it exits, so killing the old one is the whole
-# restart.
-# No /data/OS/launcher: the image's /usr/bin/launcher runs (`tools/ssh rm /data/OS/launcher`).
+# Build apps/ for the handheld (recipes-apps/apps) and swap the launcher in over USB, as a rootfs
+# overlay: /data/OS/overlay/usr/bin/launcher (`overlay` puts it over the image's). weston.init
+# restarts the launcher when it exits, so killing the old one is the whole restart.
+# Back to the image's: `tools/ssh rm /data/OS/overlay/usr/bin/launcher` and reboot.
 set -e
 cd "$(dirname "$0")"
 # kas-container takes its work dir from the cwd
 (cd ../yocto && ./kas build --target apps rg35xx-sp.yml)
 bin=${ANBERNIC_BUILD_ROOT:-/mnt/multimedia/anbernic-yocto}/build/tmp/deploy/images/rg35xx-sp/launcher
+o=/data/OS/overlay/usr/bin
 # Copied, then checked: an interrupted copy leaves a short file that `cat` doesn't fail on
 size=$(wc -c < "$bin")
-timeout 60 ./ssh 'mkdir -p /data/OS && cat > /data/OS/launcher.new' < "$bin"
-timeout 20 ./ssh "[ \$(wc -c < /data/OS/launcher.new) = $size ] && chmod 755 /data/OS/launcher.new &&
-	mv /data/OS/launcher.new /data/OS/launcher && killall launcher"
+timeout 60 ./ssh "mkdir -p $o && cat > $o/launcher.new" < "$bin"
+timeout 20 ./ssh "[ \$(wc -c < $o/launcher.new) = $size ] && chmod 755 $o/launcher.new &&
+	mv $o/launcher.new $o/launcher && overlay && killall launcher"

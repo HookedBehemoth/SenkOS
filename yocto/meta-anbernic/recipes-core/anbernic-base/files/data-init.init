@@ -1,7 +1,7 @@
 #!/bin/sh
 # User init scripts from /data/OS/init.d: executable S* files, run in order with "start", right
-# after /data is mounted and before seatd/weston (/etc/init.d/weston runs this). The rootfs is read-only:
-# fix a config by bind-mounting a file from /data over it; start daemons in the background.
+# after /data is mounted and before seatd/weston (/etc/init.d/weston runs this). Start daemons in
+# the background; files of the rootfs are replaced from /data/OS/overlay (`overlay`).
 # A script that breaks boot: create /uboot/no-data-init (FAT, any PC can) to skip them all.
 [ "$1" = start ] || exit 0
 [ -e /uboot/no-data-init ] && exit 0

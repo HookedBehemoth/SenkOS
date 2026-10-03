@@ -1,0 +1,8 @@
+[System]
+Name=WonderSwan
+Folder=roms/ws
+Aliases=ws;wsc;wonderswan;wonderswancolor;
+Patterns=*.ws;*.wsc;*.zip;
+MimeType=application/x-wonderswan-rom;
+Pack=Bandai - WonderSwan Color
+Order=160

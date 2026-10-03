@@ -8,7 +8,7 @@ SRC_URI = "https://github.com/hrydgard/ppsspp/releases/download/v${PV}/ppsspp-${
 SRC_URI[sha256sum] = "4de21db3105d9d81a465a8a7e78c68ee3c0e0bf6597d1c1d530f7555f3ad8b31"
 S = "${UNPACKDIR}/ppsspp-${PV}"
 
-inherit cmake pkgconfig deploy
+inherit cmake pkgconfig
 # wayland: headers for PPSSPP's Vulkan surface code, which in libretro takes the frontend's surface instead
 DEPENDS = "virtual/libgles2 virtual/egl zlib libpng ffmpeg wayland vulkan-headers"
 
@@ -19,17 +19,12 @@ EXTRA_OECMAKE = "-DLIBRETRO=ON -DUSING_GLES2=ON -DUSING_EGL=OFF -DUSING_X11_VULK
 
 do_install() {
 	install -Dm0755 ${B}/lib/ppsspp_libretro.so ${D}${libdir}/libretro/ppsspp_libretro.so
-	# The core wants these in <system dir>/PPSSPP (fonts, flash0, shaders, lang)
-	install -d ${D}${datadir}/ppsspp
-	cp -r --no-preserve=ownership ${S}/assets/. ${D}${datadir}/ppsspp/
-	rm -rf ${D}${datadir}/ppsspp/debugger
+	# The core wants these in <system dir>/PPSSPP (fonts, flash0, shaders, lang): a new data
+	# partition gets them in OS/assets/emulator (anbernic-data)
+	a=${D}${datadir}/anbernic/data/OS/assets/emulator/PPSSPP
+	install -d $a
+	cp -r --no-preserve=ownership ${S}/assets/. $a/
+	rm -rf $a/debugger
 }
-FILES:${PN} = "${libdir}/libretro ${datadir}/ppsspp"
+FILES:${PN} = "${libdir}/libretro ${datadir}/anbernic"
 
-# retroarch-data/ mirrors /data: the core, and its assets in RetroArch's system dir (/data/bios)
-do_deploy() {
-	install -d ${DEPLOYDIR}/retroarch-data/retroarch/cores ${DEPLOYDIR}/retroarch-data/bios
-	${STRIP} -o ${DEPLOYDIR}/retroarch-data/retroarch/cores/ppsspp_libretro.so ${D}${libdir}/libretro/ppsspp_libretro.so
-	cp -r --no-preserve=ownership ${D}${datadir}/ppsspp ${DEPLOYDIR}/retroarch-data/bios/PPSSPP
-}
-addtask deploy after do_install before do_build

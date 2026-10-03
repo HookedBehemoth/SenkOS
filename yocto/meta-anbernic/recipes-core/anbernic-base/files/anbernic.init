@@ -5,6 +5,9 @@
 # Then what's set for a PC (`usb`). /uboot and /data are mounted by /etc/init.d/weston (rcS S01).
 [ "$1" = start ] || exit 0
 
+# dmesg.sh (S38) wrote the boot's kernel log anew, as root; /var/log is the card's (weston.init)
+chown player:player /var/log/dmesg
+
 # U-Boot armed the watchdog, sunxi_wdt disarmed it at probe; keep one running from here.
 # `ab suspend`-style callers must stop this first (SIGTERM = magic close).
 watchdog -T 16 -t 4 /dev/watchdog

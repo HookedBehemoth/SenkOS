@@ -20,11 +20,11 @@
  * save and load state 0) are bindings: a button combo each, which the
  * launcher records. The hotkeys default to Menu + a shoulder button.
  *
- * BIOS files and the like: next to the ROM, or in $COREHOST_SYSTEM. What a
- * core saves on its own (PPSSPP's memory stick): there too, or in
- * $COREHOST_SAVE.
- * Next to the ROM: STEM.srm (save RAM; a STEM.sav from the standalone
- * emulator is read when there is no .srm, never written) and STEM.state0.
+ * BIOS files and the like: next to the ROM, or in $COREHOST_SYSTEM.
+ * Saves: in $COREHOST_SAVE/CORE, else next to the ROM: STEM.srm (save RAM),
+ * STEM.state0 and what the core saves on its own (PPSSPP's memory stick).
+ * Without a STEM.srm there, the save RAM next to the ROM is read (STEM.srm,
+ * else STEM.sav: another emulator's), never written.
  * Options are kept in $XDG_CONFIG_HOME/corehost/CORE.opt, over the image's
  * defaults in /usr/share/corehost/CORE.opt (the N64's bindings).
  *
@@ -149,7 +149,8 @@ static char **args;
 static bool startup_options; /* the core reads its options only at load */
 static uint8_t started_with[APPCTL_OPTIONS_MAX];
 static bool restart;
-static char opt_path[512], stem[512], default_opt_path[512];
+/* stem: the saves' path but for the extension; rom_stem: the ROM's */
+static char opt_path[512], stem[512], rom_stem[512], save_dir[512], default_opt_path[512];
 /* This game's own bindings (Y in the launcher: their value is 1), in
  * CORE/ROM.opt beside CORE.opt; the core's combo for each is kept to go back
  * to */
@@ -1546,15 +1547,18 @@ static bool environment(unsigned cmd, void *data) {
     return true;
   case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
   case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
-    /* The ROM's own directory unless told: BIOS files and the like go next to it */
-    static char dir[2][512];
-    const bool system = cmd == RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY;
-    const char *env = getenv(system ? "COREHOST_SYSTEM" : "COREHOST_SAVE");
-    snprintf(dir[system], sizeof(dir[system]), "%s", env != NULL ? env : stem);
-    char *slash = strrchr(dir[system], '/');
+    /* System: the ROM's own directory unless told, BIOS files and the like go next to it */
+    static char dir[512];
+    if (cmd == RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY) {
+      *(const char **)data = save_dir;
+      return true;
+    }
+    const char *env = getenv("COREHOST_SYSTEM");
+    snprintf(dir, sizeof(dir), "%s", env != NULL ? env : rom_stem);
+    char *slash = strrchr(dir, '/');
     if (env == NULL && slash != NULL)
       *slash = '\0';
-    *(const char **)data = dir[system];
+    *(const char **)data = dir;
     return true;
   }
   case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: /* again on a mapping change */
@@ -1716,7 +1720,7 @@ fail:
   return NULL;
 }
 
-/* Save RAM: in from STEM.srm, or else STEM.sav */
+/* Save RAM: in from STEM.srm, or else from next to the ROM */
 static void load_sram(void) {
   uint8_t *ram = core.retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
   const size_t room = core.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
@@ -1726,8 +1730,8 @@ static void load_sram(void) {
   size_t size = 0;
   snprintf(path, sizeof(path), "%s.srm", stem);
   uint8_t *data = read_all(path, &size);
-  if (data == NULL) {
-    snprintf(path, sizeof(path), "%s.sav", stem);
+  for (int i = 0; i < 2 && data == NULL; i++) {
+    snprintf(path, sizeof(path), "%s.%s", rom_stem, i == 0 ? "srm" : "sav");
     data = read_all(path, &size);
   }
   if (data != NULL) {
@@ -1952,8 +1956,8 @@ int main(int argc, char **argv) {
   args = argv;
   const char *rom = argv[2];
   core_path = argv[1];
-  snprintf(stem, sizeof(stem), "%s", rom);
-  char *dot = strrchr(stem, '.');
+  snprintf(rom_stem, sizeof(rom_stem), "%s", rom);
+  char *dot = strrchr(rom_stem, '.');
   if (dot != NULL && strchr(dot, '/') == NULL)
     *dot = '\0';
   if (!open_ctl())
@@ -1992,9 +1996,26 @@ int main(int argc, char **argv) {
   mkdir(opt_path, 0755);
   snprintf(game_opt_path, sizeof(game_opt_path), "%s/%s", opt_path, info.library_name);
   mkdir(game_opt_path, 0755);
-  const char *base = strrchr(stem, '/');
-  snprintf(game_opt_path, sizeof(game_opt_path), "%s/%s/%s.opt", opt_path, info.library_name,
-           base ? base + 1 : stem);
+  const char *base = strrchr(rom_stem, '/');
+  base = base ? base + 1 : rom_stem;
+  snprintf(game_opt_path, sizeof(game_opt_path), "%s/%s/%s.opt", opt_path, info.library_name, base);
+  const char *saves = getenv("COREHOST_SAVE");
+  if (saves != NULL && saves[0] == '/') {
+    snprintf(save_dir, sizeof(save_dir), "%s/%s", saves, info.library_name);
+    for (char *slash = strchr(save_dir + 1, '/'); slash; slash = strchr(slash + 1, '/')) {
+      *slash = '\0';
+      mkdir(save_dir, 0755);
+      *slash = '/';
+    }
+    mkdir(save_dir, 0755);
+  } else {
+    snprintf(save_dir, sizeof(save_dir), "%.*s", (int)(base > rom_stem ? base - 1 - rom_stem : 1),
+             base > rom_stem ? rom_stem : ".");
+  }
+  if (snprintf(stem, sizeof(stem), "%s/%s", save_dir, base) >= (int)sizeof(stem)) {
+    fprintf(stderr, "corehost: %s/%s: too long a path\n", save_dir, base);
+    return 1;
+  }
   const size_t len = strlen(opt_path);
   snprintf(opt_path + len, sizeof(opt_path) - len, "/%s.opt", info.library_name);
   snprintf(default_opt_path, sizeof(default_opt_path), "%s/%s.opt", COREHOST_DEFAULTS, info.library_name);

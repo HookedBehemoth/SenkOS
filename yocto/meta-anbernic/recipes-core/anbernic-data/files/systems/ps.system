@@ -1,0 +1,8 @@
+[System]
+Name=PlayStation
+Folder=roms/ps
+Aliases=ps;psx;ps1;playstation;
+Patterns=*.cue;*.chd;*.pbp;*.m3u;*.bin;*.img;
+MimeType=application/x-playstation-rom;
+Pack=Sony - PlayStation
+Order=120

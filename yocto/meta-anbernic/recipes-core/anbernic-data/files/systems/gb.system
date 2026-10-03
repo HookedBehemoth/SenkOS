@@ -1,0 +1,8 @@
+[System]
+Name=Game Boy
+Folder=roms/gb
+Aliases=gb;
+Patterns=*.gb;*.zip;
+MimeType=application/x-gameboy-rom;
+Pack=Nintendo - Game Boy
+Order=20

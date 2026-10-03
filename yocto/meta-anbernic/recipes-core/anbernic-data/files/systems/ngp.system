@@ -1,0 +1,8 @@
+[System]
+Name=Neo Geo Pocket
+Folder=roms/ngp
+Aliases=ngp;ngpc;
+Patterns=*.ngp;*.ngc;*.zip;
+MimeType=application/x-neo-geo-pocket-rom;
+Pack=SNK - Neo Geo Pocket Color
+Order=150

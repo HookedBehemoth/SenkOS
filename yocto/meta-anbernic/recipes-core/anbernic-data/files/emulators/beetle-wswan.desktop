@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Beetle WonderSwan
+Comment=WonderSwan (Color)
+Exec=corehost /usr/lib/libretro/mednafen_wswan_libretro.so %f
+MimeType=application/x-wonderswan-rom;
+Categories=Game;Emulator;

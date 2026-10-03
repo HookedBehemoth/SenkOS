@@ -1,0 +1,8 @@
+[System]
+Name=Game Boy Advance
+Folder=roms/gba
+Aliases=gba;
+Patterns=*.gba;*.zip;
+MimeType=application/x-gba-rom;
+Pack=Nintendo - Game Boy Advance
+Order=10

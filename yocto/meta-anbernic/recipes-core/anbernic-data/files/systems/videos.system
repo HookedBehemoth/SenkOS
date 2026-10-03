@@ -1,0 +1,7 @@
+[System]
+Name=Videos
+Folder=videos
+Aliases=videos;movies;
+Patterns=*.mp4;*.mkv;*.webm;*.mov;*.m4v;*.avi;*.ts;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-m4v;video/x-msvideo;video/mp2t;
+Order=190

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Beetle NGP
+Comment=Neo Geo Pocket (Color)
+Exec=corehost /usr/lib/libretro/mednafen_ngp_libretro.so %f
+MimeType=application/x-neo-geo-pocket-rom;
+Categories=Game;Emulator;

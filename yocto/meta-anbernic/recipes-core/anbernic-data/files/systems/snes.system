@@ -1,0 +1,8 @@
+[System]
+Name=SNES
+Folder=roms/snes
+Aliases=snes;sfc;superfamicom;snesmsu1;
+Patterns=*.sfc;*.smc;*.zip;
+MimeType=application/x-snes-rom;
+Pack=Nintendo - Super Nintendo Entertainment System
+Order=50

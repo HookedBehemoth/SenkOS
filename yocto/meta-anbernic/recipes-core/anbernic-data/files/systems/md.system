@@ -1,0 +1,8 @@
+[System]
+Name=Mega Drive
+Folder=roms/md
+Aliases=md;genesis;megadrive;
+Patterns=*.md;*.gen;*.smd;*.bin;*.zip;
+MimeType=application/x-genesis-rom;
+Pack=Sega - Mega Drive - Genesis
+Order=70

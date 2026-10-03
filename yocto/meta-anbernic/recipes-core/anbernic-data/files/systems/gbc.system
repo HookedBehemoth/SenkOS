@@ -1,0 +1,8 @@
+[System]
+Name=Game Boy Color
+Folder=roms/gbc
+Aliases=gbc;
+Patterns=*.gbc;*.gb;*.zip;
+MimeType=application/x-gameboy-color-rom;
+Pack=Nintendo - Game Boy Color
+Order=30

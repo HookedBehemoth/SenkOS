@@ -1,0 +1,8 @@
+[System]
+Name=Game Gear
+Folder=roms/gg
+Aliases=gg;gamegear;
+Patterns=*.gg;*.zip;
+MimeType=application/x-gamegear-rom;
+Pack=Sega - Game Gear
+Order=90

@@ -1,0 +1,8 @@
+[System]
+Name=Dreamcast
+Folder=roms/dc
+Aliases=dc;dreamcast;
+Patterns=*.chd;*.cdi;*.gdi;*.cue;
+MimeType=application/x-dc-rom;
+Pack=Sega - Dreamcast
+Order=100
