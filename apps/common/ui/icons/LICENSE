@@ -1,12 +1,11 @@
-play, rotate-ccw, cog, image, speaker, house and x are from Lucide (lucide-static
-0.469.0); save-in, save-out and dpad are drawn here in its style, the floppy
-taken from its "save". tools/icon-paths turns them into icons.inc.
-
 ISC License
 
 Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part
 of Feather (MIT). All other copyright (c) for Lucide are held by Lucide
 Contributors 2022.
+
+Copyright (c) 2026 HookedBehemoth for save-in, save-out and dpad, derived from
+Lucide.
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted, provided that the above

@@ -1,6 +1,6 @@
 SUMMARY = "What a new data partition starts with (the repo's data/), and the systems, emulators and players the launcher knows"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+LICENSE = "AGPL-3.0-only"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
 # data/ from the repo (as apps.bb takes apps/), systems/ and emulators/ from here
 FILESEXTRAPATHS:prepend := "${@'/repo' if os.path.isdir('/repo/data') else os.path.abspath(d.getVar('THISDIR') + '/../../../..')}:"

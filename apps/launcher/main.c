@@ -5,10 +5,11 @@
  * (shutdown sends SIGTERM) is shown again at start.
  *
  * D-pad moves (left/right past the edge, or L1/R1, change page), A launches,
- * Start or Menu opens the quick menu (Storage, power), Select on a game picks
+ * Start or Menu opens the quick menu (Storage, Licenses, power), Select on a game picks
  * its core. Storage: Libraries adds folders on the other card to systems
  * (their games join the system's page while the card is in), and what a PC
- * gets over USB (`usb`: MTP, UMS or SMB).
+ * gets over USB (`usb`: MTP, UMS or SMB). Licenses: what the image holds,
+ * and each one's texts to scroll through (licenses.h).
  * What it launched owns the screen (Weston kiosk shell); the gamepad is read
  * straight from evdev, so input is ignored meanwhile, but for Menu: released
  * with nothing pressed along (Menu and a button are the app's hotkeys), it
@@ -46,6 +47,7 @@
 #include "assets.h"
 #include "capture.h"
 #include "gfx.h"
+#include "licenses.h"
 #include "nav.h"
 #include "pad.h"
 #include "romdb.h"
@@ -58,6 +60,7 @@ enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, ICON_PX = 22, MARGIN = 
 enum { TILE_W = 144, TILE_H = 140, ICON = 88, TILE_TEXT = 16, LETTER = 40,
        RADIUS = 12, GAP = 12 };
 enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
+enum { LICENSE_TEXT = 16 };
 
 static const gfx_color BG = {0x14, 0x14, 0x18, 0xff};
 static const gfx_color FG = {0xee, 0xee, 0xee, 0xff};
@@ -79,13 +82,13 @@ static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
 /* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sleepd */
 enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
-       STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER };
+       STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN };
 typedef struct {
   str label;
   str command;
   int action;
   int icon;     /* ICON_*, -1 for none */
-  int category; /* SETTINGS: appctl's; BROWSE_OPEN: the row; TOGGLE_SYSTEM: into categories */
+  int category; /* SETTINGS: appctl's; BROWSE_OPEN, LICENSE_OPEN: the row; TOGGLE_SYSTEM: into categories */
   bool checked; /* a check mark at the end */
 } entry;
 
@@ -109,6 +112,7 @@ static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES];
 /* sleepd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
     {.label = S("Storage"), .action = STORAGE, .icon = -1},
+    {.label = S("Licenses"), .action = LICENSES_OPEN, .icon = -1},
     {.label = S("Sleep"), .command = S("echo suspend > /run/power"), .action = RUN_COMMAND, .icon = -1},
     {.label = S("Reboot"), .command = S("echo reboot > /run/power"), .action = RUN_COMMAND, .icon = -1},
     {.label = S("Power off"), .command = S("echo poweroff > /run/power"), .action = RUN_COMMAND, .icon = -1},
@@ -238,8 +242,9 @@ static struct {
 } failure;
 /* Over home: the quick menu, or Select on a game whose system has more than
  * one core: which runs it. Instead of home: Storage, Libraries, and a
- * folder's systems. */
-enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS };
+ * folder's systems; Licenses, and one's texts. */
+enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS, MODAL_LICENSES,
+       MODAL_LICENSE };
 static struct {
   int kind;
   STRBUF(512) rom; /* MODAL_CORES: the game's arg, as a rescan reorders */
@@ -247,6 +252,8 @@ static struct {
 } modal;
 /* The tile focused on the page, the row in the last menu; -1: none */
 static int tiles_focus = -1, menu_focus = -1;
+/* MODAL_LICENSE: the row read */
+static size_t license_shown;
 static uint64_t osd_until;
 
 
@@ -630,8 +637,9 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
       ui_icon(entries[i].icon, ICON_PX, x, (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
       x += ICON_PX + MARGIN;
     }
+    const float room = r.x + r.w - x - MARGIN - (entries[i].checked ? ICON_PX + MARGIN : 0);
     ui_text(ROW_TEXT, x, (int)r.y + ((int)r.h - ui_text_height(ROW_TEXT)) / 2,
-              entries[i].label, FG);
+            ui_text_fit(ROW_TEXT, entries[i].label, room, NULL), FG);
     if (entries[i].checked)
       ui_icon(ICON_CHECK, ICON_PX, (int)(r.x + r.w) - MARGIN - ICON_PX, (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
     if (flags & NAV_ACTIVATED)
@@ -948,10 +956,30 @@ static void pick_systems(nav *ui, str path) {
   nav_focus(ui, guess >= 0 ? menu_row(nav_str("systems"), row) : 0);
 }
 
+/* licenses[license_shown]'s texts, a line a step */
+static void license_screen(nav *ui, ui_rect view) {
+  const str *lines;
+  const size_t n = license_text(license_shown, LICENSE_TEXT, view.w - MARGIN * 4, &lines);
+  const int line = ui_text_height(LICENSE_TEXT) + 2;
+  const float offset = nav_scroll_begin(ui, nav_str("license"), view, UI_VERTICAL,
+                                        n * line + MARGIN * 2, 0, line);
+  gfx_clip(view.x, view.y, view.w, view.h);
+  /* Only those in view */
+  for (size_t i = (size_t)MAX(0, (offset - MARGIN) / line); i < n; i++) {
+    const float y = view.y + MARGIN + i * line - offset;
+    if (y >= view.y + view.h)
+      break;
+    ui_text(LICENSE_TEXT, (int)view.x + MARGIN * 2, (int)y, lines[i], FG);
+  }
+  gfx_noclip();
+  nav_scroll_end(ui);
+}
+
 /* Instead of home: Storage; a folder's rows, each with the systems it's a
- * source of; or that folder's systems, its own checked */
+ * source of; or that folder's systems, its own checked; Licenses, or one's
+ * texts */
 static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const status *st) {
-  static entry rows[BROWSE_MAX]; /* Storage's STORAGE_MAX too */
+  static entry rows[MAX(BROWSE_MAX, LICENSES_MAX)]; /* Storage's STORAGE_MAX too */
   static STRBUF(200) labels[BROWSE_MAX];
   const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
   const entry *chosen = NULL;
@@ -977,6 +1005,16 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     }
     NAV_SCOPE(ui, nav_str(browse_dir.p)) { chosen = menu(ui, rows, browse_count, list); }
     hint = browse_count > 0 ? S("A: open    X: systems    B: back") : S("B: back");
+  } else if (modal.kind == MODAL_LICENSES) {
+    top_bar(w, S("Licenses"), st);
+    for (size_t i = 0; i < license_count; i++)
+      rows[i] = (entry){.label = licenses[i].label, .action = LICENSE_OPEN, .icon = -1, .category = (int)i};
+    NAV_SCOPE(ui, nav_str("licenses")) { chosen = menu(ui, rows, license_count, list); }
+    hint = license_count > 0 ? S("A: read    B: back") : S("B: back");
+  } else if (modal.kind == MODAL_LICENSE) {
+    top_bar(w, licenses[license_shown].name, st);
+    license_screen(ui, list);
+    hint = S("Up, down: scroll    Left, right: page    B: back");
   } else {
     top_bar(w, shown(sb_str(pick_path)), st);
     size_t n = 0;
@@ -1176,6 +1214,22 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   }
   if (button == APPCTL_B && modal.kind == MODAL_BROWSE && browse_dir.n > 0) {
     browse_up(ui);
+    return true;
+  }
+  if (button == APPCTL_B && modal.kind == MODAL_LICENSE) {
+    modal.kind = MODAL_LICENSES;
+    nav_focus(ui, menu_row(nav_str("licenses"), license_shown));
+    return true;
+  }
+  /* Nothing to focus: the text scrolls, by lines or by pages */
+  if (modal.kind == MODAL_LICENSE && !paused) {
+    const int page_lines = (window.h - BAR - ROW * 2) / (ui_text_height(LICENSE_TEXT) + 2);
+    switch (button) {
+    case APPCTL_UP: nav_step(ui, -1); break;
+    case APPCTL_DOWN: nav_step(ui, 1); break;
+    case APPCTL_LEFT: case APPCTL_L1: nav_step(ui, -page_lines); break;
+    case APPCTL_RIGHT: case APPCTL_R1: nav_step(ui, page_lines); break;
+    }
     return true;
   }
   if (button == APPCTL_B && modal.kind == MODAL_BROWSE) {
@@ -1486,6 +1540,16 @@ int main(void) {
     case STORAGE:
       modal.kind = MODAL_STORAGE;
       nav_focus(&ui, 0);
+      break;
+    case LICENSES_OPEN:
+      licenses_load();
+      modal.kind = MODAL_LICENSES;
+      nav_focus(&ui, 0);
+      break;
+    case LICENSE_OPEN:
+      license_shown = (size_t)chosen->category;
+      modal.kind = MODAL_LICENSE;
+      nav_forget(&ui, nav_str("license"));
       break;
     case BROWSE:
       modal.kind = MODAL_BROWSE;

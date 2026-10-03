@@ -1,6 +1,9 @@
 SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player and corehost, and common/ that they share"
-LICENSE = "AGPL-3.0-only"
-LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
+# Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT. Listed so their
+# texts land in the image with ours (the launcher's Licenses screen).
+LICENSE = "AGPL-3.0-only & ISC & MIT"
+LIC_FILES_CHKSUM = "file://common/ui/icons/LICENSE;md5=5d494583c484398d800c8e0f74da272b \
+    file://corehost/libretro.h;beginline=1;endline=21;md5=f3c64a286d68cc94b919ae6feb1fca53"
 
 # kas-container mounts the repo read-only at /repo: edit, `tools/deploy-launcher`, no recipe
 # changes. The fetcher checksums every file in it.

@@ -1,6 +1,6 @@
 SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /data, watchdog, Weston + launcher startup"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+LICENSE = "AGPL-3.0-only"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
 SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://asound.conf"
 S = "${UNPACKDIR}"

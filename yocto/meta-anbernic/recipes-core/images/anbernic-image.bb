@@ -85,3 +85,116 @@ ROOTFS_POSTPROCESS_COMMAND:append = " no_avahi_initscript"
 no_avahi_initscript () {
 	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??avahi-daemon
 }
+
+# The launcher's Licenses screen reads /usr/share/anbernic/licenses as is (apps/launcher/licenses.h):
+# a row per recipe in the image, by name, with its texts: the files its LIC_FILES_CHKSUM names
+# (the project's own notices, with their holders), then the full text of each license its
+# packages here declare (Yocto's generic_*). A generic text is left out when the recipe's own
+# files have nearly all its words already (the project ships that license: Yocto's are the SPDX
+# texts, laid out and punctuated differently from the copies projects carry), or when it's a
+# notice template ("Copyright <year> <owner>": MIT, BSD, HPND) and the recipe has a notice of
+# its own. Every paragraph is stored once, compared without its line breaks: the GPLs differ
+# between projects only in a header or the FSF's address. Comment marks (/* * */ //) of notices
+# cut from source files go.
+#
+#     u16 program count, license count, run count, string count      (all little-endian)
+#     programs: u16 name, license count, run count      (a program's licenses and runs follow
+#                                                        the ones before it's)
+#     licenses: u16 string      (the declared license strings, "MIT | Apache-2.0")
+#     runs: u16 first string, count      (a heading per file, then its paragraphs)
+#     the strings, UTF-8, each ended by NUL: paragraphs in the order first used, then names
+ROOTFS_POSTPROCESS_COMMAND:append = " anbernic_licenses"
+# What LIC_FILES_CHKSUM names but isn't a license: libunistring's whole manual
+ANBERNIC_LICENSE_SKIP = "libunistring/libunistring.texi"
+# Generic texts that are a holder's notice rather than a template: left out like the templates
+# (Yocto's ISC names the Internet Systems Consortium)
+ANBERNIC_LICENSE_NOTICES = "ISC"
+python anbernic_licenses () {
+    import collections
+    import re
+    import struct
+    import oe.license
+    import oe.packagedata
+    from oe.rootfs import image_list_installed_packages
+
+    # Every package's declared license, by recipe
+    declared = {}
+    for pkg in image_list_installed_packages(d):
+        info = os.path.join(d.getVar('PKGDATA_DIR'), 'runtime-reverse', pkg)
+        data = oe.packagedata.read_pkgdatafile(info)
+        name = os.path.basename(os.readlink(info))
+        declared.setdefault(data['PN'], set()).add(' '.join((data.get('LICENSE:' + name) or data['LICENSE']).split()))
+
+    def words(ps):
+        return collections.Counter(w for p in ps for w in re.findall(r'[a-z0-9]+', p.lower()))
+
+    def paragraphs(path):
+        raw = open(path, 'rb').read()
+        try:
+            text = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            text = raw.decode('latin-1')
+        # The GPL's form feeds and the like would show as boxes
+        text = text.replace('\r', '').replace('\f', '').replace('\t', '    ').replace('\0', '')
+        # Notices cut from source files: their comment marks go, rule lines (/*****, */) whole
+        if re.search(r'^\s*(/\*|//)', text, re.M):
+            text = re.sub(r'^[ ]*[/*]+[ ]*$', '', text, flags=re.M)
+            text = re.sub(r'^[ ]*(/\*+|\*+/|\*|//+)[ ]?', '', text, flags=re.M)
+            text = re.sub(r'[ ]*\*+/[ ]*$', '', text, flags=re.M)
+        text = '\n'.join(line.rstrip() for line in text.split('\n'))
+        return [p.strip('\n') for p in re.split(r'\n\n+', text) if p.strip()]
+
+    template = re.compile(r'<(year|yyyy|copyright|owner)', re.IGNORECASE)
+    skip = set((d.getVar('ANBERNIC_LICENSE_SKIP') or '').split())
+    notices = set((d.getVar('ANBERNIC_LICENSE_NOTICES') or '').split())
+    archs = d.getVar('SSTATE_ARCHS').split()
+    # A paragraph's first text, by its words: the one stored
+    first = {}
+    programs = []
+    for pn in sorted(declared):
+        licdir = next((p for p in (os.path.join(d.getVar('LICENSE_DIRECTORY'), a, pn) for a in reversed(archs))
+                       if os.path.isdir(p)), None)
+        if licdir is None:
+            bb.fatal('anbernic_licenses: no license files for %s' % pn)
+        # A package's license string that another's names in full adds nothing
+        ids = {s: set(oe.license.list_licenses(s)) for s in declared[pn]}
+        strings = sorted(s for s in ids if not any(ids[s] < ids[o] or (ids[s] == ids[o] and s > o) for o in ids))
+        texts = [(f, paragraphs(os.path.join(licdir, f))) for f in sorted(os.listdir(licdir))
+                 if f != 'recipeinfo' and not f.startswith('generic_') and pn + '/' + f not in skip]
+        own = words(p for _, ps in texts for p in ps)
+        for lic in sorted({oe.license.canonical_license(d, i) for s in strings for i in ids[s]}):
+            path = os.path.join(licdir, 'generic_' + lic)
+            if not os.path.exists(path):
+                continue
+            ps = paragraphs(path)
+            need = words(ps)
+            if sum((need & own).values()) >= 0.9 * sum(need.values()) or (own and (lic in notices or template.search('\n'.join(ps[:3])))):
+                continue
+            texts.append((lic, ps))
+        pars = [first.setdefault(' '.join(p.split()), p) for heading, ps in texts for p in [heading] + ps]
+        programs.append((pn, strings, pars))
+
+    # Strings by first use, paragraphs before names: a program's paragraphs are mostly runs
+    index = {}
+    for s in [p for _, _, ps in programs for p in ps] + [s for pn, ls, _ in programs for s in [pn] + ls]:
+        index.setdefault(s, len(index))
+    head, names, runs = [], [], []
+    for pn, strings, pars in programs:
+        mine = []
+        for i in (index[p] for p in pars):
+            if mine and mine[-1][0] + mine[-1][1] == i:
+                mine[-1][1] += 1
+            else:
+                mine.append([i, 1])
+        head += [index[pn], len(strings), len(mine)]
+        names += [index[s] for s in strings]
+        runs += [x for r in mine for x in r]
+    table = [len(programs), len(names), len(runs) // 2, len(index)] + head + names + runs
+    if max(table) > 0xffff:
+        bb.fatal('anbernic_licenses: more than u16 holds')
+    out = d.expand('${IMAGE_ROOTFS}${datadir}/anbernic/licenses')
+    bb.utils.mkdirhier(os.path.dirname(out))
+    with open(out, 'wb') as f:
+        f.write(struct.pack('<%dH' % len(table), *table))
+        f.write(''.join(s + '\0' for s in index).encode('utf-8'))
+}
