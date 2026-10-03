@@ -1,7 +1,8 @@
 #!/bin/sh
 # Watchdog, USB gadget: NCM ethernet (10.55.0.1, DHCP for the host) + ACM serial (getty on
-# ttyGS0, host sees /dev/ttyACM*). Mass storage is set up too, for `ums` to put in place of
-# the serial port: musb doesn't have the endpoints for all three. /uboot and /data are mounted by /etc/init.d/weston (rcS S01).
+# ttyGS0, host sees /dev/ttyACM*). Mass storage and MTP are set up too, for `ums` and `usb` to
+# put in place of the serial port: musb doesn't have the endpoints for more than two functions.
+# Then what's set for a PC (`usb`). /uboot and /data are mounted by /etc/init.d/weston (rcS S01).
 [ "$1" = start ] || exit 0
 
 # U-Boot armed the watchdog, sunxi_wdt disarmed it at probe; keep one running from here.
@@ -15,7 +16,7 @@ if [ ! -d $g ]; then
 	echo 0x1d6b > $g/idVendor	# Linux Foundation
 	echo 0x0104 > $g/idProduct	# Multifunction Composite Gadget
 	mkdir $g/strings/0x409 $g/configs/c.1 $g/functions/ncm.usb0 $g/functions/acm.usb0 \
-		$g/functions/mass_storage.0 $g/functions/mass_storage.0/lun.1
+		$g/functions/mass_storage.0 $g/functions/mass_storage.0/lun.1 $g/functions/ffs.mtp
 	echo 1 > $g/functions/mass_storage.0/lun.0/removable
 	echo 1 > $g/functions/mass_storage.0/lun.1/removable
 	echo SenkOS > $g/strings/0x409/manufacturer
@@ -25,6 +26,12 @@ if [ ! -d $g ]; then
 	echo 02:35:58:00:00:02 > $g/functions/ncm.usb0/host_addr
 	ln -s $g/functions/ncm.usb0 $g/configs/c.1/
 	ln -s $g/functions/acm.usb0 $g/configs/c.1/
+	# Windows 10 loads its NCM driver only for this (Microsoft OS descriptor); 11 doesn't need it
+	echo 1 > $g/os_desc/use
+	echo 0xcd > $g/os_desc/b_vendor_code
+	echo MSFT100 > $g/os_desc/qw_sign
+	echo WINNCM > $g/functions/ncm.usb0/os_desc/interface.ncm/compatible_id
+	ln -s $g/configs/c.1 $g/os_desc/
 	# musb normally registers before root is mounted; give a late (async) probe up to 2 s
 	n=0
 	until udc=$(ls /sys/class/udc | head -n1) && [ -n "$udc" ] || [ $n -ge 100 ]; do usleep 20000; n=$((n + 1)); done
@@ -36,6 +43,7 @@ ip link set $ifc up
 udhcpd -S /etc/udhcpd.conf
 
 usb-gadget-check </dev/null >/dev/null 2>&1 &
+usb </dev/null >/dev/null 2>&1 &
 
 # The codec boots muted with Line Out (the speaker amp's input) at 0; no alsa-state to restore
 amixer -q set 'Line Out' 70% unmute

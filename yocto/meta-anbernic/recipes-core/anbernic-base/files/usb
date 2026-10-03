@@ -1,0 +1,175 @@
+#!/bin/sh
+# Storage for a PC: the launcher's Storage settings (sleepd runs `usb WHAT` on "usb WHAT" in
+# /run/power). Saved in /data/.config/usb, in effect in /run/usb (what the launcher shows):
+# "on|off MODE [sd] [data]".
+#   mtp   MTP (umtprd) in the gadget's third slot (ACM's) while on: the PC finds it plugged in
+#   ums   USB mass storage (`ums`) of what's chosen, sd and/or data, once a PC is there
+#   smb   the in-kernel SMB server (ksmbd), announced by avahi, on the USB network
+# Commands:
+#   usb               at boot: the saved settings
+#   usb on|off|mtp|ums|smb   enable, disable, the mode
+#   usb sd|data       choose that card for UMS, or not
+#   usb plug          the cable came (udev): UMS once a PC configured the gadget
+#   usb cards         the other card's partitions changed (sdcard.rules): MTP and SMB follow
+# MTP and SMB share the main card's data partition and every mounted partition of the other
+# card by label; files are the player's either way. SMB's user is "player", no password
+# (Windows 11 doesn't do guests and asks; macOS and Linux get in as guests, the player too).
+g=/sys/kernel/config/usb_gadget/g1
+ffs=/dev/ffs-mtp
+
+# A PC configured the gadget (not just a charger); waits up to $1 s
+host() {
+	i=0
+	until [ "$(cat /sys/class/udc/$(cat $g/UDC)/state 2>/dev/null)" = configured ]; do
+		[ $i -ge $(($1 * 10)) ] && return 1
+		usleep 100000; i=$((i + 1))
+	done
+}
+
+# Every partition of the other card that's mounted: "PATH NAME" (its label, else its device)
+cards() {
+	for m in /run/media/mmcblk1p*; do
+		mountpoint -q "$m" || continue
+		name=${m##*/}
+		for l in /dev/disk/by-label/*; do
+			[ "$(readlink -f "$l")" = /dev/${m##*/} ] && name=${l##*/}
+		done
+		echo "$m $name"
+	done
+}
+
+smb_stop() {
+	ksmbd.control -s >/dev/null 2>&1
+	avahi-daemon -k 2>/dev/null
+	i=0
+	while pidof ksmbd.mountd avahi-daemon >/dev/null && [ $i -lt 100 ]; do usleep 20000; i=$((i + 1)); done
+}
+
+smb_start() {
+	share() { printf '\n[%s]\n\tpath = %s\n\tread only = no\n\tguest ok = yes\n' "$2" "$1"; }
+	mkdir -p /run/ksmbd
+	{
+		printf '[global]\n\tnetbios name = RG35XX-SP\n\tserver string = RG35XX-SP\n'
+		printf '\tbind interfaces only = yes\n\tinterfaces = usb0\n\tguest account = player\n'
+		# The player is the guest too, and guests may list the shares only with this
+		printf '\n[ipc$]\n\tguest ok = yes\n'
+		share /data "Main card"
+		cards | while read m name; do share "$m" "$name"; done
+	} > /run/ksmbd/ksmbd.conf
+	# MD4 of the empty password, base64 (what ksmbd.adduser writes)
+	echo 'player:MdbP4NFq6TG3PFnX4MCJwA==' > /run/ksmbd/ksmbdpwd.db
+	ksmbd.mountd 7>&- 8>&- 9>&-
+	avahi-daemon -D 7>&- 8>&- 9>&-
+}
+
+# The other card's storages again: what was added goes, what's mounted comes
+mtp_cards() {
+	while read name; do umtprd "-cmd:rmstorage:\"$name\"" >/dev/null; done < /run/mtp-cards
+	: > /run/mtp-cards
+	cards | while read m name; do
+		umtprd "-cmd:addstorage:\"$m\" \"$name\" \"rw\"" >/dev/null && echo "$name" >> /run/mtp-cards
+	done
+}
+
+mtp_start() {
+	pidof umtprd >/dev/null && return
+	mkdir -p $ffs
+	mountpoint -q $ffs || mount -t functionfs mtp $ffs
+	cat > /run/umtprd.conf <<-EOF
+		loop_on_disconnect 1
+		storage "/data" "Main card" "rw"
+		default_uid 1000
+		default_gid 1000
+		show_hidden_files 0
+		manufacturer "SenkOS"
+		product "RG35XX-SP"
+		serial "RG35XX-SP"
+		firmware_version "1"
+		interface "MTP"
+		usb_vendor_id 0x1d6b
+		usb_product_id 0x0104
+		usb_class 0x6
+		usb_subclass 0x1
+		usb_protocol 0x1
+		usb_dev_version 0x3008
+		usb_functionfs_mode 0x1
+		usb_dev_path "$ffs/ep0"
+		usb_epin_path "$ffs/ep1"
+		usb_epout_path "$ffs/ep2"
+		usb_epint_path "$ffs/ep3"
+		usb_max_packet_size 0x200
+	EOF
+	umtprd -conf /run/umtprd.conf </dev/null >/dev/null 2>&1 7>&- 8>&- 9>&- &
+	# Its descriptors written, the endpoints are there; then the gadget can take it
+	i=0
+	until [ -e $ffs/ep1 ] || [ $i -ge 100 ]; do usleep 20000; i=$((i + 1)); done
+	: > /run/mtp-cards
+	ums gadget ffs.mtp 7>&-
+	mtp_cards
+}
+
+mtp_stop() {
+	pidof umtprd >/dev/null || return
+	ums gadget acm.usb0 7>&-
+	killall umtprd
+	i=0
+	while pidof umtprd >/dev/null && [ $i -lt 100 ]; do usleep 20000; i=$((i + 1)); done
+	umount $ffs
+	rm -f /run/mtp-cards
+}
+
+# What /run/usb says, in effect; UMS only once a PC is there (`plug`)
+apply() {
+	read on mode sel < /run/usb
+	[ "$on" = on ] || mode=
+	for x in sd data; do
+		grep -qx $x /run/ums 2>/dev/null || continue
+		case "$mode $sel " in ums*" $x "*) ;; *) ums stop $x 7>&- ;; esac
+	done
+	[ "$mode" = mtp ] || mtp_stop
+	[ "$mode" = smb ] || smb_stop
+	[ "$mode" = smb ] && ! pidof ksmbd.mountd >/dev/null && smb_start
+	[ "$mode" = mtp ] && mtp_start
+	if [ "$mode" = ums ] && host 0; then
+		for x in $sel; do ums $x 7>&-; done
+	fi
+}
+
+# Whoever runs it changes /run/usb, then saves it once in effect (after `ums stop data`, the
+# card's /data again)
+set_usb() {
+	echo "$*" > /run/usb
+	apply
+	mkdir -p /data/.config && cp /run/usb /data/.config/usb
+}
+
+case "$1" in
+plug|'')
+	if [ -z "$1" ]; then
+		cp /data/.config/usb /run/usb 2>/dev/null || echo "on mtp sd" > /run/usb
+		chmod 644 /run/usb
+	fi
+	# The PC configures the gadget within a few seconds of the cable
+	read on mode sel < /run/usb
+	[ "$on $mode" = "on ums" ] && host 10
+	;;
+esac
+
+exec 7> /run/usb.lock
+flock 7
+read on mode sel < /run/usb
+case "$1" in
+on|off) set_usb $1 $mode $sel ;;
+mtp|ums|smb) set_usb $on $1 $sel ;;
+sd|data)
+	case " $sel " in
+	*" $1 "*) set_usb $on $mode $(echo " $sel " | sed "s/ $1 / /") ;;
+	*) set_usb $on $mode $sel $1 ;;
+	esac
+	;;
+cards)
+	pidof ksmbd.mountd >/dev/null && { smb_stop; smb_start; }
+	pidof umtprd >/dev/null && mtp_cards
+	;;
+plug|'') apply ;;
+esac

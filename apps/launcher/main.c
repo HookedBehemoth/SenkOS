@@ -5,15 +5,15 @@
  * (shutdown sends SIGTERM) is shown again at start.
  *
  * D-pad moves (left/right past the edge, or L1/R1, change page), A launches,
- * Start opens the menu (External storage, USB storage, power), Select on a
- * game picks its core. External storage adds folders on the other card to
- * systems: their games join the system's page while the card is in.
+ * Start or Menu opens the quick menu (Storage, power), Select on a game picks
+ * its core. Storage: Libraries adds folders on the other card to systems
+ * (their games join the system's page while the card is in), and what a PC
+ * gets over USB (`usb`: MTP, UMS or SMB).
  * What it launched owns the screen (Weston kiosk shell); the gamepad is read
  * straight from evdev, so input is ignored meanwhile, but for Menu: released
  * with nothing pressed along (Menu and a button are the app's hotkeys), it
  * pauses the app and shows a menu over a blur of its last frame. Home leaves
- * the app paused in the background, on the Running page; Menu at home brings
- * back the last one. An app on the control channel (running.h, corehost)
+ * the app paused in the background, on the Running page. An app on the control channel (running.h, corehost)
  * also gets Save state, Load state and Settings (its options). The focus at
  * home, and in each app's pause menu, is kept meanwhile. While an app has the screen the launcher
  * sleeps: only the pad's Menu, the mixer and an app's exit wake it.
@@ -79,7 +79,7 @@ static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
 /* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sleepd */
 enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
-       BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER };
+       STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER };
 typedef struct {
   str label;
   str command;
@@ -108,21 +108,11 @@ static const entry pause_entries[] = {
 static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES];
 /* sleepd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
-    {.label = S("External storage"), .action = BROWSE, .icon = -1},
+    {.label = S("Storage"), .action = STORAGE, .icon = -1},
     {.label = S("Sleep"), .command = S("echo suspend > /run/power"), .action = RUN_COMMAND, .icon = -1},
     {.label = S("Reboot"), .command = S("echo reboot > /run/power"), .action = RUN_COMMAND, .icon = -1},
     {.label = S("Power off"), .command = S("echo poweroff > /run/power"), .action = RUN_COMMAND, .icon = -1},
 };
-/* USB mass storage, by the ums script (sleepd runs it): the other card, or
- * the main card's data partition (the UI starts again, without /data). While
- * either is the host's, /run/ums says which. */
-static const entry ums_entries[] = {
-    {.label = S("USB storage: SD card"), .command = S("ums sd\n"), .action = POWER, .icon = -1},
-    {.label = S("USB storage: main card"), .command = S("ums data\n"), .action = POWER, .icon = -1},
-};
-static const entry ums_stop = {.label = S("Stop USB storage"), .command = S("ums stop\n"), .action = POWER, .icon = -1};
-static bool ums_on;
-
 /* A request to sleepd (/run/power); the menu stays, and shows what came of it */
 static void power(str request) {
   const int fd = open("/run/power", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
@@ -133,20 +123,63 @@ static void power(str request) {
   }
 }
 
+/* What a PC gets over USB, by the usb script (sleepd runs it): /run/usb is
+ * "on|off MODE [sd] [data]", the cards UMS takes once a PC is there. /run/ums
+ * lists what it has meanwhile (the ums script). */
+static STRBUF(64) usb_state;
+static bool ums_on;
+
 static bool ums_active(void) { return access("/run/ums", F_OK) == 0; }
 
-/* External storage, USB storage, then power */
-static size_t start_entries(entry *out) {
+/* Whether it changed */
+static bool read_usb(void) {
+  char line[64] = "";
+  FILE *f = fopen("/run/usb", "r");
+  if (f != NULL) {
+    if (fgets(line, sizeof(line), f) == NULL)
+      line[0] = '\0';
+    fclose(f);
+  }
+  line[strcspn(line, "\n")] = '\0';
+  const bool changed = !str_eq(sb_str(usb_state), str_c(line));
+  sb_set(usb_state, str_c(line));
+  return changed;
+}
+
+/* Word `i` of /run/usb is `word`, or any word after it for i < 0 */
+static bool usb_is(int i, str word) {
+  str rest = sb_str(usb_state);
+  for (int k = 0; rest.n > 0; k++) {
+    const str w = str_cut(&rest, ' ');
+    if ((i < 0 ? k >= 2 : k == i) && str_eq(w, word))
+      return true;
+  }
+  return false;
+}
+
+/* Libraries, then the USB settings: on, the mode, and for UMS the cards and
+ * Stop while a PC has them */
+enum { STORAGE_MAX = 8 };
+static size_t storage_entries(entry *out) {
+  static const str modes[] = {S("MTP"), S("UMS"), S("SMB")};
+  static const str mode_cmds[] = {S("usb mtp\n"), S("usb ums\n"), S("usb smb\n")};
+  static const str mode_words[] = {S("mtp"), S("ums"), S("smb")};
+  const bool on = usb_is(0, S("on"));
   size_t n = 0;
-  if (!ums_on)
-    out[n++] = system_entries[0];
-  if (ums_on)
-    out[n++] = ums_stop;
-  else
-    for (size_t i = 0; i < COUNTOF(ums_entries); i++)
-      out[n++] = ums_entries[i];
-  for (size_t i = 1; i < COUNTOF(system_entries); i++)
-    out[n++] = system_entries[i];
+  out[n++] = (entry){.label = S("Libraries"), .action = BROWSE, .icon = -1};
+  out[n++] = (entry){.label = S("Enabled"), .command = on ? S("usb off\n") : S("usb on\n"), .action = POWER,
+                     .icon = -1, .checked = on};
+  for (size_t i = 0; i < COUNTOF(modes); i++)
+    out[n++] = (entry){.label = modes[i], .command = mode_cmds[i], .action = POWER, .icon = -1,
+                       .checked = usb_is(1, mode_words[i])};
+  if (usb_is(1, S("ums"))) {
+    out[n++] = (entry){.label = S("SD card"), .command = S("usb sd\n"), .action = POWER, .icon = -1,
+                       .checked = usb_is(-1, S("sd"))};
+    out[n++] = (entry){.label = S("Main card"), .command = S("usb data\n"), .action = POWER, .icon = -1,
+                       .checked = usb_is(-1, S("data"))};
+    if (ums_on)
+      out[n++] = (entry){.label = S("Stop"), .command = S("ums stop\n"), .action = POWER, .icon = -1};
+  }
   return n;
 }
 static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = -1},
@@ -175,8 +208,6 @@ static gfx_target *screen, *osd_screen;
 static ui_context ctx;
 /* On screen or under the pause screen; NULL: home */
 static running *front;
-/* What Menu brings back from home */
-static running *last;
 static bool paused, in_settings;
 static int settings_category;
 /* Recording a binding in Settings: every button pressed since the first;
@@ -206,10 +237,10 @@ static struct {
   STRBUF(1300) key;
   nav_id back;
 } failure;
-/* Over home: Start's menu, or Select on a game whose system has more than
- * one core: which runs it. Instead of home: External storage, and a folder's
- * systems. */
-enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_BROWSE, MODAL_SYSTEMS };
+/* Over home: the quick menu, or Select on a game whose system has more than
+ * one core: which runs it. Instead of home: Storage, Libraries, and a
+ * folder's systems. */
+enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS };
 static struct {
   int kind;
   STRBUF(512) rom; /* MODAL_CORES: the game's arg, as a rescan reorders */
@@ -352,7 +383,7 @@ static void go_home(nav *ui) {
 static void hand_over(nav *ui, running *r) {
   if (front == NULL)
     home_focus = ui->focus;
-  front = last = r;
+  front = r;
   paused = in_settings = false;
   set_listening(false);
   grab(false);
@@ -796,7 +827,7 @@ static const entry *core_dialog(nav *ui, int w, int h, category *c) {
   return dialog_box(ui, w, h, sb_str(a->name), S("Run with"), core_rows, n);
 }
 
-/* External storage: the card's partitions (where sdcard.rules mounts them)
+/* Libraries: the card's partitions (where sdcard.rules mounts them)
  * and every source at the top, browse_dir "", then a folder's folders. B goes
  * up. */
 #define MEDIA "/run/media"
@@ -807,7 +838,7 @@ static struct {
   STRBUF(96) name;
 } browse_rows[BROWSE_MAX];
 static size_t browse_count;
-/* MODAL_SYSTEMS: the folder, and the focus in External storage to go back to */
+/* MODAL_SYSTEMS: the folder, and the focus in Libraries to go back to */
 static STRBUF(256) pick_path;
 static nav_id pick_back;
 
@@ -909,16 +940,23 @@ static void pick_systems(nav *ui, str path) {
   nav_focus(ui, guess >= 0 ? menu_row(nav_str("systems"), row) : 0);
 }
 
-/* Instead of home: a folder's rows, each with the systems it's a source of;
- * or that folder's systems, its own checked */
+/* Instead of home: Storage; a folder's rows, each with the systems it's a
+ * source of; or that folder's systems, its own checked */
 static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const status *st) {
-  static entry rows[BROWSE_MAX];
+  static entry rows[BROWSE_MAX]; /* Storage's STORAGE_MAX too */
   static STRBUF(200) labels[BROWSE_MAX];
   const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
   const entry *chosen = NULL;
   str hint;
-  if (modal.kind == MODAL_BROWSE) {
-    top_bar(w, browse_dir.n > 0 ? shown(sb_str(browse_dir)) : S("External storage"), st);
+  if (modal.kind == MODAL_STORAGE) {
+    top_bar(w, S("Storage"), st);
+    const size_t n = storage_entries(rows);
+    NAV_SCOPE(ui, nav_str("storage")) { chosen = menu(ui, rows, n, list); }
+    /* Windows doesn't find the share by itself */
+    hint = usb_is(1, S("smb")) ? S("A: choose    B: back    On a PC: \\\\10.55.0.1, user player")
+                               : S("A: choose    B: back");
+  } else if (modal.kind == MODAL_BROWSE) {
+    top_bar(w, browse_dir.n > 0 ? shown(sb_str(browse_dir)) : S("Libraries"), st);
     for (size_t i = 0; i < browse_count; i++) {
       sb_set(labels[i], sb_str(browse_rows[i].name));
       bool first = true;
@@ -964,13 +1002,13 @@ static void list_running(void) {
   }
 }
 
-/* Running only while something does. External storage stays open. */
+/* Running only while something does. Storage stays open. */
 static void turn_page(size_t *page, int by) {
   do
     *page = (*page + PAGES + by) % PAGES;
   while ((*page == 0 && run_count() == 0) ||
          (*page >= 1 && !apps_present(&categories[*page - 1])));
-  if (modal.kind != MODAL_BROWSE && modal.kind != MODAL_SYSTEMS)
+  if (modal.kind < MODAL_STORAGE)
     modal.kind = MODAL_NONE;
   rescan(*page);
 }
@@ -981,8 +1019,6 @@ static void app_exited(nav *ui, running *r, size_t *page) {
   const bool had_screen = r == front;
   if (had_screen && paused)
     grab(false);
-  if (r == last)
-    last = NULL;
   STRBUF(sizeof(r->label.p)) label;
   STRBUF(sizeof(failure.key.p)) key;
   sb_set(label, sb_str(r->label));
@@ -1102,11 +1138,10 @@ static bool input(nav *ui, int why, int value, size_t *page) {
       } else {
         pause_front(ui);
       }
-    } else if (front == NULL && last != NULL) {
-      start(ui, sb_str(last->label), sb_str(last->icon), sb_str(last->exec), sb_str(last->arg),
-            sb_str(last->dir));
+      return true;
     }
-    return true;
+    /* At home: the quick menu, as Start */
+    button = APPCTL_START;
   }
   /* A hotkey: the app's */
   if (menu_down && button >= 0) {
@@ -1137,6 +1172,11 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   }
   if (button == APPCTL_B && modal.kind == MODAL_BROWSE && browse_dir.n > 0) {
     browse_up(ui);
+    return true;
+  }
+  if (button == APPCTL_B && modal.kind == MODAL_BROWSE) {
+    modal.kind = MODAL_STORAGE;
+    nav_focus(ui, menu_row(nav_str("storage"), 0));
     return true;
   }
   if (button == APPCTL_X && modal.kind == MODAL_BROWSE && menu_focus >= 0 &&
@@ -1245,9 +1285,13 @@ int main(void) {
   status st;
   read_status(&st);
   uint64_t status_at = ms_now();
-  /* Started again for the main card's USB storage: the way back first */
-  if ((ums_on = ums_active()))
-    modal.kind = MODAL_MENU;
+  read_usb();
+  /* Started again for the main card's USB storage: on the way back */
+  if ((ums_on = ums_active())) {
+    modal.kind = MODAL_STORAGE;
+    entry rows[STORAGE_MAX];
+    nav_focus(&ui, menu_row(nav_str("storage"), storage_entries(rows) - 1));
+  }
   /* The clock shows minutes: a frame when one passes, not every second */
   time_t shown_minute = 0;
   bool animating = true;
@@ -1290,11 +1334,9 @@ int main(void) {
       status_at = now;
       const bool ums_was = ums_on;
       ums_on = ums_active();
-      /* The menu's rows changed: on Stop, or on the card that was */
-      if (ums_on != ums_was && modal.kind == MODAL_MENU)
-        nav_focus(&ui, menu_row(nav_str("start"), ums_on ? 0 : 1));
       dirty |= was.battery != st.battery || was.charging != st.charging ||
                was.wifi != st.wifi || time(NULL) / 60 != shown_minute || ums_on != ums_was;
+      dirty |= read_usb();
       /* A card came or went, or a source was added: the page again, or
        * another if it has nothing left.
        * ponytail: polled with the status; inotify on /run/media if a second is too slow. */
@@ -1325,7 +1367,7 @@ int main(void) {
     const entry *chosen = NULL;
     const app *picked = NULL;
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
-    if (!paused && (modal.kind == MODAL_BROWSE || modal.kind == MODAL_SYSTEMS)) {
+    if (!paused && modal.kind >= MODAL_STORAGE) {
       chosen = folders_screen(&ui, w, h, view, &st);
     } else if (paused) {
       STRBUF(128) title;
@@ -1373,9 +1415,7 @@ int main(void) {
       nav_set_inert(&ui, failure.shown);
       if (modal.kind == MODAL_MENU)
         NAV_SCOPE(&ui, nav_str("start")) {
-          static entry items[COUNTOF(system_entries) + COUNTOF(ums_entries)];
-          chosen = dialog_box(&ui, w, h, S("Menu"), ums_on ? S("Connected as USB storage") : S(""), items,
-                              start_entries(items));
+          chosen = dialog_box(&ui, w, h, S("Menu"), S(""), system_entries, COUNTOF(system_entries));
         }
       if (modal.kind == MODAL_CORES && page >= 1)
         NAV_SCOPE(&ui, nav_str("cores")) { chosen = core_dialog(&ui, w, h, &categories[page - 1]); }
@@ -1438,6 +1478,10 @@ int main(void) {
       break;
     }
     case POWER: power(chosen->command); break;
+    case STORAGE:
+      modal.kind = MODAL_STORAGE;
+      nav_focus(&ui, 0);
+      break;
     case BROWSE:
       modal.kind = MODAL_BROWSE;
       browse(&ui, S(""));

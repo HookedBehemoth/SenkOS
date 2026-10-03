@@ -75,3 +75,9 @@ ROOTFS_POSTPROCESS_COMMAND:append = " no_seatd_initscript"
 no_seatd_initscript () {
 	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??seatd
 }
+
+# `smb` (anbernic-base) starts avahi with the SMB server
+ROOTFS_POSTPROCESS_COMMAND:append = " no_avahi_initscript"
+no_avahi_initscript () {
+	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??avahi-daemon
+}

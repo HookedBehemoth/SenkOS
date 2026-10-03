@@ -7,6 +7,7 @@
 #   stop [sd|data]  back, mounted again; the UI starts again with /data. Both without one.
 #   watch           while the host has any: what it ejects is stopped, all of it once the host
 #                   is gone (started by sd and data)
+#   gadget FUNCTION mass_storage.0, acm.usb0 or ffs.mtp (`usb`) in the gadget's third slot
 # The gadget (anbernic.init) has mass storage in place of its serial port meanwhile, LUN 0 the
 # data partition, LUN 1 the other card. /run/ums lists what the host has, for the launcher.
 g=/sys/kernel/config/usb_gadget/g1
@@ -24,18 +25,19 @@ case "$1" in watch) ;; *) exec 9> /run/ums.lock; flock 9 ;; esac
 ui_stop() {
 	su -s /bin/sh player -c 'kill -TERM -1' 2>/dev/null
 	i=0
-	while pgrep -u player >/dev/null && [ $i -lt 100 ]; do usleep 20000; i=$((i + 1)); done
+	# (busybox: no pgrep -u, and kill -0 -1 always succeeds)
+	while grep -qs '^Uid:.1000' /proc/[0-9]*/status && [ $i -lt 100 ]; do usleep 20000; i=$((i + 1)); done
 	su -s /bin/sh player -c 'kill -KILL -1' 2>/dev/null
 	usleep 100000
 }
 
-# The gadget's third function: mass_storage.0 or acm.usb0. The host sees it unplugged and
-# plugged in again (ssh over NCM reconnects).
+# The gadget's third function: mass_storage.0, acm.usb0 or ffs.mtp. The host sees it unplugged
+# and plugged in again (ssh over NCM reconnects).
 gadget() {
 	[ -e $g/configs/c.1/$1 ] && return
 	udc=$(cat $g/UDC)
 	echo > $g/UDC
-	rm -f $g/configs/c.1/mass_storage.0 $g/configs/c.1/acm.usb0
+	rm -f $g/configs/c.1/mass_storage.0 $g/configs/c.1/acm.usb0 $g/configs/c.1/ffs.mtp
 	ln -s $g/functions/$1 $g/configs/c.1/
 	echo $udc > $g/UDC
 }
@@ -118,6 +120,9 @@ stop)
 		/etc/init.d/syslog start 9>&-
 		/etc/init.d/weston restart 9>&-
 	fi
+	;;
+gadget)
+	gadget "$2"
 	;;
 watch)
 	# An ejected LUN has no file any more. No host for 3 s (unplugged, or a desktop's "safely

@@ -5,7 +5,8 @@
  * put the handheld to sleep at boot. The actual suspend is /usr/sbin/suspend.
  * Also the unprivileged launcher's way to suspend, reboot or power off: a line
  * "suspend", "reboot" or "poweroff" written to the FIFO /run/power (anbernic.init).
- * And to USB mass storage: "ums sd", "ums data" or "ums stop" runs /usr/sbin/ums.
+ * And to USB mass storage: "ums sd", "ums data" or "ums stop" runs /usr/sbin/ums; and the
+ * Storage settings: "usb on|off|mtp|ums|smb|sd|data" runs /usr/sbin/usb.
  */
 #include <fcntl.h>
 #include <glob.h>
@@ -98,6 +99,17 @@ int main(void)
 				system("/usr/sbin/ums data &");
 			else if (strncmp(req, "ums stop", 8) == 0)
 				system("/usr/sbin/ums stop &");
+			else if (strncmp(req, "usb ", 4) == 0) {
+				/* One of these words only: it goes to a shell */
+				static const char *const usb[] = {"on", "off", "mtp", "ums", "smb", "sd", "data"};
+				req[strcspn(req, "\n")] = '\0';
+				for (size_t i = 0; i < sizeof(usb) / sizeof(*usb); i++)
+					if (strcmp(req + 4, usb[i]) == 0) {
+						char cmd[64];
+						snprintf(cmd, sizeof(cmd), "/usr/sbin/usb %s &", usb[i]);
+						system(cmd);
+					}
+			}
 		}
 		for (int i = 0; i < n; i++)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {

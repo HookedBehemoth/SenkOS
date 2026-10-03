@@ -5,4 +5,7 @@
 ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_TYPE}=="vfat|exfat", ENV{SDCARD_OPTS}=",uid=1000,gid=1000"
 ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_TYPE}!="vfat|exfat", ENV{SDCARD_OPTS}=",X-mount.idmap=b:0:1000:1"
 ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_USAGE}=="filesystem", RUN+="/bin/sh -c 'mountpoint -q /run/media/%k || { mkdir -p /run/media/%k && mount -o noatime$env{SDCARD_OPTS} /dev/%k /run/media/%k || rmdir /run/media/%k; }'"
+# MTP and SMB (`usb`) have the mounted partitions: again with what's mounted now
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_USAGE}=="filesystem", RUN+="/bin/sh -c '/usr/sbin/usb cards </dev/null >/dev/null 2>&1 &'"
 ACTION=="remove", SUBSYSTEM=="block", KERNEL=="mmcblk1*", RUN+="/bin/sh -c 'umount -l /run/media/%k && rmdir /run/media/%k'"
+ACTION=="remove", SUBSYSTEM=="block", KERNEL=="mmcblk1*", RUN+="/bin/sh -c '/usr/sbin/usb cards </dev/null >/dev/null 2>&1 &'"
