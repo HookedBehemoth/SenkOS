@@ -2,6 +2,6 @@
 Type=Application
 Name=mGBA
 Comment=Game Boy Advance, Game Boy and Game Boy Color
-Exec=corehost /usr/lib/libretro/mgba_libretro.so %f
+Exec=corehost /usr/lib64/libretro/mgba_libretro.so %f
 MimeType=application/x-gba-rom;application/x-gameboy-rom;application/x-gameboy-color-rom;
 Categories=Game;Emulator;

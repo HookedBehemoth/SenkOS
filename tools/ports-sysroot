@@ -1,0 +1,24 @@
+#!/bin/sh
+# A Debian trixie arm64 + armhf root with the ports' platform (docs/ports.md) and llvmpipe, for
+# `portrun -r` on a PC (qemu-user with binfmt runs its programs):
+#     tools/ports-sysroot [dir]      (default /mnt/multimedia/ports-sysroot/root)
+set -e
+out=${1:-/mnt/multimedia/ports-sysroot/root}
+P="libc6 libstdc++6 libgcc-s1 zlib1g libbz2-1.0 libegl1 libgles2 libgl1 libglx-mesa0 libegl-mesa0 libgl1-mesa-dri
+ libgbm1 libvulkan1 libwayland-client0 libwayland-egl1 libwayland-cursor0 libxkbcommon0 libudev1
+ libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 libsdl2-net-2.0-0 libsdl2-gfx-1.0-0
+ libasound2t64 libasound2-plugins libpulse0 libopenal1 libx11-6 libxext6 libxrender1 libxi6 libxtst6 libxrandr2 libxcursor1
+ libxfixes3 libxinerama1 libxss1 libxxf86vm1 libxmu6 libxxf86dga1 libglu1-mesa libpng16-16t64 libfreetype6 libfontconfig1
+ libogg0 libvorbis0a libvorbisfile3 libvorbisenc2 libopus0 libopusfile0 libflac14 libmpg123-0t64 libmodplug1
+ libtheora0 libsndfile1 libcurl4t64 libexpat1 libzstd1 libsqlite3-0 libuuid1 libglib2.0-0t64 libcairo2 libpixman-1-0
+ libdbus-1-3 libjpeg62-turbo fonts-dejavu-core"
+P=$(echo $P)
+podman rm -f pmsys >/dev/null 2>&1 || true
+podman run --arch arm64 --name pmsys docker.io/library/debian:trixie sh -c "
+	dpkg --add-architecture armhf && apt-get update -qq &&
+	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $P $(for p in $P; do [ $p = fonts-dejavu-core ] || printf '%s:armhf ' $p; done) >/dev/null &&
+	apt-get clean"
+rm -rf "$out" && mkdir -p "$out"
+podman export pmsys | tar -x -C "$out" --exclude=dev/*
+podman rm pmsys >/dev/null
+echo sysroot done

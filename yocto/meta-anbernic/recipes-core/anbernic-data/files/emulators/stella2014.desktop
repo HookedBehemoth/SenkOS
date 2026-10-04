@@ -2,6 +2,6 @@
 Type=Application
 Name=Stella 2014
 Comment=Atari 2600
-Exec=corehost /usr/lib/libretro/stella2014_libretro.so %f
+Exec=corehost /usr/lib64/libretro/stella2014_libretro.so %f
 MimeType=application/x-atari-2600-rom;
 Categories=Game;Emulator;

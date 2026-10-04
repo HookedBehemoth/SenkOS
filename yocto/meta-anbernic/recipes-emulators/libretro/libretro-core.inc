@@ -1,4 +1,4 @@
-# A libretro core from a plain libretro Makefile: one <core>_libretro.so in /usr/lib/libretro, run by
+# A libretro core from a plain libretro Makefile: one <core>_libretro.so in /usr/lib64/libretro, run by
 # corehost (an emulator's .desktop in anbernic-data). Recipes set LIBRETRO_REPO/LIBRETRO_REV and the checksum.
 SUMMARY ?= "libretro core ${LIBRETRO_CORE}"
 PV = "0+git${@d.getVar('LIBRETRO_REV')[:10]}"

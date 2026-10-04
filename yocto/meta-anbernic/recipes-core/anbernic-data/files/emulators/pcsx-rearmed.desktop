@@ -2,6 +2,6 @@
 Type=Application
 Name=PCSX ReARMed
 Comment=PlayStation
-Exec=corehost /usr/lib/libretro/pcsx_rearmed_libretro.so %f
+Exec=corehost /usr/lib64/libretro/pcsx_rearmed_libretro.so %f
 MimeType=application/x-playstation-rom;
 Categories=Game;Emulator;

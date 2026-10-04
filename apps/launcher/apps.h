@@ -81,8 +81,9 @@ void apps_scan(category *c);
 bool apps_present(const category *c);
 /* Runs `a` with core `index` from now on */
 void apps_set_core(category *c, app *a, int index);
-/* Kept in $XDG_CONFIG_HOME/launcher-folders, a line "system's folder\tpath"
- * each. A folder may be a source of more than one system. */
+/* Kept in $XDG_CONFIG_HOME/launcher-folders, a line "category's folder\tpath"
+ * each ("apps/ports\t/run/media/mmcblk1p2/ports": ports on the second card).
+ * A folder may be a source of more than one system. */
 enum { SOURCES_MAX = 64 };
 typedef struct {
   STRBUF(256) path;

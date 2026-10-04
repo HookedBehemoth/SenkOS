@@ -2,6 +2,6 @@
 Type=Application
 Name=Gambatte
 Comment=Game Boy and Game Boy Color
-Exec=corehost /usr/lib/libretro/gambatte_libretro.so %f
+Exec=corehost /usr/lib64/libretro/gambatte_libretro.so %f
 MimeType=application/x-gameboy-rom;application/x-gameboy-color-rom;
 Categories=Game;Emulator;

@@ -6,7 +6,7 @@ inherit image
 # libsdl2: for what lives in /data (the bindless demo, SuperTuxKart, ports); our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
-# libbz2 ... opusfile: the ports' platform (docs/ports.md); the SDL2 family, libmodplug and opusfile from meta-openembedded
+# libbz2 ... opusfile: the ports' platform (docs/ports.md); the SDL2 family (SDL2_gfx our own), libmodplug and opusfile from meta-openembedded
 # libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
 # The libretro cores: run by corehost, as the emulators in anbernic-data (anbernic-base) say
 IMAGE_INSTALL = " \
@@ -40,6 +40,11 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-base-videoconvertscale \
     mediaplayer \
     portrun \
+    weston-xwayland \
+    pipewire \
+    pipewire-pulse \
+    pipewire-alsa \
+    wireplumber \
     liberation-fonts \
     ttf-bitstream-vera \
     libasound \
@@ -51,13 +56,24 @@ IMAGE_INSTALL = " \
     libcurl \
     libcrypto \
     libbz2 libflac libtheora mpg123 libsndfile1 \
-    libsdl2-image libsdl2-mixer libsdl2-ttf libsdl2-net libmodplug opusfile cairo \
+    libsdl2-image libsdl2-mixer libsdl2-ttf libsdl2-net libsdl2-gfx libmodplug opusfile cairo \
     libavcodec libavformat libavdevice libavfilter libavutil libswresample libswscale \
     libgomp \
     libretro-fceumm libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx \
     libretro-beetle-pce-fast libretro-pcsx-rearmed libretro-fbneo libretro-beetle-ngp libretro-beetle-wswan \
     libretro-stella2014 libretro-handy libretro-mupen64plus-next libretro-flycast libretro-ppsspp \
 "
+# The rest of the ports' platform (docs/ports.md), and all of it again for armhf (multilib, anbernic.conf)
+PORTS_PLATFORM = "libstdc++ libgcc zlib libgallium libegl-mesa libglvnd mesa-vulkan-drivers vulkan-loader \
+    wayland libxkbcommon libudev libsdl2 libsdl2-image libsdl2-mixer \
+    libsdl2-ttf libsdl2-net libsdl2-gfx libasound libpulse libpulse-simple openal-soft libxmu libxpm libxxf86dga libglu \
+    libxi libxcursor libxrandr libxinerama libxfixes libxtst libxscrnsaver \
+    libpng freetype fontconfig libogg libvorbis libopus libflac mpg123 libmodplug opusfile libtheora libsndfile1 \
+    libcurl libcrypto expat libzstd libbz2 libjpeg-turbo libsqlite3 util-linux-libuuid glib-2.0 cairo dbus-lib"
+IMAGE_INSTALL += "${PORTS_PLATFORM} \
+    ${@' '.join('lib32-' + p for p in d.getVar('PORTS_PLATFORM').split())} \
+    lib32-pipewire-alsa lib32-pipewire-modules-client-device lib32-pipewire-modules-adapter lib32-pipewire-modules-metadata \
+    lib32-pipewire-modules-session-manager lib32-pipewire-spa-plugins-audioconvert"
 IMAGE_LINGUAS = ""
 # Weston is started by anbernic-base (as player, via seatd; kiosk shell)
 BAD_RECOMMENDATIONS += "weston-init"

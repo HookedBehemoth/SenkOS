@@ -2,6 +2,6 @@
 Type=Application
 Name=FCEUmm
 Comment=NES and Famicom Disk System
-Exec=corehost /usr/lib/libretro/fceumm_libretro.so %f
+Exec=corehost /usr/lib64/libretro/fceumm_libretro.so %f
 MimeType=application/x-nes-rom;
 Categories=Game;Emulator;

@@ -22,6 +22,11 @@
  * A second window, "osd", shows the volume whenever the mixer changes; the
  * patched kiosk shell keeps it on top of everything without focus.
  *
+ * `launcher launch PATH` (a port's folder, a ROM, an executable) starts that
+ * app as A on its tile does: through $XDG_RUNTIME_DIR/launcher, a FIFO the
+ * running launcher reads. Only at home: the app owns the screen and the pad
+ * until it exits or Menu pauses it.
+ *
  * Drawn with Vulkan (gfx.h); icons come off the card in the background
  * (assets.h). Runs on a desktop too: LAUNCHER_DATA=apps/launcher/testdata.
  */
@@ -30,6 +35,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <limits.h>
 #include <linux/input.h>
 #include <poll.h>
 #include <stdatomic.h>
@@ -46,6 +52,7 @@
 #include "apps.h"
 #include "assets.h"
 #include "capture.h"
+#include "cfg.h"
 #include "gfx.h"
 #include "licenses.h"
 #include "nav.h"
@@ -57,8 +64,8 @@
 #include "util.h"
 
 enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, ICON_PX = 22, MARGIN = 12 };
-enum { TILE_W = 144, TILE_H = 140, ICON = 88, TILE_TEXT = 16, LETTER = 40,
-       RADIUS = 12, GAP = 12 };
+enum { TILE_W = 144, TILE_H = 160, ICON = 128, TILE_TEXT = 16, LETTER = 40,
+       RADIUS = 12, GAP = 8 };
 enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
 enum { LICENSE_TEXT = 16 };
 
@@ -236,7 +243,7 @@ static gfx_image backdrop;
 static struct {
   bool shown;
   STRBUF(96) title;
-  STRBUF(96) why;
+  STRBUF(640) why;
   STRBUF(1300) key;
   nav_id back;
 } failure;
@@ -473,8 +480,9 @@ static void step_option(running *r, int i, int by) {
   run_request(r, APPCTL_OPTIONS, 0);
 }
 
-/* Line Out on hw:0, which weston's volume-keys module sets. Posts the level in
- * percent, 0 when muted, whenever it changes. */
+/* Line Out on hw:0, which weston's volume-keys module sets and which is also
+ * PipeWire's volume (WirePlumber drives it as the speaker's). Posts the level
+ * in percent, 0 when muted, whenever it changes. */
 static void *volume_thread(void *data) {
   (void)data;
   snd_mixer_t *mixer;
@@ -655,7 +663,7 @@ static void tile(const app *a, ui_rect r, unsigned flags) {
   ui_rounded(r.x, r.y, r.w, r.h, EDGE, RADIUS, 1);
   if (run_same(sb_str(a->exec), sb_str(a->arg), sb_str(a->dir)) != NULL)
     ui_rounded(r.x + r.w - 16, r.y + 8, 8, 8, ACTIVE, 4, 0);
-  const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 12;
+  const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 8;
   const asset icon = assets_get(sb_str(a->icon));
   if (icon.slot == GFX_PLACEHOLDER) {
     /* Until it loads, or without one: the initial */
@@ -785,21 +793,42 @@ static void settings(nav *ui, running *r, ui_rect view) {
   nav_scroll_end(ui);
 }
 
-/* Over home: a title, a line under it if any, then the choices */
-static const entry *dialog_box(nav *ui, int w, int h, str title, str line2,
+/* Over home: a title, text under it if any (wrapped, up to 8 lines), then the
+ * choices */
+static const entry *dialog_box(nav *ui, int w, int h, str title, str text,
                            const entry *entries, size_t count) {
   ui_fill(0, 0, w, h, SCRIM);
   const float dw = MIN(w - MARGIN * 4, 480), line = ui_text_height(ROW_TEXT) + 6;
-  const float lines = line2.n > 0 ? 2 : 1;
+  const float tw = dw - MARGIN * 4;
+  str wrapped[8];
+  size_t n = 0;
+  for (str rest = text; rest.n > 0 && n < COUNTOF(wrapped); n++) {
+    /* Words while they fit; the last line takes the rest, cut */
+    size_t end = rest.n;
+    if (n + 1 < COUNTOF(wrapped))
+      for (size_t i = 0, fit = 0; i <= rest.n; i++)
+        if (i == rest.n || rest.p[i] == ' ') {
+          if (fit > 0 && ui_text_width(ROW_TEXT, str_head(rest, i)) > tw) {
+            end = fit;
+            break;
+          }
+          fit = i;
+        }
+    wrapped[n] = str_head(rest, end);
+    rest = str_at(rest, end);
+    while (rest.n > 0 && rest.p[0] == ' ')
+      rest = str_at(rest, 1);
+  }
+  const float lines = 1 + n;
   const float list = MIN(ROW * count + MARGIN * 2, h - MARGIN * 8 - line * lines);
   const float dh = MARGIN * 2 + line * lines + list + MARGIN;
   const float x = (w - dw) / 2, y = (h - dh) / 2;
   ui_rounded(x, y, dw, dh, TILE, RADIUS, 0);
   ui_rounded(x, y, dw, dh, EDGE, RADIUS, 1);
   ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2), ui_text_fit(ROW_TEXT, title, dw - MARGIN * 4, NULL), FG);
-  if (line2.n > 0)
-    ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2 + line),
-              ui_text_fit(ROW_TEXT, line2, dw - MARGIN * 4, NULL), DIM);
+  for (size_t i = 0; i < n; i++)
+    ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2 + line * (1 + i)),
+              ui_text_fit(ROW_TEXT, wrapped[i], tw, NULL), DIM);
   const ui_rect view = {x + MARGIN, y + MARGIN + line * lines + MARGIN, dw - MARGIN * 2, list};
   return menu(ui, entries, count, view);
 }
@@ -1061,6 +1090,24 @@ static void turn_page(size_t *page, int by) {
 
 /* Reaped and forgotten; if it had the screen, home again. Ending badly
  * shows the dialog, unless the app is on the ignore list. */
+/* A port's [Port] Instructions (docs/ports.md), until the next call */
+static bool port_instructions(const char *ini, str *out) {
+  static STRBUF(640) text;
+  const str file = str_read(fopen(ini, "r"));
+  if (file.p == NULL)
+    return false;
+  sb_set(text, S(""));
+  cfg_reader r = cfg_init(file);
+  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;)
+    if (e == CFG_VALUE && str_eq(r.section, S("Port")) && str_eq(r.key, S("Instructions")))
+      sb_set(text, r.value);
+  free((char *)file.p);
+  if (text.n == 0)
+    sb_set(text, S("Its files aren't there yet: see its port.md."));
+  *out = sb_str(text);
+  return true;
+}
+
 static void app_exited(nav *ui, running *r, size_t *page) {
   const bool had_screen = r == front;
   if (had_screen && paused)
@@ -1071,12 +1118,18 @@ static void app_exited(nav *ui, running *r, size_t *page) {
   /* Tabs: no field has one. One line, for the ignore list. */
   sb_set(key, sb_str(r->dir), S("\t"), sb_str(r->exec), S("\t"), sb_str(r->arg));
   key.p[key.n = str_find(sb_str(key), '\n')] = '\0';
+  STRBUF(sizeof(r->dir.p) + 16) ini;
+  sb_set(ini, sb_str(r->dir), S("/port.ini"));
   str why;
   const bool ok = run_forget(r, &why);
   if (had_screen)
     go_home(ui);
-  if (!ok && !ignored(sb_str(key))) {
-    STRBUF(96) title;
+  STRBUF(96) title;
+  if (str_eq(why, S("exited with status 3")) && port_instructions(ini.p, &why)) {
+    /* portrun: files it Needs aren't there. Always said, never ignored. */
+    sb_set(title, sb_str(label), S(" needs files"));
+    show_failure(ui, sb_str(title), why, S(""));
+  } else if (!ok && !ignored(sb_str(key))) {
     sb_set(title, sb_str(label), S(" stopped"));
     show_failure(ui, sb_str(title), why, sb_str(key));
   }
@@ -1114,6 +1167,78 @@ static void key(unsigned code, bool down) {
     win_wake(UI_KEY, button << 1 | down);
 }
 
+/* `launcher launch`'s FIFO; the last path asked for, until the main loop takes it */
+static char ctl_fifo[256];
+static pthread_mutex_t ctl_lock = PTHREAD_MUTEX_INITIALIZER;
+static STRBUF(512) ctl_path;
+
+static void *ctl_thread(void *arg) {
+  (void)arg;
+  /* Read-write: never at EOF when a writer leaves */
+  FILE *f = fopen(ctl_fifo, "r+");
+  char line[512];
+  while (f != NULL && fgets(line, sizeof(line), f) != NULL) {
+    line[strcspn(line, "\n")] = '\0';
+    pthread_mutex_lock(&ctl_lock);
+    sb_set(ctl_path, str_c(line));
+    pthread_mutex_unlock(&ctl_lock);
+    win_wake(UI_LAUNCH, 0);
+  }
+  return NULL;
+}
+
+static bool open_ctl(void) {
+  const char *run = getenv("XDG_RUNTIME_DIR");
+  if (run == NULL)
+    return false;
+  snprintf(ctl_fifo, sizeof(ctl_fifo), "%s/launcher", run);
+  return (mkfifo(ctl_fifo, 0600) == 0 || errno == EEXIST) && spawn("ctl", ctl_thread, NULL);
+}
+
+/* The app whose tile `path` is (its ROM, folder or program), started as A on it does */
+static void launch_path(nav *ui) {
+  STRBUF(512) path;
+  pthread_mutex_lock(&ctl_lock);
+  sb_set(path, sb_str(ctl_path));
+  pthread_mutex_unlock(&ctl_lock);
+  if (front != NULL || modal.kind != MODAL_NONE) {
+    fprintf(stderr, "launcher: launch %s: not at home\n", path.p);
+    return;
+  }
+  /* What's loaded, then each category read again: pages are read when shown */
+  for (int pass = 0; pass < 2; pass++)
+    for (size_t i = 0; i < category_count; i++) {
+      if (pass == 1)
+        apps_scan(&categories[i]);
+      for (size_t j = 0; j < categories[i].count; j++) {
+        const app *a = &categories[i].apps[j];
+        if (a->exec.n > 0 && (str_eq(sb_str(a->arg), sb_str(path)) || str_eq(sb_str(a->dir), sb_str(path)))) {
+          start(ui, sb_str(a->name), sb_str(a->icon), sb_str(a->exec), sb_str(a->arg), sb_str(a->dir));
+          return;
+        }
+      }
+    }
+  fprintf(stderr, "launcher: launch %s: no such app\n", path.p);
+}
+
+/* `launcher launch PATH`: to the running launcher */
+static int request_launch(const char *arg) {
+  char path[PATH_MAX];
+  const char *run = getenv("XDG_RUNTIME_DIR");
+  if (realpath(arg, path) == NULL || run == NULL) {
+    fprintf(stderr, "launcher: %s: %s\n", arg, run == NULL ? "no XDG_RUNTIME_DIR" : strerror(errno));
+    return 1;
+  }
+  snprintf(ctl_fifo, sizeof(ctl_fifo), "%s/launcher", run);
+  const int fd = open(ctl_fifo, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0 || dprintf(fd, "%s\n", path) < 0) {
+    fprintf(stderr, "launcher: no launcher running (%s)\n", ctl_fifo);
+    return 1;
+  }
+  close(fd);
+  return 0;
+}
+
 /* False: quit */
 static bool input(nav *ui, int why, int value, size_t *page) {
   /* APPCTL_*, from the pad or a key */
@@ -1126,6 +1251,7 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     return false;
   case UI_VOLUME: show_volume(value); return true;
   case UI_HASHED: rescan(*page); return true;
+  case UI_LAUNCH: launch_path(ui); return true;
   case UI_EXITED: {
     running *r = run_find(value);
     if (r != NULL)
@@ -1315,7 +1441,15 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   return true;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "launch") == 0)
+    return request_launch(argv[2]);
+  if (argc == 3 && strcmp(argv[1], "screenshot") == 0)
+    return capture_ppm(argv[2]) ? 0 : 1;
+  if (argc != 1) {
+    fprintf(stderr, "usage: launcher [launch PATH]\n");
+    return 2;
+  }
   if (!win_connect(key)) {
     fprintf(stderr, "launcher: no Wayland display\n");
     return 1;
@@ -1335,6 +1469,8 @@ int main(void) {
   set_listening(true);
   open_pad();
   spawn("volume", volume_thread, NULL);
+  if (!open_ctl())
+    fprintf(stderr, "launcher: no launch FIFO\n");
   static nav ui = {.animate = true, .duration = 150};
   apps_init();
   sources_load();
@@ -1426,7 +1562,18 @@ int main(void) {
     const entry *chosen = NULL;
     const app *picked = NULL;
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
-    if (!paused && modal.kind >= MODAL_STORAGE) {
+    /* Between its start and its window covering ours: a port's splash */
+    asset splash = {.slot = GFX_PLACEHOLDER};
+    STRBUF(320) splash_path;
+    if (front != NULL && !paused && sb_set(splash_path, sb_str(front->dir), S("/splash.png")) &&
+        access(splash_path.p, F_OK) == 0)
+      splash = assets_get(sb_str(splash_path));
+    if (splash.slot != GFX_PLACEHOLDER) {
+      const float scale = MIN((float)w / splash.w, (float)h / splash.h);
+      gfx_push((gfx_quad){.x = (w - splash.w * scale) / 2, .y = (h - splash.h * scale) / 2,
+                          .w = splash.w * scale, .h = splash.h * scale, .u1 = 1, .v1 = 1,
+                          .color = 0xffffffff, .tex = splash.slot});
+    } else if (!paused && modal.kind >= MODAL_STORAGE) {
       chosen = folders_screen(&ui, w, h, view, &st);
     } else if (paused) {
       STRBUF(128) title;

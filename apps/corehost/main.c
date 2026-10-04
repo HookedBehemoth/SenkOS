@@ -527,7 +527,7 @@ static int64_t ns_now(void) {
  * keep the device's buffer half full, against the two clocks' drift. Then
  * a write finds room and returns at once. A core further off (PAL on 60 Hz)
  * isn't stretched: its writes wait, and the sound paces it. */
-#define OUT_RATE 48000 /* dmix's (asound.conf): one resampling, ours */
+#define OUT_RATE 48000 /* PipeWire's (pipewire.conf): one resampling, ours */
 #define MAX_SKEW 0.05
 #define RATE_CONTROL 0.005
 static unsigned swaps = 1; /* presents a frame: 2 for a 30 fps core at 60 Hz */

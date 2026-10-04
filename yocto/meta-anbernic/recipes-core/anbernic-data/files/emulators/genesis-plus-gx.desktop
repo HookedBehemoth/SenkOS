@@ -2,6 +2,6 @@
 Type=Application
 Name=Genesis Plus GX
 Comment=Mega Drive, Master System and Game Gear
-Exec=corehost /usr/lib/libretro/genesis_plus_gx_libretro.so %f
+Exec=corehost /usr/lib64/libretro/genesis_plus_gx_libretro.so %f
 MimeType=application/x-genesis-rom;application/x-sms-rom;application/x-gamegear-rom;
 Categories=Game;Emulator;

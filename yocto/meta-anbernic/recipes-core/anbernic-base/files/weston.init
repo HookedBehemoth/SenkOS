@@ -6,6 +6,10 @@
 # client fullscreen) and the launcher (one in /data/OS/overlay replaces the image's: `overlay`,
 # tools/deploy-launcher). The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
 if [ "$1" = session ]; then
+	# Sound: PipeWire on the card, WirePlumber linking streams to it, the Pulse socket for ports
+	pipewire </dev/null >/var/log/pipewire.log 2>&1 &
+	wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
+	pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
 	weston --backend=drm --shell=kiosk --modules=volume-keys.so --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1 &
 	while :; do
@@ -45,7 +49,7 @@ ui() {
 # Mesa in one sequential read, from the start: Weston's GL init page-faulting it in from squashfs
 # took ~400 ms more than with a warm cache. Launcher up at 1.80 s instead of 1.92 s with this
 # started right before Weston: reading it slows everything below, but less than it saves.
-cat /usr/lib/libgallium-*.so >/dev/null &
+cat /usr/lib64/libgallium-*.so >/dev/null &
 
 # cgroup v2: the UI (seatd, Weston, launcher) and the apps the launcher starts. Apps get all the
 # RAM but 160 MB, and run out of it on their own: the OOM kill takes the whole app. The UI wins

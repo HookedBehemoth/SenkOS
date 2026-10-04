@@ -39,3 +39,6 @@ local_conf_header:
     INHERIT += "rm_work"
     # build dirs live on /mnt/multimedia (see ./kas); rm_work still keeps them small
     BB_DISKMON_DIRS = "STOPTASKS,${TMPDIR},2G,100K STOPTASKS,${DL_DIR},2G,100K HALT,${TMPDIR},500M,10K"
+    # 31 GB: four of the big C++ cores (Flycast, PPSSPP, ...) at -j16 each ran the host out of memory
+    BB_NUMBER_THREADS = "6"
+    PARALLEL_MAKE = "-j 10"

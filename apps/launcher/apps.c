@@ -464,7 +464,7 @@ void sources_load(void) {
     str path = str_cut(&rest, '\n');
     const str system = str_cut(&path, '\t');
     for (size_t i = 0; i < category_count && path.n > 0 && path.p[0] == '/'; i++)
-      if (categories[i].roms.n > 0 && str_eq(categories[i].folder, system) &&
+      if (str_eq(categories[i].folder, system) &&
           sb_set(sources[source_count].path, path)) {
         sources[source_count++].category = i;
         break;

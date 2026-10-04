@@ -13,11 +13,18 @@
  *   PipeWire's and Pulse's; the X socket for Display=x11; private /tmp and
  *   /dev/shm
  *
+ * [Patch] (patch_args) and [Setup]'s Exec run once before the first start.
  * The pad is mapped to keys and mouse ([Keys], keys.c) out here. The game's
  * stdout and stderr go to STATE/<id>/log.txt.
  *
- * usage: portrun [-q] [-s state] [-l layers] <port folder> [args]
+ * usage: portrun [-q] [-r root] [-s state] [-l layers] <port folder> [args]
  * -q: no sound (no /dev/snd, no PipeWire or Pulse), for testing on a PC
+ * -r: the platform (/usr, /lib, /etc, ...) from another root: an aarch64 or
+ *     armhf sysroot on a PC, its programs run by qemu-user (binfmt)
+ *
+ * Exits with the game's status (128 + the signal that ended it), 2 when the
+ * port can't run here, 3 when files it Needs aren't there yet (the launcher
+ * shows its Instructions).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -49,7 +56,7 @@
 /* The host as the sandbox is built: pivot_root put it here */
 #define HOST "/oldroot"
 
-enum { LAYERS_MAX = 8, ARGS_MAX = 64, ENV_MAX = 96 };
+enum { LAYERS_MAX = 8, ARGS_MAX = 64, ENV_MAX = 96, PATCH_MAX = 16 };
 
 typedef struct {
   str name;
@@ -59,8 +66,11 @@ typedef struct {
 } layer;
 
 static struct {
-  str id, name, exec, layers, arch, display, libs, env, needs, instructions;
+  str id, name, exec, dir, layers, arch, display, libs, env, needs, instructions;
   str setup_exec, setup_layers;
+  /* [Patch]'s lines, in order: target, source */
+  str patch[PATCH_MAX][2];
+  size_t patches;
   bool network;
   keymap keys;
 } port;
@@ -71,7 +81,29 @@ static STRBUF(16) arch;
 static int width = 640, height = 480;
 /* Display=x11, the port's or a layer's: DISPLAY and the X socket */
 static bool x11;
+
+/* Weston's Xwayland when the session names none */
+static const char *display(void) {
+  const char *d = getenv("DISPLAY");
+  return d != NULL ? d : ":0";
+}
+/* The X socket and Xauthority, resolved before the pivot: under HOST an
+ * absolute symlink (/tmp -> /var/tmp) would point into the new root */
+static char x_socket[PATH_MAX], x_auth[PATH_MAX];
+/* -r: where the platform comes from, "" for this system's */
+static const char *platform = "";
+/* What the platform runs: the machine's own (not with -r) and each loader it
+ * has; [Setup] gets the first */
+static const struct {
+  const char *arch, *loader;
+} loaders[] = {
+    {"aarch64", "/lib/ld-linux-aarch64.so.1"},
+    {"armhf", "/lib/ld-linux-armhf.so.3"},
+    {"x86_64", "/lib64/ld-linux-x86-64.so.2"},
+};
 static bool quiet;
+/* Where in /port the next start() runs: the game's Dir, [Patch] and [Setup] in /port itself */
+static str run_dir;
 
 /* SIGTERM and SIGINT go down the chain to the game: us, the namespaces'
  * maker, pid 1, the game. The launcher's Quit signals all of us; one Quit
@@ -209,8 +241,9 @@ static bool passes(const char *item) {
 static layer layers[LAYERS_MAX];
 static size_t layer_count;
 
-/* The layers named in `names`, their files found and .ini read */
-static bool add_layers(str names) {
+/* The layers named in `names` for architecture `a`, their files found and
+ * .ini read */
+static bool add_layers(str names, str a) {
   for (str name; cfg_item(&names, &name);) {
     bool have = false;
     for (size_t i = 0; i < layer_count; i++)
@@ -223,10 +256,10 @@ static bool add_layers(str names) {
     }
     layer *l = &layers[layer_count++];
     *l = (layer){.name = name};
-    if (!sb_set(l->image, str_c(layer_dir), S("/"), name, S("."), sb_str(arch), S(".squashfs")) ||
+    if (!sb_set(l->image, str_c(layer_dir), S("/"), name, S("."), a, S(".squashfs")) ||
         (!exists(l->image.p) && !sb_set(l->image, str_c(layer_dir), S("/"), name, S(".squashfs"))) ||
         !exists(l->image.p)) {
-      fprintf(stderr, "portrun: no layer %.*s for %s in %s\n", (int)name.n, name.p, arch.p, layer_dir);
+      fprintf(stderr, "portrun: no layer %.*s for %.*s in %s\n", (int)name.n, name.p, (int)a.n, a.p, layer_dir);
       return false;
     }
     if ((l->fd = open(l->image.p, O_RDONLY | O_CLOEXEC)) < 0)
@@ -242,7 +275,7 @@ static bool add_layers(str names) {
       str key = r.key;
       const size_t open = str_find(key, '[');
       if (open < key.n) {
-        if (key.p[key.n - 1] != ']' || !str_eq(str_head(str_at(key, open + 1), key.n - open - 2), sb_str(arch)))
+        if (key.p[key.n - 1] != ']' || !str_eq(str_head(str_at(key, open + 1), key.n - open - 2), a))
           continue;
         key = str_head(key, open);
       }
@@ -273,6 +306,13 @@ static void read_port(void) {
       keys_set(&port.keys, r.key, r.value);
       continue;
     }
+    if (str_eq(r.section, S("Patch"))) {
+      if (port.patches < PATCH_MAX) {
+        port.patch[port.patches][0] = r.key;
+        port.patch[port.patches++][1] = r.value;
+      }
+      continue;
+    }
     if (str_eq(r.section, S("Setup"))) {
       if (str_eq(r.key, S("Exec")))
         port.setup_exec = r.value;
@@ -291,6 +331,7 @@ static void read_port(void) {
                  : str_eq(r.key, S("Env"))          ? &port.env
                  : str_eq(r.key, S("Needs"))        ? &port.needs
                  : str_eq(r.key, S("Instructions")) ? &port.instructions
+                 : str_eq(r.key, S("Dir"))          ? &port.dir
                                                     : NULL;
     if (field != NULL)
       *field = r.value;
@@ -303,19 +344,39 @@ static void read_port(void) {
   }
 }
 
-/* The first of the port's architectures this machine runs: its own, and
- * armhf on aarch64 with the 32-bit platform there */
-static bool pick_arch(void) {
+static bool runs(str a) {
   struct utsname u;
   uname(&u);
-  const str machine = str_c(u.machine);
+  if (platform[0] == '\0' && str_eq(a, str_c(u.machine)))
+    return true;
+  for (size_t i = 0; i < COUNTOF(loaders); i++) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof(p), "%s%s", platform, loaders[i].loader);
+    if (str_eq(a, str_c(loaders[i].arch)) && exists(p))
+      return true;
+  }
+  return false;
+}
+
+/* The platform's own architecture: the machine's, or with -r its first loader's */
+static str native_arch(void) {
+  static struct utsname u;
+  uname(&u);
+  for (size_t i = 0; platform[0] != '\0' && i < COUNTOF(loaders); i++)
+    if (runs(str_c(loaders[i].arch)))
+      return str_c(loaders[i].arch);
+  return str_c(u.machine);
+}
+
+/* The first of the port's architectures the platform runs */
+static bool pick_arch(void) {
   if (port.arch.n == 0)
-    return sb_set(arch, machine);
+    return sb_set(arch, native_arch());
   for (str a = port.arch, item; cfg_item(&a, &item);)
-    if (str_eq(item, machine) ||
-        (str_eq(item, S("armhf")) && str_eq(machine, S("aarch64")) && exists("/lib/ld-linux-armhf.so.3")))
+    if (runs(item))
       return sb_set(arch, item);
-  fprintf(stderr, "portrun: the port is for %.*s, this is %s\n", (int)port.arch.n, port.arch.p, u.machine);
+  fprintf(stderr, "portrun: the port is for %.*s, this platform runs %.*s\n", (int)port.arch.n, port.arch.p,
+          (int)native_arch().n, native_arch().p);
   return false;
 }
 
@@ -370,8 +431,9 @@ static void build_env(void) {
   env_fmt("XDG_RUNTIME_DIR=/run/user/%u", getuid());
   if (runtime != NULL && wayland != NULL)
     env_fmt("WAYLAND_DISPLAY=%s", strrchr(wayland, '/') ? strrchr(wayland, '/') + 1 : wayland);
-  if (x11 && getenv("DISPLAY") != NULL) {
-    env_fmt("DISPLAY=%s", getenv("DISPLAY"));
+  if (x11) {
+    env_fmt("DISPLAY=%s", display());
+    env_fmt("SDL_VIDEODRIVER=x11");
     if (getenv("XAUTHORITY") != NULL)
       env_fmt("XAUTHORITY=/run/user/%u/Xauthority", getuid());
   }
@@ -422,6 +484,44 @@ static void split(str exec, char **extra, int extra_count) {
   }
   for (int i = 0; i < extra_count && n < ARGS_MAX; i++)
     args[n++] = extra[i];
+  args[n] = NULL;
+}
+
+/* One [Patch] line as a command of the tools layer's, in /port:
+ *   file=old + diff  xdelta3: file is old patched with diff
+ *   dir/=archive     7-Zip unpacks archive (zip, 7z, tar, an installer .exe) into dir
+ *   archive=dir/     zip stores dir in archive (GameMaker's apk)
+ *   dir/=src/        src's files copied over dir's (the port's fixes over the player's files) */
+static void patch_args(str target, str source) {
+  static char buf[2 * PATH_MAX];
+  char *out = buf;
+  size_t n = 0;
+  /* Each a word of args, the string copied into buf */
+  str w[7] = {0};
+  const char *plus = memmem(source.p, source.n, " + ", 3);
+  char o[PATH_MAX];
+  if (plus != NULL) {
+    const size_t at = (size_t)(plus - source.p);
+    const str x[] = {S("xdelta3"), S("-d"), S("-f"), S("-s"), str_head(source, at), str_at(source, at + 3), target};
+    memcpy(w, x, sizeof(x));
+  } else if (target.n > 0 && target.p[target.n - 1] == '/' && source.n > 0 && source.p[source.n - 1] == '/') {
+    snprintf(o, sizeof(o), "%.*s.", (int)source.n, source.p);
+    const str x[] = {S("cp"), S("-R"), str_c(o), target};
+    memcpy(w, x, sizeof(x));
+  } else if (target.n > 0 && target.p[target.n - 1] == '/') {
+    snprintf(o, sizeof(o), "-o%.*s", (int)target.n, target.p);
+    const str x[] = {S("7zz"), S("x"), S("-y"), str_c(o), source};
+    memcpy(w, x, sizeof(x));
+  } else {
+    const str x[] = {S("zip"), S("-q"), S("-r"), S("-0"), target, source};
+    memcpy(w, x, sizeof(x));
+  }
+  for (size_t i = 0; i < COUNTOF(w) && w[i].p != NULL && out + w[i].n < buf + sizeof(buf); i++) {
+    memcpy(out, w[i].p, w[i].n);
+    out[w[i].n] = '\0';
+    args[n++] = out;
+    out += w[i].n + 1;
+  }
   args[n] = NULL;
 }
 
@@ -476,7 +576,7 @@ static int sandbox(int log) {
   static const char *const roots[] = {"usr", "bin", "sbin", "lib", "lib32", "lib64", "libx32", "etc"};
   for (size_t i = 0; i < COUNTOF(roots); i++) {
     char src[PATH_MAX], dst[PATH_MAX], target[PATH_MAX];
-    snprintf(src, sizeof(src), HOST "/%s", roots[i]);
+    snprintf(src, sizeof(src), HOST "%s/%s", platform, roots[i]);
     snprintf(dst, sizeof(dst), "/newroot/%s", roots[i]);
     struct stat st;
     if (lstat(src, &st) != 0)
@@ -536,16 +636,15 @@ static int sandbox(int log) {
       bind(src, dst, true);
     }
   }
-  const char *display = getenv("DISPLAY");
-  if (x11 && display != NULL && display[0] == ':') {
-    snprintf(src, sizeof(src), HOST "/tmp/.X11-unix/X%d", atoi(display + 1));
-    snprintf(dst, sizeof(dst), "/newroot/tmp/.X11-unix/X%d", atoi(display + 1));
+  if (x_socket[0] != '\0') {
+    snprintf(src, sizeof(src), HOST "%s", x_socket);
+    snprintf(dst, sizeof(dst), "/newroot/tmp/.X11-unix/X%d", atoi(display() + 1));
     bind(src, dst, true);
-    if (getenv("XAUTHORITY") != NULL) {
-      snprintf(src, sizeof(src), HOST "%s", getenv("XAUTHORITY"));
-      snprintf(dst, sizeof(dst), "/newroot/run/user/%u/Xauthority", getuid());
-      bind(src, dst, false);
-    }
+  }
+  if (x_auth[0] != '\0') {
+    snprintf(src, sizeof(src), HOST "%s", x_auth);
+    snprintf(dst, sizeof(dst), "/newroot/run/user/%u/Xauthority", getuid());
+    bind(src, dst, false);
   }
 
   /* The port and its state */
@@ -569,6 +668,10 @@ static int sandbox(int log) {
   if (umount2(HOST, MNT_DETACH) != 0 || chdir("/newroot") != 0 || syscall(SYS_pivot_root, ".", ".") != 0 ||
       umount2(".", MNT_DETACH) != 0 || chdir("/port") != 0)
     fail("enter the sandbox", NULL);
+  char dir[PATH_MAX];
+  snprintf(dir, sizeof(dir), "%.*s", (int)run_dir.n, run_dir.p);
+  if (run_dir.n > 0 && chdir(dir) != 0)
+    fail("enter", dir);
   struct mount_attr ro = {.attr_set = MOUNT_ATTR_RDONLY};
   if (mount_setattr(AT_FDCWD, "/", 0, &ro, sizeof(ro)) != 0)
     fail("read-only", "/");
@@ -629,7 +732,10 @@ static pid_t start(void) {
     _exit(1);
   const uid_t uid = getuid();
   const gid_t gid = getgid();
-  const int flags = CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWIPC | (port.network ? 0 : CLONE_NEWNET);
+  /* X11 clients share images with Xwayland through SysV shared memory (MIT-SHM): the session's
+   * IPC namespace, or the server can't attach the segments */
+  const int flags = CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | (x11 ? 0 : CLONE_NEWIPC) |
+                    (port.network ? 0 : CLONE_NEWNET);
   if (unshare(flags) != 0)
     fail("unshare", NULL);
   char map[64];
@@ -675,9 +781,13 @@ static bool find_program(const char *const *names, size_t count, char *out, size
 int main(int argc, char **argv) {
   const char *state = STATE, *layer_root = LAYERS;
   int opt;
-  while ((opt = getopt(argc, argv, "+qs:l:")) != -1) {
+  while ((opt = getopt(argc, argv, "+qr:s:l:")) != -1) {
     if (opt == 'q')
       quiet = true;
+    else if (opt == 'r') {
+      if ((platform = realpath(optarg, NULL)) == NULL)
+        fail("find", optarg);
+    }
     else if (opt == 's')
       state = optarg;
     else if (opt == 'l')
@@ -686,7 +796,7 @@ int main(int argc, char **argv) {
       return 2;
   }
   if (optind >= argc) {
-    fprintf(stderr, "usage: portrun [-q] [-s state] [-l layers] <port folder> [args]\n");
+    fprintf(stderr, "usage: portrun [-q] [-r root] [-s state] [-l layers] <port folder> [args]\n");
     return 2;
   }
   if (realpath(argv[optind], port_dir) == NULL)
@@ -709,10 +819,15 @@ int main(int argc, char **argv) {
   read_port();
   x11 = str_eq(port.display, S("x11"));
   display_size();
-  if (!pick_arch() || !needs_met())
+  if (!pick_arch())
     return 2;
-  const bool setup = port.setup_exec.n > 0;
-  if (!add_layers(port.layers) || (setup && !add_layers(port.setup_layers)))
+  if (!needs_met())
+    return 3;
+  const bool setup = port.setup_exec.n > 0 || port.patches > 0;
+  /* [Setup]'s and [Patch]'s tools are the platform's own, whatever the game is built for */
+  if (!add_layers(port.layers, sb_str(arch)) ||
+      (setup && (!add_layers(port.setup_layers, native_arch()) ||
+                 (port.patches > 0 && !add_layers(S("tools"), native_arch())))))
     return 2;
   static const char *const fusers[] = {"squashfuse_ll", "squashfuse"};
   if (layer_count > 0 && (!find_program(fusers, COUNTOF(fusers), squashfuse, sizeof(squashfuse)) ||
@@ -721,24 +836,40 @@ int main(int argc, char **argv) {
     return 2;
   }
   build_env();
+  if (x11 && display()[0] == ':') {
+    char p[64];
+    snprintf(p, sizeof(p), "/tmp/.X11-unix/X%d", atoi(display() + 1));
+    if (realpath(p, x_socket) == NULL)
+      x_socket[0] = '\0';
+    if (getenv("XAUTHORITY") == NULL || realpath(getenv("XAUTHORITY"), x_auth) == NULL)
+      x_auth[0] = '\0';
+  }
   struct sigaction sa = {.sa_handler = forward, .sa_flags = SA_RESTART};
   sigaction(SIGTERM, &sa, NULL);
   sigaction(SIGINT, &sa, NULL);
 
-  /* [Setup] once, with its layers too */
+  /* [Patch], then [Setup]'s Exec, once, with their layers too */
   STRBUF(PATH_MAX) done;
   sb_set(done, str_c(state_dir), S("/setup.done"));
   if (setup && !exists(done.p)) {
-    split(port.setup_exec, NULL, 0);
-    const int status = finish(start());
-    if (status != 0) {
-      fprintf(stderr, "portrun: setup exited with %d, see %s/log.txt\n", status, state_dir);
-      return status;
+    for (size_t i = 0; i <= port.patches; i++) {
+      if (i < port.patches)
+        patch_args(port.patch[i][0], port.patch[i][1]);
+      else if (port.setup_exec.n > 0)
+        split(port.setup_exec, NULL, 0);
+      else
+        break;
+      const int status = finish(start());
+      if (status != 0) {
+        fprintf(stderr, "portrun: %s exited with %d, see %s/log.txt\n", args[0], status, state_dir);
+        return status;
+      }
     }
     fclose(fopen(done.p, "w"));
   }
 
   split(port.exec, argv + optind + 1, argc - optind - 1);
+  run_dir = port.dir;
   const pid_t pid = start();
   const int child = (int)syscall(SYS_pidfd_open, pid, 0);
   keys_run(&port.keys, child);

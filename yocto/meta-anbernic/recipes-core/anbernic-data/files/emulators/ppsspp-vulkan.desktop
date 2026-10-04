@@ -2,6 +2,6 @@
 Type=Application
 Name=PPSSPP (Vulkan)
 Comment=PSP, Vulkan
-Exec=env COREHOST_RENDER=vulkan corehost /usr/lib/libretro/ppsspp_libretro.so %f
+Exec=env COREHOST_RENDER=vulkan corehost /usr/lib64/libretro/ppsspp_libretro.so %f
 MimeType=application/x-psp-rom;
 Categories=Game;Emulator;

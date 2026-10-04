@@ -2,6 +2,6 @@
 Type=Application
 Name=Flycast (Vulkan)
 Comment=Dreamcast, Vulkan
-Exec=env COREHOST_RENDER=vulkan corehost /usr/lib/libretro/flycast_libretro.so %f
+Exec=env COREHOST_RENDER=vulkan corehost /usr/lib64/libretro/flycast_libretro.so %f
 MimeType=application/x-dc-rom;
 Categories=Game;Emulator;

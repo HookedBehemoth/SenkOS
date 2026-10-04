@@ -2,6 +2,6 @@
 Type=Application
 Name=Snes9x
 Comment=SNES
-Exec=corehost /usr/lib/libretro/snes9x_libretro.so %f
+Exec=corehost /usr/lib64/libretro/snes9x_libretro.so %f
 MimeType=application/x-snes-rom;
 Categories=Game;Emulator;

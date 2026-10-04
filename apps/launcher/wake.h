@@ -9,4 +9,5 @@ enum {
   UI_VOLUME,               /* percent, 0 when muted */
   UI_EXITED,               /* an app's pid: it is gone (running.h) */
   UI_HASHED,               /* a ROM's CRC is known: titles and box art may be (romdb.h) */
+  UI_LAUNCH,               /* `launcher launch PATH` asked for an app (ctl_path) */
 };

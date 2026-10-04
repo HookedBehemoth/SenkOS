@@ -2,6 +2,6 @@
 Type=Application
 Name=Flycast
 Comment=Dreamcast, OpenGL ES
-Exec=corehost /usr/lib/libretro/flycast_libretro.so %f
+Exec=corehost /usr/lib64/libretro/flycast_libretro.so %f
 MimeType=application/x-dc-rom;
 Categories=Game;Emulator;

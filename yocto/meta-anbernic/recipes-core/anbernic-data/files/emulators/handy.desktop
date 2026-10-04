@@ -2,6 +2,6 @@
 Type=Application
 Name=Handy
 Comment=Atari Lynx
-Exec=corehost /usr/lib/libretro/handy_libretro.so %f
+Exec=corehost /usr/lib64/libretro/handy_libretro.so %f
 MimeType=application/x-atari-lynx-rom;
 Categories=Game;Emulator;

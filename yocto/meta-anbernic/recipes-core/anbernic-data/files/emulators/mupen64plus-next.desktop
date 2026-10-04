@@ -2,6 +2,6 @@
 Type=Application
 Name=Mupen64Plus-Next
 Comment=Nintendo 64
-Exec=corehost /usr/lib/libretro/mupen64plus_next_libretro.so %f
+Exec=corehost /usr/lib64/libretro/mupen64plus_next_libretro.so %f
 MimeType=application/x-n64-rom;
 Categories=Game;Emulator;

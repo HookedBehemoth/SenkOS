@@ -26,6 +26,7 @@ typedef struct {
   struct wl_shm *shm;
   struct weston_capture_v1 *capture;
   uint32_t shm_format;
+  bool have_format; /* ARGB8888's wl_shm code is 0 */
   bool bgra; /* else RGBA */
   int width, height;
   int done; /* 1 complete, -1 failed */
@@ -57,8 +58,9 @@ static void format(void *data, struct weston_capture_source_v1 *source,
                    uint32_t drm_format) {
   (void)source;
   capture *c = data;
-  if (c->shm_format != 0)
+  if (c->have_format)
     return;
+  c->have_format = true;
   switch (drm_format) {
   case 0x34325241: /* AR24 */
     c->shm_format = WL_SHM_FORMAT_ARGB8888;
@@ -72,6 +74,8 @@ static void format(void *data, struct weston_capture_source_v1 *source,
   case WL_SHM_FORMAT_XBGR8888:
     c->shm_format = drm_format;
     break;
+  default:
+    c->have_format = false;
   }
 }
 
@@ -154,7 +158,8 @@ static uint8_t *blur(uint8_t *a, int w, int h, bool bgra) {
   return b;
 }
 
-uint8_t *capture_blurred(int *w, int *h) {
+/* One frame of `source` as it was read back (bgra: in BGRA, else RGBA), to free() */
+static uint8_t *capture_frame(uint32_t which, int *w, int *h, bool *bgra) {
   struct wl_display *display = wl_display_connect(NULL);
   if (display == NULL)
     return NULL;
@@ -167,14 +172,13 @@ uint8_t *capture_blurred(int *w, int *h) {
   struct wl_buffer *buffer = NULL;
   void *pixels = MAP_FAILED;
   size_t bytes = 0;
-  uint8_t *rgba = NULL;
+  uint8_t *frame = NULL;
   if (c.output == NULL || c.shm == NULL || c.capture == NULL)
     goto out;
-  source = weston_capture_v1_create(c.capture, c.output,
-                                    WESTON_CAPTURE_V1_SOURCE_THUMBNAIL);
+  source = weston_capture_v1_create(c.capture, c.output, which);
   weston_capture_source_v1_add_listener(source, &source_listener, &c);
   wl_display_roundtrip(display);
-  if (c.shm_format == 0 || c.width <= 0 || c.height <= 0)
+  if (!c.have_format || c.width <= 0 || c.height <= 0)
     goto out;
 
   const int stride = c.width * 4;
@@ -197,9 +201,11 @@ uint8_t *capture_blurred(int *w, int *h) {
   weston_capture_source_v1_capture(source, buffer);
   while (c.done == 0 && wl_display_dispatch(display) >= 0)
     ;
-  if (c.done > 0 && (rgba = blur(pixels, c.width, c.height, c.bgra)) != NULL) {
+  if (c.done > 0 && (frame = malloc(bytes)) != NULL) {
+    memcpy(frame, pixels, bytes);
     *w = c.width;
     *h = c.height;
+    *bgra = c.bgra;
   }
 
 out:
@@ -217,5 +223,30 @@ out:
     wl_output_destroy(c.output);
   wl_registry_destroy(registry);
   wl_display_disconnect(display);
+  return frame;
+}
+
+uint8_t *capture_blurred(int *w, int *h) {
+  bool bgra;
+  uint8_t *frame = capture_frame(WESTON_CAPTURE_V1_SOURCE_THUMBNAIL, w, h, &bgra);
+  uint8_t *rgba = frame != NULL ? blur(frame, *w, *h, bgra) : NULL;
+  free(frame);
   return rgba;
+}
+
+bool capture_ppm(const char *path) {
+  int w, h;
+  bool bgra;
+  uint8_t *frame = capture_frame(WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER, &w, &h, &bgra);
+  FILE *f = frame != NULL ? fopen(path, "wb") : NULL;
+  bool ok = f != NULL && fprintf(f, "P6\n%d %d\n255\n", w, h) > 0;
+  for (size_t i = 0; ok && i < (size_t)w * h; i++) {
+    const uint8_t *p = frame + i * 4;
+    const uint8_t rgb[3] = {p[bgra ? 2 : 0], p[1], p[bgra ? 0 : 2]};
+    ok = fwrite(rgb, 3, 1, f) == 1;
+  }
+  if (f != NULL && fclose(f) != 0)
+    ok = false;
+  free(frame);
+  return ok;
 }

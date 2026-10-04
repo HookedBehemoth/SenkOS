@@ -1,8 +1,10 @@
 # Ports: declarative games from the PortMaster library
 
-Status: `portrun` (apps/portrun), port folders in the launcher, fuse3 and squashfuse, and the
-ports repository (PortMaster-Decl: converter, layers, the smoke-test ports below) exist. The
-platform additions (multilib, Xwayland, PipeWire, the SDL2 family) don't yet.
+Status: `portrun` (apps/portrun), port folders in the launcher (with the port's `splash.png`
+until its window is up), fuse3 and squashfuse, and the ports repository (PortMaster-Decl:
+converter, layers including our `love`, `tools`, `gmloader` and `compat`, the smoke-test ports
+below) exist. The platform has the SDL2 family, Xwayland (Weston's, on `:0`) and PipeWire; armhf
+multilib (32-bit in `/lib32`, `/usr/lib32`; ours in `/lib64`, `/usr/lib64`) is in the image.
 
 PortMaster's ~1,400 ports are worth having; its packaging isn't. Every port is a bash script that
 finds PortMaster through a hard-coded probe, sources CFW detection, `sudo`s `chmod`, `mount` and
@@ -33,7 +35,7 @@ its runtime squashfs files.
 | Godot (FRT 2/3, Godot 4) | 13% | layers |
 | gl4es (desktop GL on GLES) | 12% | layer `gl4es`, only where Mesa's own GL won't do |
 | uses `DISPLAY_WIDTH/HEIGHT` | 11% | runtime: `${WIDTH}`, `${HEIGHT}` in `Exec=`/`Env=` |
-| first-run patching (`patcher.txt`, xdelta3, 7z, innoextract) | 10% | installer: `[Setup]`, with a tools layer |
+| first-run patching (`patcher.txt`, xdelta3, 7z, innoextract) | 10% | the converter, in the repo; `[Patch]` for xdelta3 and apk zips; `[Setup]` for the rest |
 | `sed -i` its own files at launch | 7% | `[Setup]` (once), or `${…}` in `Exec=`/`Env=` |
 | muOS splash, text-input mode, westonpack | 9%, 8%, 5% | launcher splash; `Keys=` text mode; Xwayland |
 | `modprobe` (e.g. unload the touchscreen) | 9 ports | gone |
@@ -77,14 +79,22 @@ Layers=frt_3.5.2;
 Arch=aarch64;armhf
 # wayland (default) or x11 (gets DISPLAY and Xwayland)
 Display=wayland
+# Where Exec runs, in the port's folder (default: the folder itself)
+Dir=gamedata
 Keys=wizardorb.keys
 Env=FRT_NO_EXIT_SHORTCUTS=1;
 # Files the player supplies (paid games); the launcher shows Instructions until they're there
 Needs=gamedata/index.pck;
 Instructions=Buy the game on Steam and copy its files into gamedata/.
 
+[Patch]
+# Once, after Needs are met, in order, into the port's state; the tools layer's programs, no shell
+# file=old + diff: xdelta3; dir/=archive: 7-Zip unpacks it; archive=dir/: zip stores dir (an apk)
+gamedata/game.droid=gamedata/data.win + gamedata/patch.xdelta3
+
 [Setup]
-# Once, after Needs are met, before the first run; again when they change
+# Once, after Needs are met, before the first run; again when they change. Its layers are the
+# machine's architecture, whatever the game's is (tools, not the game)
 Layers=gmtoolkit;tools;
 Exec=tools/patchscript
 ```
@@ -97,7 +107,8 @@ the first one the OS runs.
 
 Every port gets the same process; nothing in the port configures it:
 
-- **Namespaces**, unprivileged (user + mount + pid + ipc; network only with `Network=true`):
+- **Namespaces**, unprivileged (user + mount + pid + ipc; network only with `Network=true`; `Display=x11`
+  ports keep the session's IPC namespace: MIT-SHM hands Xwayland SysV shared memory):
   - `/port`: the port, read-only, under an overlayfs whose upper is in its state: games that
     write into their own folder work, and an update replaces the port without touching saves
   - `/home`: the port's state; `HOME`, `XDG_*_HOME` point into it
@@ -113,7 +124,10 @@ Every port gets the same process; nothing in the port configures it:
 - **Process**: in `session/apps` like every app. The launcher's Quit (SIGTERM) is passed down to
   the game; when portrun goes, the namespaces' pid 1 and with it everything in them goes too.
   stdout/stderr to the state's `log.txt`
-- **[Setup]** runs once (the state's `setup.done`) in the same sandbox with its layers added
+- **[Patch]**, then **[Setup]**, run once (the state's `setup.done`) in the same sandbox, with
+  the tools layer and Setup's layers added. For files that ship with the port the converter does
+  the script's first-run work in the repo (unpacking, renaming, removing the Windows leftovers) and
+  keeps only the xdelta3 patches and apk zips as `[Patch]`: the original file and its patch stay
 
 Nothing runs as root for a port, and a port sees neither the rest of `/data` nor other ports.
 
@@ -157,13 +171,13 @@ Layers we need:
 
 | Layer | For | Ports | From |
 |---|---|--:|---|
-| `gmloader` | GameMaker (gmloader-next); each port bundles its own today | 553 | new, from the ports' copies |
+| `gmloader` | GameMaker (gmloader-next: the build most ports carry on aarch64, since the 2026 ones fail on games linking libOpenSLES; the newest on armhf); the port links `lib/<ABI>` to the layer's Android libraries, which gmloader opens relative to its working directory | 553 | new, from the ports' copies |
 | `frt_*`, `godot_*` | Godot 2–4 | ~220 | PortMaster |
 | `love` 11 | LÖVE | 92 | new (ports bundle it) |
 | `mono`, `dotnet` | XNA/FNA games | 31 | PortMaster |
 | `zulu*` | Java | ~15 | PortMaster |
 | `python`, `pyxel_*`, `renpy_*`, `rlvm`, `solarus`, `ags` | the rest | ~30 | PortMaster |
-| `compat` | old sonames ports link: libjpeg.so.8, libFLAC.so.8, FFmpeg 4 (avcodec.so.58), OpenSSL 1.1, gnutls, nghttp2, SDL 1.2 and its image/mixer, ICU 63/66, libffi.so.7, libzip.so.4, libnsl.so.1, Boost 1.67, OpenEXR/libraw | ~85 | new, from the Debian 10/11 and Ubuntu 20.04 packages ports were built against (darkOS's `fetch_compat_libs.sh` puts some in its OS) |
+| `compat` | old sonames ports link: libjpeg.so.8, libFLAC.so.8, OpenSSL 1.1, gnutls, nghttp2, SDL 1.2 and its image/mixer, ICU 63/66, libffi.so.7, libzip.so.4, theora 1.1; not yet libnsl.so.1, Boost 1.67, OpenEXR/libraw; not FFmpeg 4 (left out, below) | ~85 | new, from the Debian 10/11 and Ubuntu 20.04 packages ports were built against, with what they need that the platform lacks (`tools/compat-layer.py`, ~33 MB) |
 | `gl4es` | desktop GL games where Mesa's own GL isn't enough | (12%, to test) | ports' copies |
 | `box64` | x86-64 Linux games | 4 | ports' copies |
 | `gmtoolkit`, `tools` | `[Setup]`: UndertaleModTool CLI; bash, GNU coreutils/sed/grep/find, xdelta3, 7z, innoextract, unzip, dos2unix, ffmpeg | 150 | PortMaster; new |
@@ -198,9 +212,9 @@ What's left is 100 ports (aarch64 and armhf together):
 
 | | Ports | Here |
 |---|--:|---|
-| only old sonames: jpeg.so.8 44, FLAC.so.8 13, FFmpeg 4 ~10, OpenSSL 1.1, gnutls/nghttp2 | 72 | `compat` |
+| only old sonames: jpeg.so.8 44, FLAC.so.8 13, OpenSSL 1.1, gnutls/nghttp2 | 72 | `compat` |
 | more old sonames: SDL 1.2 (rlvm, Ken's Labyrinth, Stunt Car Racer), ICU 63/66, libffi.so.7, libzip.so.4, libnsl.so.1, Boost 1.67, WildMidi 2, OpenEXR/libraw (Waking Mars) | 11 | `compat` |
-| small stable libs the platform lacks: libXmu, libXxf86dga, libGLU, libgthread, avahi-client | 5 | platform |
+| small stable libs the platform lacks: libXmu, libXpm (westonpack brought it), libXxf86dga, libGLU, libgthread, avahi-client | 10 | platform |
 | the library is in its layer (libmonosgen in Mono) | 1 | nothing to do |
 | a bundled copy of a platform library built for another CFW: SDL2 linked to Rockchip's librga (Jedi Academy, Jedi Outcast), OpenAL linked to sndio (Minecraft, Revenge of the Titans; their libjawt is the JRE layer's) | 4 | the fork drops the copy |
 | links `libSDL2.so` without a version (Biolab) | 1 | the fork fixes the link (`patchelf --replace-needed`) |
@@ -219,9 +233,9 @@ them at runtime; they are the platform all the same. Newest glibc symbol any por
 | | What |
 |---|---|
 | kernel | `USER_NS`, `PID_NS`, `IPC_NS`, `NET_NS`, `OVERLAY_FS`, `FUSE_FS` (layers), `UINPUT` (on); `COMPAT` (armhf); `ZRAM` + `SWAP` (on by default, so no port runs `mkswap`) |
-| platform, aarch64 and armhf (multilib) | glibc, libstdc++/libgcc_s, zlib, bzip2; Mesa (EGL, GLES, GL, Vulkan) with glvnd; libwayland-client/-egl, libxkbcommon, libudev; SDL2 and its image/mixer/ttf/net/gfx; ALSA, libpulse, OpenAL; X11 client libs (with Xmu, Xxf86dga), GLU; png, freetype, fontconfig, ogg/vorbis/opus, FLAC, mpg123, modplug, theora, sndfile, curl, expat, zstd, sqlite, uuid, glib, cairo/pixman, dbus |
+| platform, aarch64 and armhf (multilib) | glibc, libstdc++/libgcc_s, zlib, bzip2; Mesa (EGL, GLES, GL, Vulkan) with glvnd; libwayland-client/-egl, libxkbcommon, libudev; SDL2 and its image/mixer/ttf/net/gfx; ALSA, libpulse, OpenAL; X11 client libs (with Xmu, Xpm, Xxf86dga), GLU; png, freetype (with bzip2: ports call `FT_Stream_OpenBzip2`), fontconfig, ogg/vorbis/opus, FLAC, mpg123, modplug, theora, sndfile, curl, expat, zstd, sqlite, uuid, glib, cairo/pixman, dbus |
 | display | Weston with Xwayland (`Display=x11`: westonpack's Godot 4 and Java ports, box64's GLX games, the JRE's AWT) |
-| audio | PipeWire with pipewire-pulse, pipewire-alsa and its libjack: Pulse clients (9% link libpulse), ALSA and JACK clients share one mixer; fluidsynth |
+| audio | PipeWire with pipewire-pulse, pipewire-alsa and its libjack: Pulse clients (9% link libpulse), ALSA and JACK clients share one mixer (armhf ALSA through a 32-bit build of just the pipewire-alsa plugin); fluidsynth |
 | runtime | `portrun`, the key mapper, the installer (catalog, download, hash, unpack, `[Setup]`), squashfuse |
 
 **Multilib in the OS** rather than a 32-bit layer keeps the installer OS-agnostic: an OS says
@@ -286,8 +300,9 @@ OS-agnostic:
   run; Wizard Orb stops at its `Needs=`. Shards of God's AGS layer needs 1.1's libtheora, which
   the PC doesn't have: the port brings it for aarch64 only.
 - **aarch64 and armhf, emulated**: qemu-user with binfmt and an aarch64 + armhf sysroot with
-  llvmpipe (the image's Mesa has only Panfrost). The GameMaker and aarch64-only ports; slow,
-  for correctness.
+  llvmpipe (`tools/ports-sysroot`: Debian trixie with the platform; the image's Mesa has only
+  Panfrost). `portrun -r <sysroot>` takes the platform from there, and runs what the sysroot has
+  loaders for. The GameMaker, aarch64- and armhf-only ports; slow, for correctness.
 - **On the device**: Panfrost, speed, the pad. Debug tools (gdb, strace, ltrace, valgrind) as an
   overlay in `OS/overlay`, not in the image.
 
@@ -295,3 +310,6 @@ OS-agnostic:
 
 - **PortMaster's GUI, harbourmaster, gptokeyb, control.txt, mod_*.txt, westonpack.** Not run,
   not shipped.
+- **FFmpeg 4 (avcodec.so.58), for now.** Its ports (Aleph One's three Marathons, ctp2, both
+  Moonlights) are to be rebuilt from source against a current FFmpeg instead. Ports that bundle
+  their own FFmpeg (q2pro, nox-decomp, OpenEnroth, OpenChaos, songo5, tinamp) work as they are.
