@@ -8,7 +8,9 @@ Box art is matched by name the way RetroArch does it, deduplicated by a
 perceptual hash (keeping the best source of each group), shrunk to fit
 128x128, flattened onto the launcher's tile colour and stored as WebP.
 
-usage: tools/boxart-pack "Nintendo - Game Boy Advance" BOXARTS_DIR OUT.pack
+usage: tools/boxart-pack SYSTEM BOXARTS_DIR [SYSTEM BOXARTS_DIR ...] OUT.pack
+  SYSTEM: libretro-database name, "Nintendo - Game Boy Advance"; its No-Intro
+    and Redump DATs both count. More than one: a folder holding several (GB in GBC)
   BOXARTS_DIR: Named_Boxarts of the system's libretro-thumbnails repo
 Needs Python 3 with Pillow (WebP) and numpy. The metadata is downloaded.
 """
@@ -170,34 +172,60 @@ def sanitize(name):
     return re.sub(r'[&*/:`<>?\\|"]', '_', name)
 
 
-def main():
-    if len(sys.argv) != 4:
-        sys.exit(__doc__)
-    system, boxarts, out = sys.argv[1:]
+def image(path):
+    """The image a file is, or links to: an archive zip has the repos' symlinks
+    as text files holding the target, some chained, some broken; None if none"""
+    for _ in range(8):
+        try:
+            with open(path, 'rb') as f:
+                head = f.read(1024)
+            target = head.decode()
+        except OSError:
+            return None
+        except UnicodeDecodeError:
+            return path
+        if len(head) == 1024 or '\0' in target or '/' in target:
+            return path
+        path = os.path.join(os.path.dirname(path), target)
+    return None
 
+
+def main():
+    if len(sys.argv) < 4 or len(sys.argv) % 2:
+        sys.exit(__doc__)
+    *pairs, out = sys.argv[1:]
     entries = {}  # crc -> metadata
-    for values, crcs in games(fetch('no-intro', system)):
-        for crc in crcs:
-            entries[crc] = {'title': values.get('name', '')}
+    for system, boxarts in zip(pairs[::2], pairs[1::2]):
+        add_system(entries, system, boxarts)
+    write(entries, out)
+
+
+def add_system(entries, system, boxarts):
+    mine = {}
+    for kind in ('no-intro', 'redump'):
+        for values, crcs in games(fetch(kind, system)):
+            for crc in crcs:
+                mine[crc] = {'title': values.get('name', '')}
     for field in FIELDS:
         for values, crcs in games(fetch(field, system)):
             value = values.get('users' if field == 'maxusers' else field)
             for crc in crcs:
-                if crc in entries and value:
-                    entries[crc][field] = value
-    if not entries:
-        sys.exit(f'no No-Intro DAT for "{system}"')
+                if crc in mine and value:
+                    mine[crc][field] = value
+    if not mine:
+        sys.exit(f'no No-Intro or Redump DAT for "{system}"')
 
     # Box art by exact name, else by the same title without the tags: a
     # revision or re-release that has none of its own
-    files = {f[:-4]: os.path.join(boxarts, f) for f in os.listdir(boxarts) if f.endswith('.png')}
+    files = {f[:-4]: image(os.path.join(boxarts, f)) for f in os.listdir(boxarts) if f.endswith('.png')}
+    files = {k: v for k, v in files.items() if v}
     by_title = {}
     for name in sorted(files):
         by_title.setdefault(name.split(' (')[0], []).append(name)
 
     def tags(name):
         return set(re.findall(r'\(([^)]*)\)', name))
-    for e in entries.values():
+    for e in mine.values():
         name = sanitize(e['title'])
         if name not in files:
             # The one sharing the most tags: same region before any other
@@ -205,8 +233,13 @@ def main():
             name = max(near, key=lambda n: len(tags(n) & tags(name)), default=None)
         if name is not None:
             e['art'] = files[name]
+    print(f'{system}: {len(mine)} ROMs, {sum("art" in e for e in mine.values())} with box art', file=sys.stderr)
+    entries.update(mine)
+
+
+def write(entries, out):
     paths = sorted({e['art'] for e in entries.values() if 'art' in e})
-    print(f'{system}: {len(entries)} ROMs, {len(paths)} box arts', file=sys.stderr)
+    print(f'{len(entries)} ROMs, {len(paths)} box arts', file=sys.stderr)
 
     with Pool() as pool:
         prints = pool.map(fingerprint, paths, chunksize=8)
@@ -254,7 +287,7 @@ def main():
             string(t['title']), string(t['extra']), t['regions'], t['languages'], t['flags'],
             *(lookups[k][e.get(f, '')] for k, f in enumerate(('genre', 'developer', 'publisher', 'franchise'))),
             image_of.get(e.get('art'), 0xffff), int(year) if year.isdigit() else 0,
-            min(int(e.get('maxusers', 0)), 255), t['revision'])
+            min(int(e.get('maxusers', 0)), 255), min(t['revision'], 255))
     list_bytes = bytearray()
     list_offsets = []
     for values in lists:

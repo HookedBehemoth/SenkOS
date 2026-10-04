@@ -162,6 +162,20 @@ static bool zip_crc(FILE *f, uint32_t *crc) {
   return false;
 }
 
+/* No-Intro's CRCs leave out the dumpers' headers: iNES, fwNES, Lynx's and a
+ * SNES or PC Engine copier's 512 bytes. In a zip they count; the DATs carry
+ * NES and Lynx headered CRCs too. */
+static size_t header_size(str path, const uint8_t *buf, size_t n, off_t size) {
+  if (n >= 16 && (memcmp(buf, "NES\x1a", 4) == 0 || memcmp(buf, "FDS\x1a", 4) == 0))
+    return 16;
+  if (n >= 64 && memcmp(buf, "LYNX", 5) == 0)
+    return 64;
+  if (n >= 512 && size % 1024 == 512 &&
+      (str_iends(path, S(".smc")) || str_iends(path, S(".sfc")) || str_iends(path, S(".pce"))))
+    return 512;
+  return 0;
+}
+
 static bool file_crc(str path, uint32_t *crc) {
   FILE *f = fopen(path.p, "rb");
   if (f == NULL)
@@ -172,7 +186,10 @@ static bool file_crc(str path, uint32_t *crc) {
   } else {
     static uint8_t buf[1 << 16];
     uLong c = crc32(0, NULL, 0);
-    size_t n;
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    struct stat st;
+    const size_t skip = header_size(path, buf, n, fstat(fileno(f), &st) == 0 ? st.st_size : 0);
+    c = crc32(c, buf + skip, (uInt)(n - skip));
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
       c = crc32(c, buf, (uInt)n);
     ok = !ferror(f);
