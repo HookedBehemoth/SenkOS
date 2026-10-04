@@ -379,24 +379,6 @@ static void publish_host(void) {
   host_published = true;
 }
 
-/* "L1+A", names in any order; "" is none. False on a name we don't know. */
-static bool parse_combo(const char *text, uint16_t *out) {
-  *out = 0;
-  while (*text) {
-    const size_t len = strcspn(text, "+");
-    int b = APPCTL_BUTTONS;
-    for (int i = 0; i < APPCTL_BUTTONS; i++)
-      if (strlen(appctl_button_names[i]) == len && strncmp(appctl_button_names[i], text, len) == 0)
-        b = i;
-    if (b == APPCTL_BUTTONS)
-      return false;
-    *out |= 1u << b;
-    text += len + (text[len] == '+');
-  }
-  return true;
-}
-
-
 /* "key=value" lines; values that no longer exist are skipped. The game's
  * file: bindings only, its own. */
 static void load_options_from(const char *path, bool game) {
@@ -410,7 +392,7 @@ static void load_options_from(const char *path, bool game) {
     *eq = '\0';
     appctl_option *o = option(line);
     uint16_t combo;
-    if (o != NULL && o->kind == APPCTL_BINDING && parse_combo(eq + 1, &combo)) {
+    if (o != NULL && o->kind == APPCTL_BINDING && appctl_parse_combo(eq + 1, &combo)) {
       atomic_store(&o->buttons, combo);
       if (game) {
         atomic_store(&o->value, 1);
@@ -428,16 +410,6 @@ static void load_options_from(const char *path, bool game) {
 static void load_options(void) {
   load_options_from(default_opt_path, false);
   load_options_from(opt_path, false);
-}
-
-static void write_combo(FILE *f, const char *key, uint16_t combo) {
-  fprintf(f, "%s=", key);
-  for (int b = 0, first = 1; b < APPCTL_BUTTONS; b++)
-    if (combo & (1u << b)) {
-      fprintf(f, "%s%s", first ? "" : "+", appctl_button_names[b]);
-      first = 0;
-    }
-  fputc('\n', f);
 }
 
 /* After the launcher changed something: a binding made the game's own keeps
@@ -466,7 +438,7 @@ static void save_options(void) {
   for (uint32_t i = 0; i < n; i++) {
     const appctl_option *o = &shm->options[i];
     if (o->kind == APPCTL_BINDING)
-      write_combo(f, o->key, own[i] ? core_combo[i] : atomic_load(&o->buttons));
+      appctl_write_combo(f, o->key, own[i] ? core_combo[i] : atomic_load(&o->buttons));
     else
       fprintf(f, "%s=%s\n", o->key, o->values[atomic_load(&o->value) % APPCTL_VALUES]);
     any_own |= own[i];
@@ -480,7 +452,7 @@ static void save_options(void) {
     return;
   for (uint32_t i = 0; i < n; i++)
     if (own[i])
-      write_combo(f, shm->options[i].key, atomic_load(&shm->options[i].buttons));
+      appctl_write_combo(f, shm->options[i].key, atomic_load(&shm->options[i].buttons));
   fclose(f);
 }
 
@@ -1916,6 +1888,7 @@ static bool open_ctl(void) {
   shm->magic = APPCTL_MAGIC;
   shm->version = APPCTL_VERSION;
   shm->slots = 1;
+  shm->flags = APPCTL_OWN_BINDINGS;
   return true;
 }
 

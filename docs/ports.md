@@ -122,6 +122,10 @@ Every port gets the same process; nothing in the port configures it:
   `${HEIGHT}`, `${PORT}` expanded in `Exec=` and `Env=`. Never `LD_PRELOAD`.
 - **Input**: `Keys=` maps the pad to keyboard and mouse through uinput, run by portrun outside
   the sandbox (gptokeyb's `.gptk` keys, so the conversion is mechanical). Menu + Start quits.
+  Each `[Keys]` line is a binding in the pause menu's Input (portrun takes the launcher's control
+  channel, appctl.h): the row is what it presses, its value a pad combo recorded there, kept in
+  the state's `bindings`; the bigger of two held combos wins. Paused, the game's process group is
+  stopped, portrun stays up to take the changes.
 - **Process**: in `session/apps` like every app. The launcher's Quit (SIGTERM) is passed down to
   the game; when portrun goes, the namespaces' pid 1 and with it everything in them goes too.
   stdout/stderr to the state's `log.txt`

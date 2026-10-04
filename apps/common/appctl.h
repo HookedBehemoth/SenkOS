@@ -14,7 +14,10 @@
 #pragma once
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #define APPCTL_ENV "LAUNCHER_CTL"
 #define APPCTL_MAGIC 0x4c544341u /* "ACTL" */
@@ -87,4 +90,37 @@ typedef struct {
   /* Set after the options are filled in */
   _Atomic uint32_t option_count;
   appctl_option options[APPCTL_OPTIONS_MAX];
+  /* APPCTL_OWN_BINDINGS */
+  uint32_t flags;
 } appctl_shm;
+
+/* Its bindings can be made this game's own (Y in the launcher), apart from the defaults
+ * (corehost: the core's) */
+#define APPCTL_OWN_BINDINGS 1u
+
+/* A binding saved as "key=L1+A", names in any order; "" is none. False on a name we don't know. */
+static inline bool appctl_parse_combo(const char *text, uint16_t *out) {
+  *out = 0;
+  while (*text) {
+    const size_t len = strcspn(text, "+");
+    int b = APPCTL_BUTTONS;
+    for (int i = 0; i < APPCTL_BUTTONS; i++)
+      if (strlen(appctl_button_names[i]) == len && strncmp(appctl_button_names[i], text, len) == 0)
+        b = i;
+    if (b == APPCTL_BUTTONS)
+      return false;
+    *out |= 1u << b;
+    text += len + (text[len] == '+');
+  }
+  return true;
+}
+
+static inline void appctl_write_combo(FILE *f, const char *key, uint16_t combo) {
+  fprintf(f, "%s=", key);
+  for (int b = 0, first = 1; b < APPCTL_BUTTONS; b++)
+    if (combo & (1u << b)) {
+      fprintf(f, "%s%s", first ? "" : "+", appctl_button_names[b]);
+      first = 0;
+    }
+  fputc('\n', f);
+}

@@ -17,6 +17,11 @@
  * The pad is mapped to keys and mouse ([Keys], keys.c) out here. The game's
  * stdout and stderr go to STATE/<id>/log.txt.
  *
+ * Started by the launcher, it takes its control channel (appctl.h): each
+ * [Keys] binding is a row in Input, its combo changed there and kept in
+ * STATE/<id>/bindings; the game, in a process group of its own, is stopped
+ * while paused.
+ *
  * usage: portrun [-q] [-r root] [-s state] [-l layers] <port folder> [args]
  * -q: no sound (no /dev/snd, no PipeWire or Pulse), for testing on a PC
  * -r: the platform (/usr, /lib, /etc, ...) from another root: an aarch64 or
@@ -26,6 +31,7 @@
  * port can't run here, 3 when files it Needs aren't there yet (the launcher
  * shows its Instructions).
  */
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -37,8 +43,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
@@ -107,12 +115,19 @@ static str run_dir;
 
 /* SIGTERM and SIGINT go down the chain to the game: us, the namespaces'
  * maker, pid 1, the game. The launcher's Quit signals all of us; one Quit
- * twice is harmless. */
+ * twice is harmless. In a group of its own (the launcher's, below) the game
+ * gets it from us, and a stopped one is woken to take it. */
 static volatile pid_t next_pid;
+static bool own_group;
 
 static void forward(int sig) {
-  if (next_pid > 0)
-    kill(next_pid, sig);
+  if (next_pid <= 0)
+    return;
+  kill(next_pid, sig);
+  if (own_group) {
+    kill(-next_pid, sig);
+    kill(-next_pid, SIGCONT);
+  }
 }
 
 static void fail(const char *what, const char *arg) {
@@ -137,7 +152,7 @@ static void mkdirs(const char *path) {
 static bool exists(const char *path) { return access(path, F_OK) == 0; }
 
 /* `src` at `dst`, read-only unless `rw`; false when there's no `src` */
-static bool bind(const char *src, const char *dst, bool rw) {
+static bool bind_mount(const char *src, const char *dst, bool rw) {
   struct stat st;
   if (stat(src, &st) != 0)
     return false;
@@ -161,12 +176,12 @@ static bool bind(const char *src, const char *dst, bool rw) {
   return true;
 }
 
-/* bind() of a host path, at the same place in the new root */
+/* bind_mount() of a host path, at the same place in the new root */
 static bool bind_host(const char *path, bool rw) {
   char src[PATH_MAX], dst[PATH_MAX];
   snprintf(src, sizeof(src), HOST "%s", path);
   snprintf(dst, sizeof(dst), "/newroot%s", path);
-  return bind(src, dst, rw);
+  return bind_mount(src, dst, rw);
 }
 
 /* `in` with ${ARCH}, ${WIDTH}, ${HEIGHT} put in */
@@ -586,7 +601,7 @@ static int sandbox(int log) {
       if (n < 0 || (target[n] = '\0', symlink(target, dst) != 0))
         fail("link", dst);
     } else if (S_ISDIR(st.st_mode)) {
-      bind(src, dst, false);
+      bind_mount(src, dst, false);
     }
   }
   bind_host("/sys", false);
@@ -633,18 +648,18 @@ static int sandbox(int log) {
       else
         snprintf(src, sizeof(src), HOST "%s/%s", runtime, name);
       snprintf(dst, sizeof(dst), "/newroot/run/user/%u/%s", getuid(), base);
-      bind(src, dst, true);
+      bind_mount(src, dst, true);
     }
   }
   if (x_socket[0] != '\0') {
     snprintf(src, sizeof(src), HOST "%s", x_socket);
     snprintf(dst, sizeof(dst), "/newroot/tmp/.X11-unix/X%d", atoi(display() + 1));
-    bind(src, dst, true);
+    bind_mount(src, dst, true);
   }
   if (x_auth[0] != '\0') {
     snprintf(src, sizeof(src), HOST "%s", x_auth);
     snprintf(dst, sizeof(dst), "/newroot/run/user/%u/Xauthority", getuid());
-    bind(src, dst, false);
+    bind_mount(src, dst, false);
   }
 
   /* The port and its state */
@@ -655,7 +670,7 @@ static int sandbox(int log) {
   if (mount("overlay", "/newroot/port", "overlay", MS_NOSUID | MS_NODEV, data) != 0)
     fail("mount overlay", data);
   snprintf(src, sizeof(src), HOST "%s/home", state_dir);
-  bind(src, "/newroot/home", true);
+  bind_mount(src, "/newroot/home", true);
   for (size_t i = 0; i < layer_count; i++) {
     snprintf(src, sizeof(src), "/layers/%.*s", (int)layers[i].name.n, layers[i].name.p);
     snprintf(dst, sizeof(dst), "/newroot/layers/%.*s", (int)layers[i].name.n, layers[i].name.p);
@@ -724,9 +739,14 @@ static pid_t start(void) {
   const pid_t pid = fork();
   if (pid != 0) {
     close(out);
+    /* Both: whichever runs first */
+    if (own_group && pid > 0)
+      setpgid(pid, pid);
     next_pid = pid;
     return pid;
   }
+  if (own_group)
+    setpgid(0, 0);
   prctl(PR_SET_PDEATHSIG, SIGKILL);
   if (getppid() != parent)
     _exit(1);
@@ -763,6 +783,136 @@ static int finish(pid_t pid) {
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
     ;
   return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
+/* The launcher's control channel, -1 without one */
+static int ctl = -1;
+static appctl_shm *shm;
+static char bindings_path[PATH_MAX];
+
+static void load_bindings(void) {
+  FILE *f = fopen(bindings_path, "r");
+  char line[128];
+  while (f != NULL && fgets(line, sizeof(line), f) != NULL) {
+    line[strcspn(line, "\n")] = '\0';
+    char *eq = strchr(line, '=');
+    uint16_t combo;
+    if (eq == NULL || (*eq = '\0', !appctl_parse_combo(eq + 1, &combo)))
+      continue;
+    for (int i = 0; i < port.keys.n; i++)
+      if (strcmp(port.keys.b[i].button, line) == 0)
+        port.keys.b[i].combo = combo;
+  }
+  if (f != NULL)
+    fclose(f);
+}
+
+static void save_bindings(void) {
+  FILE *f = fopen(bindings_path, "w");
+  for (int i = 0; f != NULL && i < port.keys.n; i++)
+    appctl_write_combo(f, port.keys.b[i].button, port.keys.b[i].combo);
+  if (f != NULL)
+    fclose(f);
+}
+
+/* Takes the channel the launcher passed, if it is one of this size, and publishes a binding row
+ * for each [Keys] line: what it presses ("Mouse movement up"), the combo saved for it */
+static void open_ctl(void) {
+  int sock, mem;
+  struct stat st;
+  const char *env = getenv(APPCTL_ENV);
+  if (env == NULL || sscanf(env, "%d,%d", &sock, &mem) != 2)
+    return;
+  void *map = MAP_FAILED;
+  if (fstat(mem, &st) == 0 && st.st_size == sizeof(appctl_shm))
+    map = mmap(NULL, sizeof(appctl_shm), PROT_READ | PROT_WRITE, MAP_SHARED, mem, 0);
+  close(mem);
+  if (map == MAP_FAILED)
+    return;
+  /* Not squashfuse's or the game's */
+  fcntl(sock, F_SETFD, FD_CLOEXEC);
+  ctl = sock;
+  shm = map;
+  own_group = true;
+  snprintf(bindings_path, sizeof(bindings_path), "%s/bindings", state_dir);
+  load_bindings();
+  const int n = MIN(port.keys.n, APPCTL_OPTIONS_MAX);
+  for (int i = 0; i < n; i++) {
+    const key_binding *b = &port.keys.b[i];
+    appctl_option *o = &shm->options[i];
+    snprintf(o->key, sizeof(o->key), "%s", b->button);
+    snprintf(o->label, sizeof(o->label), "%s", b->target);
+    o->label[0] = (char)toupper((unsigned char)o->label[0]);
+    for (char *c = o->label; *c != '\0'; c++)
+      *c = *c == '_' ? ' ' : *c;
+    o->kind = APPCTL_BINDING;
+    o->category = APPCTL_INPUT;
+    atomic_store(&o->buttons, b->combo);
+  }
+  atomic_store(&shm->option_count, (uint32_t)n);
+  shm->slots = 0;
+  shm->flags = 0;
+  shm->version = APPCTL_VERSION;
+  shm->magic = APPCTL_MAGIC;
+}
+
+/* One request, answered; false once the launcher is gone */
+static bool control(pid_t game) {
+  appctl_msg m;
+  const ssize_t n = recv(ctl, &m, sizeof(m), MSG_DONTWAIT);
+  if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR))
+    return false;
+  if (n != sizeof(m))
+    return true;
+  m.result = 0;
+  switch (m.op) {
+  case APPCTL_PAUSE:
+    keys_release(&port.keys);
+    kill(-game, SIGSTOP);
+    break;
+  case APPCTL_RESUME:
+    kill(-game, SIGCONT);
+    keys_resume(&port.keys);
+    break;
+  case APPCTL_OPTIONS:
+    for (int i = 0; i < MIN(port.keys.n, APPCTL_OPTIONS_MAX); i++)
+      port.keys.b[i].combo = atomic_load(&shm->options[i].buttons);
+    keys_apply(&port.keys);
+    save_bindings();
+    break;
+  default: m.result = -ENOSYS;
+  }
+  send(ctl, &m, sizeof(m), MSG_NOSIGNAL);
+  return true;
+}
+
+/* Until `pid` is gone: the launcher's requests, and for the game the pad mapped */
+static int wait_for(pid_t pid, bool game) {
+  const int child = (int)syscall(SYS_pidfd_open, pid, 0);
+  if (game)
+    (void)keys_open(&port.keys);
+  while (child >= 0) {
+    struct pollfd p[3] = {{child, POLLIN, 0}, {ctl, POLLIN, 0}, {port.keys.open ? port.keys.pad : -1, POLLIN, 0}};
+    const int n = poll(p, 3, keys_moving(&port.keys) ? 16 : -1);
+    if ((n < 0 && errno != EINTR) || p[0].revents != 0)
+      break;
+    if (n == 0)
+      keys_move(&port.keys);
+    if (n <= 0)
+      continue;
+    if (p[1].revents != 0 && !control(pid)) {
+      close(ctl);
+      ctl = -1;
+    }
+    if (p[2].revents & (POLLERR | POLLHUP))
+      keys_close(&port.keys);
+    else if (p[2].revents != 0)
+      keys_input(&port.keys);
+  }
+  keys_close(&port.keys);
+  if (child >= 0)
+    close(child);
+  return finish(pid);
 }
 
 /* The first of `names` on PATH */
@@ -817,6 +967,7 @@ int main(int argc, char **argv) {
     snprintf(layer_dir, sizeof(layer_dir), "%s", layer_root);
 
   read_port();
+  open_ctl();
   x11 = str_eq(port.display, S("x11"));
   display_size();
   if (!pick_arch())
@@ -859,7 +1010,7 @@ int main(int argc, char **argv) {
         split(port.setup_exec, NULL, 0);
       else
         break;
-      const int status = finish(start());
+      const int status = wait_for(start(), false);
       if (status != 0) {
         fprintf(stderr, "portrun: %s exited with %d, see %s/log.txt\n", args[0], status, state_dir);
         return status;
@@ -870,8 +1021,5 @@ int main(int argc, char **argv) {
 
   split(port.exec, argv + optind + 1, argc - optind - 1);
   run_dir = port.dir;
-  const pid_t pid = start();
-  const int child = (int)syscall(SYS_pidfd_open, pid, 0);
-  keys_run(&port.keys, child);
-  return finish(pid);
+  return wait_for(start(), true);
 }

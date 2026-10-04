@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/uinput.h>
-#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +68,16 @@ void keys_set(keymap *k, str name, str value) {
     fprintf(stderr, "portrun: [Keys] %.*s: not a button\n", (int)name.n, name.p);
     return;
   }
+  /* The button's again (back and select are one): the later line */
+  key_binding *to = NULL;
+  for (int i = 0; i < k->n && to == NULL; i++)
+    if (k->b[i].combo == 1u << b)
+      to = &k->b[i];
+  if (to == NULL && k->n == KEYS_MAX)
+    return;
+  key_binding kb = {.combo = 1u << b};
+  snprintf(kb.button, sizeof(kb.button), "%.*s", (int)name.n, name.p);
+  snprintf(kb.target, sizeof(kb.target), "%.*s", (int)value.n, value.p);
   static const struct {
     const char *name;
     int8_t dx, dy, wheel;
@@ -77,19 +86,18 @@ void keys_set(keymap *k, str name, str value) {
       {"mouse_movement_left", -1, 0, 0}, {"mouse_movement_right", 1, 0, 0},
       {"mouse_wheel_up", 0, 0, 1}, {"mouse_wheel_down", 0, 0, -1},
   };
-  for (size_t i = 0; i < COUNTOF(moves); i++)
-    if (str_ieq(value, str_c(moves[i].name))) {
-      k->dx[b] = moves[i].dx, k->dy[b] = moves[i].dy, k->wheel[b] = moves[i].wheel;
-      k->any = true;
-      return;
-    }
-  for (size_t i = 0; i < COUNTOF(names); i++)
-    if (str_ieq(value, str_c(names[i].name))) {
-      k->code[b] = names[i].code;
-      k->any = true;
-      return;
-    }
-  fprintf(stderr, "portrun: [Keys] %.*s=%.*s: no such key\n", (int)name.n, name.p, (int)value.n, value.p);
+  bool known = false;
+  for (size_t i = 0; i < COUNTOF(moves) && !known; i++)
+    if ((known = str_ieq(value, str_c(moves[i].name))))
+      kb.dx = moves[i].dx, kb.dy = moves[i].dy, kb.wheel = moves[i].wheel;
+  for (size_t i = 0; i < COUNTOF(names) && !known; i++)
+    if ((known = str_ieq(value, str_c(names[i].name))))
+      kb.code = names[i].code;
+  if (!known) {
+    fprintf(stderr, "portrun: [Keys] %.*s=%.*s: no such key\n", (int)name.n, name.p, (int)value.n, value.p);
+    return;
+  }
+  *(to != NULL ? to : &k->b[k->n++]) = kb;
 }
 
 static void emit(int fd, uint16_t type, uint16_t code, int32_t value) {
@@ -106,9 +114,9 @@ static int create(const keymap *k) {
   ioctl(fd, UI_SET_EVBIT, EV_KEY);
   ioctl(fd, UI_SET_EVBIT, EV_REL);
   ioctl(fd, UI_SET_EVBIT, EV_SYN);
-  for (int b = 0; b < APPCTL_BUTTONS; b++)
-    if (k->code[b] != 0)
-      ioctl(fd, UI_SET_KEYBIT, k->code[b]);
+  for (int i = 0; i < k->n; i++)
+    if (k->b[i].code != 0)
+      ioctl(fd, UI_SET_KEYBIT, k->b[i].code);
   /* A pointer needs a button for libinput to take it as one */
   ioctl(fd, UI_SET_KEYBIT, BTN_LEFT);
   ioctl(fd, UI_SET_RELBIT, REL_X);
@@ -124,49 +132,101 @@ static int create(const keymap *k) {
   return fd;
 }
 
-void keys_run(const keymap *k, int until) {
-  int pad = -1, out = -1;
-  if (!k->any || (pad = pad_open(O_NONBLOCK)) < 0 || (out = create(k)) < 0) {
-    if (pad >= 0)
-      close(pad);
-    return;
+bool keys_open(keymap *k) {
+  k->open = false;
+  if (k->n == 0 || (k->pad = pad_open(O_NONBLOCK)) < 0)
+    return false;
+  if ((k->out = create(k)) < 0) {
+    close(k->pad);
+    return false;
   }
-  const int step = k->step > 0 ? k->step : 4;
-  uint16_t held = 0;
-  for (;;) {
-    int dx = 0, dy = 0;
-    for (int b = 0; b < APPCTL_BUTTONS; b++)
-      if (held >> b & 1)
-        dx += k->dx[b], dy += k->dy[b];
-    /* A frame's movement while one is held */
-    struct pollfd p[2] = {{.fd = pad, .events = POLLIN}, {.fd = until, .events = POLLIN}};
-    const int n = poll(p, 2, dx != 0 || dy != 0 ? 16 : -1);
-    if (n < 0 && errno != EINTR)
-      break;
-    if (p[1].revents != 0 || p[0].revents & (POLLERR | POLLHUP))
-      break;
-    if (n == 0) {
-      if (dx != 0)
-        emit(out, EV_REL, REL_X, dx * step);
-      if (dy != 0)
-        emit(out, EV_REL, REL_Y, dy * step);
-      emit(out, EV_SYN, SYN_REPORT, 0);
+  k->held = k->ignored = 0;
+  return k->open = true;
+}
+
+void keys_close(keymap *k) {
+  if (!k->open)
+    return;
+  ioctl(k->out, UI_DEV_DESTROY);
+  close(k->out);
+  close(k->pad);
+  k->open = false;
+}
+
+void keys_apply(keymap *k) {
+  if (!k->open)
+    return;
+  bool full[KEYS_MAX];
+  for (int i = 0; i < k->n; i++)
+    full[i] = k->b[i].combo != 0 && (k->held & k->b[i].combo) == k->b[i].combo;
+  for (int i = 0; i < k->n; i++) {
+    bool want = full[i];
+    /* L1 + A held doesn't also press what A does */
+    for (int j = 0; j < k->n && want; j++)
+      want = !(full[j] && (k->b[j].combo & k->b[i].combo) &&
+               __builtin_popcount(k->b[j].combo) > __builtin_popcount(k->b[i].combo));
+    key_binding *b = &k->b[i];
+    if (want == b->on)
+      continue;
+    b->on = want;
+    if (b->code != 0)
+      emit(k->out, EV_KEY, b->code, want);
+    else if (b->wheel != 0 && want)
+      emit(k->out, EV_REL, REL_WHEEL, b->wheel);
+  }
+  emit(k->out, EV_SYN, SYN_REPORT, 0);
+}
+
+void keys_input(keymap *k) {
+  struct input_event e;
+  while (k->open && read(k->pad, &e, sizeof(e)) == sizeof(e)) {
+    const int b = e.type == EV_KEY && e.value != 2 ? pad_button(e.code) : -1;
+    if (b < 0)
+      continue;
+    const uint16_t bit = 1u << b;
+    if (k->ignored & bit) {
+      if (!e.value)
+        k->ignored &= ~bit;
       continue;
     }
-    struct input_event e;
-    while (read(pad, &e, sizeof(e)) == sizeof(e)) {
-      const int b = e.type == EV_KEY && e.value != 2 ? pad_button(e.code) : -1;
-      if (b < 0)
-        continue;
-      held = e.value ? held | 1u << b : held & ~(1u << b);
-      if (k->code[b] != 0)
-        emit(out, EV_KEY, k->code[b], e.value);
-      else if (k->wheel[b] != 0 && e.value)
-        emit(out, EV_REL, REL_WHEEL, k->wheel[b]);
-      emit(out, EV_SYN, SYN_REPORT, 0);
-    }
+    k->held = e.value ? k->held | bit : k->held & ~bit;
   }
-  ioctl(out, UI_DEV_DESTROY);
-  close(out);
-  close(pad);
+  keys_apply(k);
+}
+
+bool keys_moving(const keymap *k) {
+  for (int i = 0; k->open && i < k->n; i++)
+    if (k->b[i].on && (k->b[i].dx != 0 || k->b[i].dy != 0))
+      return true;
+  return false;
+}
+
+void keys_move(keymap *k) {
+  int dx = 0, dy = 0;
+  for (int i = 0; i < k->n; i++)
+    if (k->b[i].on)
+      dx += k->b[i].dx, dy += k->b[i].dy;
+  const int step = k->step > 0 ? k->step : 4;
+  if (dx != 0)
+    emit(k->out, EV_REL, REL_X, dx * step);
+  if (dy != 0)
+    emit(k->out, EV_REL, REL_Y, dy * step);
+  emit(k->out, EV_SYN, SYN_REPORT, 0);
+}
+
+void keys_release(keymap *k) {
+  k->held = 0;
+  keys_apply(k);
+}
+
+void keys_resume(keymap *k) {
+  if (!k->open)
+    return;
+  k->held = 0;
+  k->ignored = pad_held(k->pad);
+  /* The launcher had the pad grabbed: what queued meanwhile is stale */
+  struct input_event e;
+  while (read(k->pad, &e, sizeof(e)) == sizeof(e))
+    ;
+  keys_apply(k);
 }

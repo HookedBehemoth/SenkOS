@@ -1437,7 +1437,7 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     set_binding(front, settings_focus, 0);
     return true;
   }
-  if (in_settings && settings_focus >= 0 && button == APPCTL_Y &&
+  if (in_settings && settings_focus >= 0 && button == APPCTL_Y && (front->shm->flags & APPCTL_OWN_BINDINGS) &&
       front->shm->options[settings_focus].kind == APPCTL_BINDING) {
     appctl_option *o = &front->shm->options[settings_focus];
     atomic_store(&o->value, !atomic_load(&o->value));
@@ -1630,7 +1630,9 @@ int main(int argc, char **argv) {
         const bool on_binding = settings_focus >= 0 &&
                                 front->shm->options[settings_focus].kind == APPCTL_BINDING;
         const str hint = capture.option >= 0 ? S("Hold the buttons, then let go of the first")
-                          : on_binding        ? S("A: record    X: clear    Y: this game")
+                          : on_binding && (front->shm->flags & APPCTL_OWN_BINDINGS)
+                                              ? S("A: record    X: clear    Y: this game")
+                          : on_binding        ? S("A: record    X: clear")
                                               : S("");
         if (hint.n > 0)
           ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, DIM);
