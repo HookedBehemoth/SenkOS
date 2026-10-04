@@ -15,3 +15,4 @@ corehost_map_up=R2+Up
 corehost_map_down=R2+Down
 corehost_map_left=R2+Left
 corehost_map_right=R2+Right
+mupen64plus-EnableCopyColorToRDRAM=Off

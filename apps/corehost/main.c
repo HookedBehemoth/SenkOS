@@ -151,11 +151,12 @@ static uint8_t started_with[APPCTL_OPTIONS_MAX];
 static bool restart;
 /* stem: the saves' path but for the extension; rom_stem: the ROM's */
 static char opt_path[512], stem[512], rom_stem[512], save_dir[512], default_opt_path[512];
-/* This game's own bindings (Y in the launcher: their value is 1), in
- * CORE/ROM.opt beside CORE.opt; the core's combo for each is kept to go back
- * to */
+/* This game's own options (Y in the launcher: their own is 1), in
+ * CORE/ROM.opt beside CORE.opt; the core's value and combo for each are kept
+ * to go back to. own: as last seen. */
 static char game_opt_path[1100];
 static bool own[APPCTL_OPTIONS_MAX];
+static uint8_t core_value[APPCTL_OPTIONS_MAX];
 static uint16_t core_combo[APPCTL_OPTIONS_MAX];
 /* Rewind's ring, a whole state a slot; no slots: no rewind */
 static size_t state_size, rewind_slots, rewind_head, rewind_count;
@@ -277,6 +278,7 @@ static appctl_option *new_option(const char *key, const char *label, int categor
   o->kind = APPCTL_CHOICE;
   o->category = category;
   atomic_store(&o->value, 0);
+  atomic_store(&o->own, 0);
   atomic_store(&o->buttons, 0);
   return o;
 }
@@ -380,7 +382,7 @@ static void publish_host(void) {
 }
 
 /* "key=value" lines; values that no longer exist are skipped. The game's
- * file: bindings only, its own. */
+ * file: its own. */
 static void load_options_from(const char *path, bool game) {
   FILE *f = fopen(path, "r");
   char line[256];
@@ -392,41 +394,62 @@ static void load_options_from(const char *path, bool game) {
     *eq = '\0';
     appctl_option *o = option(line);
     uint16_t combo;
+    bool known = false;
     if (o != NULL && o->kind == APPCTL_BINDING && appctl_parse_combo(eq + 1, &combo)) {
       atomic_store(&o->buttons, combo);
-      if (game) {
-        atomic_store(&o->value, 1);
-        own[o - shm->options] = true;
-      }
+      known = true;
     }
-    for (unsigned i = 0; o != NULL && !game && i < o->count; i++)
-      if (strcmp(o->values[i], eq + 1) == 0)
+    for (unsigned i = 0; o != NULL && o->kind == APPCTL_CHOICE && i < o->count; i++)
+      if (strcmp(o->values[i], eq + 1) == 0) {
         atomic_store(&o->value, i);
+        known = true;
+      }
+    if (known && game) {
+      atomic_store(&o->own, 1);
+      own[o - shm->options] = true;
+    }
   }
   if (f != NULL)
     fclose(f);
 }
 
+/* The image's defaults, the core's file, then the game's own: before the
+ * game loads, so the core starts with them */
 static void load_options(void) {
   load_options_from(default_opt_path, false);
   load_options_from(opt_path, false);
+  memset(own, 0, sizeof(own));
+  for (uint32_t i = 0; i < atomic_load(&shm->option_count); i++) {
+    core_combo[i] = atomic_load(&shm->options[i].buttons);
+    core_value[i] = atomic_load(&shm->options[i].value);
+    atomic_store(&shm->options[i].own, 0);
+  }
+  load_options_from(game_opt_path, true);
 }
 
-/* After the launcher changed something: a binding made the game's own keeps
- * the core's combo aside, one given back gets it again */
+/* After the launcher changed something: an option made the game's own keeps
+ * the core's value aside, one given back gets it again */
 static void sync_own(void) {
   const uint32_t n = atomic_load(&shm->option_count);
   for (uint32_t i = 0; i < n; i++) {
     appctl_option *o = &shm->options[i];
-    if (o->kind != APPCTL_BINDING)
-      continue;
-    const bool now = atomic_load(&o->value) != 0;
-    if (!now && own[i])
+    const bool now = atomic_load(&o->own) != 0;
+    if (!now && own[i]) {
       atomic_store(&o->buttons, core_combo[i]);
-    else if (!now)
+      atomic_store(&o->value, core_value[i]);
+    } else if (!now) {
       core_combo[i] = atomic_load(&o->buttons);
+      core_value[i] = atomic_load(&o->value);
+    }
     own[i] = now;
   }
+}
+
+static void write_option(FILE *f, const appctl_option *o, uint8_t value, uint16_t combo) {
+  if (o->kind == APPCTL_BINDING)
+    appctl_write_combo(f, o->key, combo);
+  else
+    fprintf(f, "%s=%s\n", o->key, o->values[value % APPCTL_VALUES]);
 }
 
 static void save_options(void) {
@@ -437,10 +460,10 @@ static void save_options(void) {
   bool any_own = false;
   for (uint32_t i = 0; i < n; i++) {
     const appctl_option *o = &shm->options[i];
-    if (o->kind == APPCTL_BINDING)
-      appctl_write_combo(f, o->key, own[i] ? core_combo[i] : atomic_load(&o->buttons));
+    if (own[i])
+      write_option(f, o, core_value[i], core_combo[i]);
     else
-      fprintf(f, "%s=%s\n", o->key, o->values[atomic_load(&o->value) % APPCTL_VALUES]);
+      write_option(f, o, atomic_load(&o->value), atomic_load(&o->buttons));
     any_own |= own[i];
   }
   fclose(f);
@@ -452,19 +475,15 @@ static void save_options(void) {
     return;
   for (uint32_t i = 0; i < n; i++)
     if (own[i])
-      appctl_write_combo(f, shm->options[i].key, atomic_load(&shm->options[i].buttons));
+      write_option(f, &shm->options[i], atomic_load(&shm->options[i].value), atomic_load(&shm->options[i].buttons));
   fclose(f);
 }
 
 /* The host's rows anew, with what was saved: the core's file, then the
- * game's own bindings */
+ * game's own */
 static void publish_and_load(void) {
   publish_host();
   load_options();
-  memset(own, 0, sizeof(own));
-  for (uint32_t i = 0; i < atomic_load(&shm->option_count); i++)
-    core_combo[i] = atomic_load(&shm->options[i].buttons);
-  load_options_from(game_opt_path, true);
 }
 
 static void sw_frame(const void *data, unsigned w, unsigned h, size_t pitch);
@@ -1888,7 +1907,7 @@ static bool open_ctl(void) {
   shm->magic = APPCTL_MAGIC;
   shm->version = APPCTL_VERSION;
   shm->slots = 1;
-  shm->flags = APPCTL_OWN_BINDINGS;
+  shm->flags = APPCTL_OWN_OPTIONS;
   return true;
 }
 

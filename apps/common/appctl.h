@@ -75,11 +75,13 @@ typedef struct {
   char label[APPCTL_TEXT];
   char values[APPCTL_VALUES][APPCTL_TEXT];
   uint8_t count;
-  /* index into values; a binding's: 1 when it is this game's own, not the
-   * core's. The launcher writes it. */
+  /* A choice's index into values. The launcher writes it. */
   _Atomic uint8_t value;
   uint8_t kind;
   uint8_t category;
+  /* 1: this game's own value (or combo), apart from the defaults. The
+   * launcher toggles it where the app has APPCTL_OWN_OPTIONS. */
+  _Atomic uint8_t own;
   _Atomic uint16_t buttons; /* a binding's: 1 << APPCTL_A ...; 0: none */
 } appctl_option;
 
@@ -90,13 +92,13 @@ typedef struct {
   /* Set after the options are filled in */
   _Atomic uint32_t option_count;
   appctl_option options[APPCTL_OPTIONS_MAX];
-  /* APPCTL_OWN_BINDINGS */
+  /* APPCTL_OWN_OPTIONS */
   uint32_t flags;
 } appctl_shm;
 
-/* Its bindings can be made this game's own (Y in the launcher), apart from the defaults
+/* Its options can be made this game's own (Y in the launcher), apart from the defaults
  * (corehost: the core's) */
-#define APPCTL_OWN_BINDINGS 1u
+#define APPCTL_OWN_OPTIONS 1u
 
 /* A binding saved as "key=L1+A", names in any order; "" is none. False on a name we don't know. */
 static inline bool appctl_parse_combo(const char *text, uint16_t *out) {

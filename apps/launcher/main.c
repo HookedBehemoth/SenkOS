@@ -87,7 +87,7 @@ static const ui_color RING = {0x6a, 0x9c, 0xff, 0xff};
 static const gfx_color RING_TEXT = {0x6a, 0x9c, 0xff, 0xff};
 /* The dot on a tile whose app is running */
 static const gfx_color ACTIVE = {0x6a, 0x9c, 0xff, 0xff};
-/* A binding this game has its own of */
+/* An option this game has its own of */
 static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
 /* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sleepd */
@@ -814,7 +814,7 @@ static void settings(nav *ui, running *r, ui_rect view) {
     }
     const int y = (int)row.y + ((int)row.h - ui_text_height(ROW_TEXT)) / 2;
     const int vw = ui_text_width(ROW_TEXT, value);
-    const bool per_game = binding && atomic_load(&o->value);
+    const bool per_game = atomic_load(&o->own);
     ui_text(ROW_TEXT, (int)row.x + MARGIN, y,
               ui_text_fit(ROW_TEXT, label, row.w - vw - MARGIN * 3, NULL), per_game ? PER_GAME : FG);
     ui_text(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, value,
@@ -1437,10 +1437,9 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     set_binding(front, settings_focus, 0);
     return true;
   }
-  if (in_settings && settings_focus >= 0 && button == APPCTL_Y && (front->shm->flags & APPCTL_OWN_BINDINGS) &&
-      front->shm->options[settings_focus].kind == APPCTL_BINDING) {
+  if (in_settings && settings_focus >= 0 && button == APPCTL_Y && (front->shm->flags & APPCTL_OWN_OPTIONS)) {
     appctl_option *o = &front->shm->options[settings_focus];
-    atomic_store(&o->value, !atomic_load(&o->value));
+    atomic_store(&o->own, !atomic_load(&o->own));
     run_request(front, APPCTL_OPTIONS, 0);
     return true;
   }
@@ -1629,10 +1628,11 @@ int main(int argc, char **argv) {
         NAV_SCOPE(&ui, nav_int(settings_category)) { settings(&ui, front, list); }
         const bool on_binding = settings_focus >= 0 &&
                                 front->shm->options[settings_focus].kind == APPCTL_BINDING;
+        const bool own = settings_focus >= 0 && (front->shm->flags & APPCTL_OWN_OPTIONS);
         const str hint = capture.option >= 0 ? S("Hold the buttons, then let go of the first")
-                          : on_binding && (front->shm->flags & APPCTL_OWN_BINDINGS)
-                                              ? S("A: record    X: clear    Y: this game")
+                          : on_binding && own ? S("A: record    X: clear    Y: this game")
                           : on_binding        ? S("A: record    X: clear")
+                          : own               ? S("Y: this game")
                                               : S("");
         if (hint.n > 0)
           ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, DIM);
