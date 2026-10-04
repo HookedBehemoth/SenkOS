@@ -1,7 +1,8 @@
 # Ports: declarative games from the PortMaster library
 
-Status: `portrun` (apps/portrun), port folders in the launcher (with the port's `splash.png`
-until its window is up), fuse3 and squashfuse, and the ports repository (PortMaster-Decl:
+Status: `portrun` (apps/portrun), port folders in the launcher (until its window takes the focus:
+the port's `splash.png`, else its cover, over "Running initial setup…" while its `setup.done` is
+missing, else "Loading…"), fuse3 and squashfuse, and the ports repository (PortMaster-Decl:
 converter, layers including our `love`, `tools`, `gmloader` and `compat`, the smoke-test ports
 below) exist. The platform has the SDL2 family, Xwayland (Weston's, on `:0`) and PipeWire; armhf
 multilib (32-bit in `/lib32`, `/usr/lib32`; ours in `/lib64`, `/usr/lib64`) is in the image.

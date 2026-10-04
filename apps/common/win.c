@@ -79,8 +79,11 @@ static const struct xdg_surface_listener xsurface_listener = {xsurface_configure
 
 static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t width, int32_t height,
                                struct wl_array *states) {
-  (void)t, (void)states;
+  (void)t;
   win *w = data;
+  w->activated = false;
+  const uint32_t *state;
+  wl_array_for_each(state, states) w->activated |= *state == XDG_TOPLEVEL_STATE_ACTIVATED;
   if (width > 0 && height > 0) {
     w->w = width;
     w->h = height;
@@ -133,7 +136,7 @@ void win_unmap(win *w) {
   xdg_surface_destroy(w->xsurface);
   w->toplevel = NULL;
   w->xsurface = NULL;
-  w->configured = false;
+  w->configured = w->activated = false;
   wl_surface_attach(w->surface, NULL, 0, 0);
   wl_surface_commit(w->surface);
 }

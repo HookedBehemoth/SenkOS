@@ -43,6 +43,8 @@ typedef struct win {
   struct wl_surface *surface;
   /* Acked: may be drawn to. False while unmapped. */
   bool configured;
+  /* On top, with the focus: the kiosk shell gives it to each window that maps */
+  bool activated;
   /* Optional: after each configure is acked */
   void (*configure)(struct win *);
   /* Asked for by win_frame, until the compositor has shown the commit */

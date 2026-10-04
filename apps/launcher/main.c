@@ -69,6 +69,9 @@ enum { TILE_W = 144, TILE_H = 160, ICON = 128, TILE_TEXT = 16, LETTER = 40,
 enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
 enum { LICENSE_TEXT = 16 };
 
+/* portrun's state for each port (docs/ports.md) */
+#define PORT_STATE "/data/OS/saves/ports"
+
 static const gfx_color BG = {0x14, 0x14, 0x18, 0xff};
 static const gfx_color FG = {0xee, 0xee, 0xee, 0xff};
 static const gfx_color DIM = {0x55, 0x55, 0x5c, 0xff};
@@ -381,9 +384,16 @@ static void drop_backdrop(void) {
   gfx_release(&backdrop);
 }
 
+/* What a new app shows until its window takes the focus: a port's splash, else the app's icon,
+ * over this line (none: not shown) */
+static str starting;
+/* The image to show for it */
+static STRBUF(600) starting_image;
+
 /* The launcher has the screen again, at the focus it left */
 static void go_home(nav *ui) {
   front = NULL;
+  starting = S("");
   paused = in_settings = false;
   capture.option = -1;
   set_listening(true);
@@ -402,6 +412,22 @@ static void hand_over(nav *ui, running *r) {
   grab(false);
 }
 
+/* A port that runs its [Setup] or [Patch] first: portrun hasn't left its setup.done yet */
+static bool first_start(str dir) {
+  STRBUF(600) path;
+  sb_set(path, dir, S("/port.ini"));
+  const str text = str_read(fopen(path.p, "r"));
+  if (text.p == NULL)
+    return false;
+  bool setup = false;
+  cfg_reader r = cfg_init(text);
+  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;)
+    setup |= e == CFG_VALUE && (str_eq(r.section, S("Setup")) || str_eq(r.section, S("Patch")));
+  free((char *)text.p);
+  const str id = str_at(dir, str_rfind(dir, '/') + 1);
+  return setup && sb_set(path, S(PORT_STATE "/"), id, S("/setup.done")) && access(path.p, F_OK) != 0;
+}
+
 /* The same app again comes back instead of starting twice (two of a game
  * would share its save) */
 static void start(nav *ui, str label, str icon, str exec, str arg, str dir) {
@@ -413,8 +439,13 @@ static void start(nav *ui, str label, str icon, str exec, str arg, str dir) {
     return;
   }
   r = run_launch(label, icon, exec, arg, dir);
-  if (r != NULL)
-    hand_over(ui, r);
+  if (r == NULL)
+    return;
+  hand_over(ui, r);
+  starting = first_start(dir) ? S("Running initial setup\u2026") : S("Loading\u2026");
+  sb_set(starting_image, dir, S("/splash.png"));
+  if (dir.n == 0 || access(starting_image.p, F_OK) != 0)
+    sb_set(starting_image, icon);
 }
 
 /* Paused first, so the frame blurred is the one it stays on. Menu has been
@@ -1174,15 +1205,25 @@ static STRBUF(512) ctl_path;
 
 static void *ctl_thread(void *arg) {
   (void)arg;
-  /* Read-write: never at EOF when a writer leaves */
-  FILE *f = fopen(ctl_fifo, "r+");
+  /* Read-write: never at EOF when a writer leaves. Not a FILE: exit() would wait for its lock,
+   * held by a read that never returns. */
+  const int fd = open(ctl_fifo, O_RDWR | O_CLOEXEC);
   char line[512];
-  while (f != NULL && fgets(line, sizeof(line), f) != NULL) {
-    line[strcspn(line, "\n")] = '\0';
-    pthread_mutex_lock(&ctl_lock);
-    sb_set(ctl_path, str_c(line));
-    pthread_mutex_unlock(&ctl_lock);
-    win_wake(UI_LAUNCH, 0);
+  size_t n = 0;
+  for (ssize_t got; fd >= 0 && (got = read(fd, line + n, sizeof(line) - n)) > 0;) {
+    n += (size_t)got;
+    for (char *end; (end = memchr(line, '\n', n)) != NULL;) {
+      *end = '\0';
+      pthread_mutex_lock(&ctl_lock);
+      sb_set(ctl_path, str_c(line));
+      pthread_mutex_unlock(&ctl_lock);
+      win_wake(UI_LAUNCH, 0);
+      n -= (size_t)(end + 1 - line);
+      memmove(line, end + 1, n);
+    }
+    /* A line too long: dropped */
+    if (n == sizeof(line))
+      n = 0;
   }
   return NULL;
 }
@@ -1495,7 +1536,10 @@ int main(int argc, char **argv) {
     /* A frame's time while animating. Idle: wake once a second for the
      * clock and the status, and draw only if either changed. Under the app:
      * only events. And to hide the OSD. */
-    int wait = front != NULL && !paused ? -1 : animating ? 16 : 1000;
+    /* The new app's window took the focus: no more splash */
+    if (starting.n > 0 && window.configured && !window.activated && front != NULL)
+      starting = S("");
+    int wait = front != NULL && !paused && starting.n == 0 ? -1 : animating ? 16 : 1000;
     if (osd_until != 0) {
       const int left = (int)(osd_until - MIN(osd_until, ms_now()));
       if (wait < 0 || left < wait)
@@ -1512,7 +1556,7 @@ int main(int argc, char **argv) {
       osd_until = 0;
     }
     /* Under the app, or hidden: nothing would show */
-    if (front != NULL && !paused) {
+    if (front != NULL && !paused && starting.n == 0) {
       animating = false;
       continue;
     }
@@ -1562,17 +1606,17 @@ int main(int argc, char **argv) {
     const entry *chosen = NULL;
     const app *picked = NULL;
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
-    /* Between its start and its window covering ours: a port's splash */
-    asset splash = {.slot = GFX_PLACEHOLDER};
-    STRBUF(320) splash_path;
-    if (front != NULL && !paused && sb_set(splash_path, sb_str(front->dir), S("/splash.png")) &&
-        access(splash_path.p, F_OK) == 0)
-      splash = assets_get(sb_str(splash_path));
-    if (splash.slot != GFX_PLACEHOLDER) {
-      const float scale = MIN((float)w / splash.w, (float)h / splash.h);
-      gfx_push((gfx_quad){.x = (w - splash.w * scale) / 2, .y = (h - splash.h * scale) / 2,
-                          .w = splash.w * scale, .h = splash.h * scale, .u1 = 1, .v1 = 1,
-                          .color = 0xffffffff, .tex = splash.slot});
+    if (front != NULL && !paused) {
+      const asset splash = starting_image.n > 0 ? assets_get(sb_str(starting_image)) : (asset){.slot = GFX_PLACEHOLDER};
+      if (splash.slot != GFX_PLACEHOLDER) {
+        const float scale = MIN((float)w / splash.w, (float)h / splash.h);
+        gfx_push((gfx_quad){.x = (w - splash.w * scale) / 2, .y = (h - splash.h * scale) / 2,
+                            .w = splash.w * scale, .h = splash.h * scale, .u1 = 1, .v1 = 1,
+                            .color = 0xffffffff, .tex = splash.slot});
+      }
+      ui_fill(0, h - ROW, w, ROW, SCRIM);
+      ui_text(ROW_TEXT, (w - ui_text_width(ROW_TEXT, starting)) / 2, h - (ROW + ui_text_height(ROW_TEXT)) / 2,
+              starting, FG);
     } else if (!paused && modal.kind >= MODAL_STORAGE) {
       chosen = folders_screen(&ui, w, h, view, &st);
     } else if (paused) {
