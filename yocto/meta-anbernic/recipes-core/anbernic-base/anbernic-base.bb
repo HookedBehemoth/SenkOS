@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://asound.conf"
+SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://asound.conf file://uinput.rules"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
@@ -31,6 +31,7 @@ do_install() {
     install -Dm0644 ${S}/weston.ini ${D}${sysconfdir}/xdg/weston/weston.ini
     install -Dm0644 ${S}/sdcard.rules ${D}${sysconfdir}/udev/rules.d/90-sdcard.rules
     install -Dm0644 ${S}/usb-gadget.rules ${D}${sysconfdir}/udev/rules.d/90-usb-gadget.rules
+    install -Dm0644 ${S}/uinput.rules ${D}${sysconfdir}/udev/rules.d/90-uinput.rules
     install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot ${D}/data
     # The UI first (mounts /data, runs data-init, starts seatd itself); the rest after
     # populate-volatile (S37); trial timer last, once everything else came up

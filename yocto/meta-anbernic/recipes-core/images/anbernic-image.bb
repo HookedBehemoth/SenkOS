@@ -6,6 +6,7 @@ inherit image
 # libsdl2: for what lives in /data (the bindless demo, SuperTuxKart, ports); our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
+# libbz2 ... opusfile: the ports' platform (docs/ports.md); the SDL2 family, libmodplug and opusfile from meta-openembedded
 # libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
 # The libretro cores: run by corehost, as the emulators in anbernic-data (anbernic-base) say
 IMAGE_INSTALL = " \
@@ -38,6 +39,7 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-good-matroska \
     gstreamer1.0-plugins-base-videoconvertscale \
     mediaplayer \
+    portrun \
     liberation-fonts \
     ttf-bitstream-vera \
     libasound \
@@ -48,6 +50,8 @@ IMAGE_INSTALL = " \
     libjpeg-turbo \
     libcurl \
     libcrypto \
+    libbz2 libflac libtheora mpg123 libsndfile1 \
+    libsdl2-image libsdl2-mixer libsdl2-ttf libsdl2-net libmodplug opusfile cairo \
     libavcodec libavformat libavdevice libavfilter libavutil libswresample libswscale \
     libgomp \
     libretro-fceumm libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx \

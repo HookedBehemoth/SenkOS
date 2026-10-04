@@ -18,6 +18,15 @@ repos:
     branch: wrynose
     layers:
       meta:
+  # The ports' platform (docs/ports.md): the SDL2 family, libmodplug, opusfile; PipeWire
+  # (meta-python: meta-multimedia needs it)
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    branch: wrynose
+    layers:
+      meta-oe:
+      meta-multimedia:
+      meta-python:
   meta-arm:
     url: https://git.yoctoproject.org/meta-arm
     branch: wrynose

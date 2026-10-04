@@ -230,13 +230,43 @@ static bool matches(str name, str patterns) {
   return false;
 }
 
+/* A port: a folder with a port.ini ([Port] Name), run by portrun; its cover
+ * or screenshot is the icon */
+static bool parse_port(str dir, app *a) {
+  STRBUF(600) ini;
+  sb_set(ini, dir, S("/port.ini"));
+  const str text = str_read(fopen(ini.p, "r"));
+  if (text.p == NULL)
+    return false;
+  cfg_reader r = cfg_init(text);
+  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;)
+    if (e == CFG_VALUE && str_eq(r.section, S("Port")) && str_eq(r.key, S("Name")))
+      sb_set(a->name, r.value);
+  free((char *)text.p);
+  sb_set(a->exec, S("exec portrun \"$1\""));
+  sb_set(a->arg, dir);
+  sb_set(a->dir, dir);
+  STRBUF(600) base;
+  sb_set(base, dir, S("/cover"));
+  find_image(a, sb_str(base));
+  if (a->icon.n == 0 && sb_set(base, dir, S("/screenshot")))
+    find_image(a, sb_str(base));
+  return a->name.n > 0;
+}
+
 static void scan_entry(category *c, str picks, str folder, str name) {
   STRBUF(512) path;
   struct stat st;
-  if (name.p[0] == '.' || !sb_set(path, folder, S("/"), name) ||
-      stat(path.p, &st) != 0 || !S_ISREG(st.st_mode))
+  if (name.p[0] == '.' || !sb_set(path, folder, S("/"), name) || stat(path.p, &st) != 0)
     return;
   app *a;
+  if (S_ISDIR(st.st_mode)) {
+    if (c->roms.n == 0 && (a = add(c)) != NULL && parse_port(sb_str(path), a))
+      c->count++;
+    return;
+  }
+  if (!S_ISREG(st.st_mode))
+    return;
   if (c->roms.n > 0) {
     if (!matches(name, c->roms) || (a = add(c)) == NULL)
       return;

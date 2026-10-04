@@ -1,4 +1,4 @@
-SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player and corehost, and common/ that they share"
+SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player, corehost, portrun, and common/ that they share"
 # Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT. Listed so their
 # texts land in the image with ours (the launcher's Licenses screen).
 LICENSE = "AGPL-3.0-only & ISC & MIT"
@@ -23,8 +23,11 @@ DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freet
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime
-PACKAGES =+ "launcher mediaplayer corehost"
+PACKAGES =+ "launcher mediaplayer corehost portrun"
 FILES:launcher = "${bindir}/launcher"
+FILES:portrun = "${bindir}/portrun"
+# The ports' layers (docs/ports.md)
+RDEPENDS:portrun = "squashfuse"
 FILES:mediaplayer = "${bindir}/mediaplayer"
 FILES:corehost = "${bindir}/corehost ${datadir}/corehost"
 # The image's fallback UI needs a font to find
@@ -40,7 +43,7 @@ RDEPENDS:mediaplayer = "liberation-fonts \
 
 # The bare binaries, for tools/deploy-launcher (and by hand) to copy to /data
 do_deploy() {
-    for app in launcher mediaplayer corehost; do
+    for app in launcher mediaplayer corehost portrun; do
         install -m 0755 ${B}/$app/$app ${DEPLOYDIR}/$app
     done
 }

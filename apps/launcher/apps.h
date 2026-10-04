@@ -6,7 +6,9 @@
  *   Each *.desktop (XDG desktop entry: Name, Exec, Path, Icon, Keywords,
  *   Categories) is an app; so is any other executable without a .desktop of
  *   the same name. Exec runs under sh -c, in Path or else the folder. Icon is
- *   a path, absolute or relative to the folder, extension optional.
+ *   a path, absolute or relative to the folder, extension optional. A folder
+ *   with a port.ini is a port (docs/ports.md), run by portrun; its cover or
+ *   screenshot is the icon.
  * - Game systems: the .system files in apps/systems over the image's
  *   (SYSTEMS, apps.c), the way emulators are below. [System] Name, Folder
  *   (its page's, under the data root), Aliases (what other OSes call such a
