@@ -1,0 +1,61 @@
+#!/bin/sh
+# The clock and the time zone: the launcher's Settings (sleepd runs `clock ...` on "clock ..." in
+# /run/power). Kept in /data/OS/time, root's (others read it): localtime, the zone (a link into
+# /usr/share/zoneinfo, which /etc/localtime links to); `chosen` when the zone was picked (else a
+# network guesses it); `manual` when the time is set by hand (else NTP sets it).
+#   clock net bound|renew   a DHCP lease (udhcpc.d/90ntp): NTP; a new one (bound, a network
+#                           joined) also guesses the zone, unless chosen
+#   clock zone auto|ZONE    ZONE as under /usr/share/zoneinfo, e.g. Europe/Berlin
+#   clock ntp on|off
+#   clock set SECONDS       since 1970, by hand
+d=/data/OS/time
+
+mkdir -p $d
+chown root:root $d
+chmod 0755 $d
+
+ntp() {
+	[ -e $d/manual ] || { ntpd -n -q -p pool.ntp.org && hwclock -w -u; }
+}
+
+# downloadd asks a service where this address is
+guess() {
+	[ -e $d/chosen ] && return
+	z=$(downloadd zone 2>/dev/null) && zone "$z"
+}
+
+zone() {
+	case "$1" in ""|/*|*..*) return 1 ;; esac
+	[ -f "/usr/share/zoneinfo/$1" ] || return 1
+	ln -sfn "/usr/share/zoneinfo/$1" $d/localtime.new && mv -f $d/localtime.new $d/localtime
+}
+
+case "$1 $2" in
+"net bound")
+	ntp &
+	guess
+	;;
+"net renew")
+	ntp
+	;;
+"zone auto")
+	rm -f $d/chosen
+	guess
+	;;
+zone\ ?*)
+	zone "$2" && touch $d/chosen
+	;;
+"ntp on")
+	rm -f $d/manual
+	ntp
+	;;
+"ntp off")
+	touch $d/manual
+	;;
+set\ ?*)
+	case "$2" in *[!0-9]*) exit 1 ;; esac
+	date -s "@$2" >/dev/null && hwclock -w -u
+	;;
+*)
+	sed -n '2,10s/^# \?//p' $0 >&2; exit 1 ;;
+esac

@@ -22,7 +22,7 @@ typedef struct {
 } cached;
 
 /* ponytail: linear search over every icon at every size drawn; a handful */
-static cached cache[64];
+static cached cache[128];
 static size_t cache_count;
 static FT_Library library;
 
@@ -50,11 +50,25 @@ static bool rasterize(int icon, int px, skyline_region *out) {
   FT_Stroker_Set(stroker, (FT_Fixed)lroundf(STROKE / 2 * scale * 64), FT_STROKER_LINECAP_ROUND,
                  FT_STROKER_LINEJOIN_ROUND, 0);
   bool open = false;
+  FT_Vector last = {0, 0};
   for (const float *p = icon_paths[icon]; (int)*p != ICON_END;) {
     const int op = (int)*p++;
     FT_Vector v[3];
     for (int i = 0; i < points(op) / 2; i++)
       v[i] = at(p + i * 2, scale, px);
+    /* A dot ("h.01") rounds to no length, which the stroker crashes on: a 1/4 pixel line */
+    const bool still = op == ICON_LINE ? v[0].x == last.x && v[0].y == last.y
+                       : op == ICON_CUBIC && v[2].x == last.x && v[2].y == last.y && v[0].x == last.x &&
+                             v[0].y == last.y && v[1].x == last.x && v[1].y == last.y;
+    if (still) {
+      v[0] = (FT_Vector){last.x + 16, last.y};
+      FT_Stroker_LineTo(stroker, &v[0]);
+      last = v[0];
+      p += points(op);
+      continue;
+    }
+    if (op != ICON_CLOSE)
+      last = v[points(op) / 2 - 1];
     switch (op) {
     case ICON_MOVE:
       if (open)

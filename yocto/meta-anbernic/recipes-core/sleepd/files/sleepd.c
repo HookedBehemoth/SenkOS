@@ -11,10 +11,17 @@
  * performance: it runs at the cap), "gpu HZ" pins the GPU's (simple_ondemand otherwise picks
  * lower ones, and late: a cap a step down cost Mario 64 a third of its frames), "gpu 0" frees
  * it again; "brightness N" sets the backlight.
+ * And the Wi-Fi settings: "wifi on|off" runs /usr/sbin/wifi. "up": the launcher is up, so the
+ * slot works (`ab commit` keeps one on trial, an update), and Wi-Fi comes on if it was (`wifi`),
+ * not earlier: it would slow the boot. And the time settings: "clock ARGS" runs /usr/sbin/clock.
+ * And Debug's: "ssh on|off" starts or stops dropbear, off for good while
+ * /data/OS/dropbear/disabled is there; "ssh all|usb" restarts it on every network (while
+ * /data/OS/dropbear/everywhere is there) or the USB cable's alone. /etc/default/dropbear reads both.
  */
 #include <fcntl.h>
 #include <glob.h>
 #include <linux/input.h>
+#include <linux/vt.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +47,20 @@ static void write_sysfs(const char *pattern, const char *value)
 	}
 	globfree(&g);
 }
+/* For a sleep the kernel switches to a text console unless a framebuffer says it needn't, and
+ * there's none (fbdev emulation is off): seatd would take the display from Weston and give it
+ * back at every sleep, and a few in a row (a charger plugged in and out, the lid shut) left
+ * Weston without frames. Locked, the switch fails and the sleep goes on without it. */
+static void lock_vt(int on)
+{
+	int fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
+
+	if (fd >= 0) {
+		ioctl(fd, on ? VT_LOCKSWITCH : VT_UNLOCKSWITCH, 0);
+		close(fd);
+	}
+}
+
 #define TEST(bits, n) ((bits)[(n) / 8] & (1 << ((n) % 8)))
 
 static int lid_closed(int fd)
@@ -130,6 +151,30 @@ int main(void)
 				}
 				else if (strncmp(req, "brightness ", 11) == 0)
 					write_sysfs("/sys/class/backlight/*/brightness", req + 11);
+				else if (strcmp(req, "wifi on") == 0)
+					system("/usr/sbin/wifi on &");
+				else if (strcmp(req, "wifi off") == 0)
+					system("/usr/sbin/wifi off &");
+				else if (strcmp(req, "up") == 0)
+					system("/usr/sbin/ab commit; /usr/sbin/wifi </dev/null >/dev/null 2>&1 &");
+				/* Stopped first: with the file there the init script does nothing, stop included */
+				else if (strcmp(req, "ssh on") == 0)
+					system("rm -f /data/OS/dropbear/disabled; /etc/init.d/dropbear start >/dev/null 2>&1 &");
+				else if (strcmp(req, "ssh off") == 0)
+					system("/etc/init.d/dropbear stop >/dev/null 2>&1; touch /data/OS/dropbear/disabled");
+				else if (strcmp(req, "ssh all") == 0)
+					system("touch /data/OS/dropbear/everywhere; /etc/init.d/dropbear restart >/dev/null 2>&1 &");
+				else if (strcmp(req, "ssh usb") == 0)
+					system("rm -f /data/OS/dropbear/everywhere; /etc/init.d/dropbear restart >/dev/null 2>&1 &");
+				else if (strncmp(req, "clock ", 6) == 0) {
+					/* Words of these only: it goes to a shell (`clock` checks the rest) */
+					char cmd[160];
+					if (strspn(req + 6, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/_+- ") ==
+					    strlen(req + 6) && strlen(req + 6) < 100) {
+						snprintf(cmd, sizeof(cmd), "/usr/sbin/clock %s </dev/null >/dev/null 2>&1 &", req + 6);
+						system(cmd);
+					}
+				}
 				else if (strncmp(req, "usb ", 4) == 0) {
 					/* One of these words only: it goes to a shell */
 					static const char *const usb[] = {"on", "off", "mtp", "ums", "smb", "sd", "data"};
@@ -152,10 +197,12 @@ int main(void)
 			}
 		if (!sleep_now)
 			continue;
+		lock_vt(1);
 		do {
 			if (system("/usr/sbin/suspend") != 0)
 				sleep(1);	/* suspend refused: don't spin */
 		} while (lid_closed(lid));
+		lock_vt(0);
 		quiet_until = now() + 1.5;
 	}
 }

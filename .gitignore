@@ -4,5 +4,8 @@ raw/
 *.img
 bitbake/
 meta-arm/
+meta-openembedded/
 openembedded-core/
 testdata/
+.env
+

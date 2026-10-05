@@ -43,11 +43,19 @@ enum {
 #define NAV_STATES 64
 #define NAV_DEPTH 6
 
+/* A focus fill (nav_fill): a quad reserved under a list's items */
+typedef struct {
+  uint32_t quad;
+  gfx_color color;
+  float radius;
+} nav_fill_record;
+
 typedef struct {
   nav_id id;
   ui_rect rect, ring, clip;
   ui_mask mask;
   float radius;
+  nav_fill_record fill; /* color.a 0: none */
 } nav_item_record;
 
 typedef struct {
@@ -105,6 +113,7 @@ typedef struct {
 
   /* The focus ring, eased from where it was drawn to the live target, so a
    * scrolling list carries it along. */
+  nav_fill_record fill;
   nav_id ring_owner;
   ui_rect ring_from, ring_drawn;
   uint64_t ring_started_at, ring_frame;
@@ -123,6 +132,8 @@ bool nav_move(nav *ui, nav_dir where);
 /* To the first item (Down, Right) or the last (Up, Left) declared: a list
  * going round. */
 void nav_wrap(nav *ui, nav_dir where);
+/* Round to the far side, in the same row or column: what a grid that goes round does */
+void nav_wrap_around(nav *ui, nav_dir where);
 void nav_activate(nav *ui);
 void nav_pointer(nav *ui, float x, float y);
 void nav_pointer_leave(nav *ui);
@@ -161,6 +172,9 @@ void nav_default(nav *ui);
 /* After a nav_item: nav draws its animated ring around `ring` while the item
  * has focus. Items without one draw their own focus. */
 void nav_ring(nav *ui, ui_rect ring, float radius);
+/* After nav_scroll_begin, before its items: their focus is also a fill under them, `radius`
+ * round, that moves with the ring rather than ahead of it. Until nav_scroll_end, or the frame's end. */
+void nav_fill(nav *ui, gfx_color color, float radius);
 /* Items declared while set are drawn by the caller but cannot take focus, and
  * scroll regions begun while set ignore the wheel: what sits behind a modal. */
 void nav_set_inert(nav *ui, bool inert);

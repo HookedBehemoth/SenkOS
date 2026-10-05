@@ -17,10 +17,10 @@ BL31 refuses to suspend if the parameters don't match at runtime. The stub also 
 |---|---|
 | TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4) |
 | Kernel | PM fixes for the power-key wake event, MMC, the TF2 slot power, the USB PHY clock, the display pipeline and LCD pads, the codec, and a suspend OPP (patches 0018-0024, 0027) |
-| `sleepd` | lid close, power key or `suspend` written to `/run/power` (the launcher's Sleep; `reboot`, `poweroff` too; and the Power page's `cpu KHZ`, `gpu HZ`, `brightness N`) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it. Reacts only to events, so a misread lid at boot can't suspend |
+| `sleepd` | lid close, power key or `suspend` written to `/run/power` (the launcher's Sleep; `reboot`, `poweroff` too; and the Power page's `cpu KHZ`, `gpu HZ`, `brightness N`) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it. Reacts only to events, so a misread lid at boot can't suspend. Locks the VT (`VT_LOCKSWITCH`) meanwhile: with no framebuffer (fbdev emulation off) the kernel would switch to a text console for every sleep, seatd would take the display from Weston and give it back, and a few sleeps in a row left Weston without frames |
 | `anbernic.init` | rebinds the USB gadget when musb comes back detached |
 
-Wake sources: power key (PMIC), lid (Hall GPIO), RTC.
+Wake sources: power key (PMIC), lid (Hall GPIO), RTC. Not the charger: `90-wake.rules` turns off the `axp20x-usb` supply's wakeup, which would wake on every plug-in.
 
 Check: `cat /sys/power/mem_sleep` shows `[deep]`, and `dmesg` has `PM: suspend entry (deep)`.
 

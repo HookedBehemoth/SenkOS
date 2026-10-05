@@ -31,7 +31,7 @@ Output in `build/tmp/deploy/images/rg35xx-sp/`:
 conf/machine/rg35xx-sp.conf        cortexa53-crypto tune, dtbs, U-Boot/TF-A, image types
 conf/distro/anbernic.conf          no poky: busybox init + eudev, trimmed DISTRO_FEATURES and PACKAGECONFIGs
 files/wic/rg35xx-sp.wks.in         card layout (SPL, FAT, two slots)
-recipes-bsp/                       U-Boot (A/B boot.scr, watchdog, squashfs), TF-A (+ suspend stub)
+recipes-bsp/                       U-Boot (A/B boot.scr, watchdog, squashfs, off on a plug-in), TF-A (+ suspend stub)
 recipes-kernel/linux/              Linux 7.2 + patches, savedefconfig, built-in firmware
 recipes-core/images/               anbernic-image
 recipes-core/anbernic-base/        init glue: USB gadget, A/B slots + /data, logs, watchdog, Weston, SD automount

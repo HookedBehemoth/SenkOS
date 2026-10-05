@@ -1,0 +1,2 @@
+# A charger plugged in (or out) must not wake the handheld: only the power key and the lid do
+SUBSYSTEM=="power_supply", KERNEL=="axp20x-usb", ATTR{power/wakeup}="disabled"

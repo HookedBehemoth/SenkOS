@@ -91,6 +91,21 @@ static bool score(ui_rect from, ui_rect to, nav_dir where, float *out) {
   return true;
 }
 
+/* The item nearest `from` that way, `skip` aside */
+static const nav_item_record *nearest(const nav *ui, ui_rect from, const nav_item_record *skip, nav_dir where) {
+  const nav_item_record *items = ui->items[ui->current];
+  const nav_item_record *best = NULL;
+  float best_score = INFINITY;
+  for (size_t i = 0; i < ui->count[ui->current]; i++) {
+    float s;
+    if (&items[i] != skip && score(from, items[i].rect, where, &s) && s < best_score) {
+      best = &items[i];
+      best_score = s;
+    }
+  }
+  return best;
+}
+
 bool nav_move(nav *ui, nav_dir where) {
   const nav_item_record *items = ui->items[ui->current];
   const nav_item_record *from = shown(ui, ui->focus);
@@ -101,21 +116,37 @@ bool nav_move(nav *ui, nav_dir where) {
     ui->reveal = true;
     return true;
   }
-  const nav_item_record *best = NULL;
-  float best_score = INFINITY;
-  for (size_t i = 0; i < ui->count[ui->current]; i++) {
-    float s;
-    if (&items[i] != from && score(from->rect, items[i].rect, where, &s) &&
-        s < best_score) {
-      best = &items[i];
-      best_score = s;
-    }
-  }
+  const nav_item_record *best = nearest(ui, from->rect, from, where);
   if (best == NULL)
     return false;
   ui->focus = best->id;
   ui->reveal = true;
   return true;
+}
+
+void nav_wrap_around(nav *ui, nav_dir where) {
+  const nav_item_record *items = ui->items[ui->current];
+  const nav_item_record *from = shown(ui, ui->focus);
+  if (from == NULL)
+    return;
+  /* The focus's rect moved past the far side of everything, then the nearest that way */
+  ui_rect r = from->rect;
+  for (size_t i = 0; i < ui->count[ui->current]; i++) {
+    const ui_rect o = items[i].rect;
+    if (where == NAV_RIGHT)
+      r.x = fminf(r.x, o.x - r.w - 1);
+    else if (where == NAV_LEFT)
+      r.x = fmaxf(r.x, o.x + o.w + 1);
+    else if (where == NAV_DOWN)
+      r.y = fminf(r.y, o.y - r.h - 1);
+    else
+      r.y = fmaxf(r.y, o.y + o.h + 1);
+  }
+  const nav_item_record *best = nearest(ui, r, NULL, where);
+  if (best != NULL) {
+    ui->focus = best->id;
+    ui->reveal = true;
+  }
 }
 
 void nav_wrap(nav *ui, nav_dir where) {
@@ -170,6 +201,7 @@ void nav_click(nav *ui) {
 
 void nav_begin(nav *ui, ui_context *ctx, uint64_t now) {
   ui->ctx = ctx;
+  ui->fill = (nav_fill_record){0};
   ui->now = now;
   ui->frame++;
   ui->current ^= 1;
@@ -243,6 +275,7 @@ float nav_scroll_begin(nav *ui, nav_id id, ui_rect view, ui_axis axis,
 }
 
 void nav_scroll_end(nav *ui) {
+  ui->fill = (nav_fill_record){0};
   nav_scroll_frame *scroll = &ui->scrolls[--ui->scroll_depth];
   const float limit = scroll_limit(scroll);
   /* Regions end innermost first, so the first to take the wheel or a step
@@ -306,6 +339,7 @@ unsigned nav_item(nav *ui, nav_id id, ui_rect rect, ui_rect clip) {
       .rect = rect,
       .clip = clip,
       .mask = ui->ctx->mask,
+      .fill = ui->fill,
   };
   if (ui->want_default) {
     ui->default_id = item->id;
@@ -341,6 +375,10 @@ void nav_ring(nav *ui, ui_rect ring, float radius) {
 }
 
 void nav_set_inert(nav *ui, bool inert) { ui->inert = inert; }
+
+void nav_fill(nav *ui, gfx_color color, float radius) {
+  ui->fill = (nav_fill_record){gfx_reserve(), color, radius};
+}
 void nav_default(nav *ui) { ui->want_default = true; }
 
 /* Where the focus goes when it is on nothing shown: the screen's default, or
@@ -392,6 +430,12 @@ bool nav_end(nav *ui, const ui_color color, float width) {
         mix(ui->ring_from.w, to.w, t), mix(ui->ring_from.h, to.h, t)};
     ui->ring_frame = ui->frame;
     running |= t < 1;
+    const ui_rect r = ui->ring_drawn, c = focused->clip;
+    if (focused->fill.color.a > 0)
+      gfx_set(focused->fill.quad, (gfx_quad){.x = r.x, .y = r.y, .w = r.w, .h = r.h, .u1 = 1, .v1 = 1,
+                                             .clip = {c.x, c.y, c.x + c.w, c.y + c.h},
+                                             .color = gfx_rgba(focused->fill.color), .tex = GFX_WHITE,
+                                             .radius = focused->fill.radius});
     const ui_mask outer = ui->ctx->mask;
     ui->ctx->mask = focused->mask;
     ui_stroke(ui->ctx, ui_inset(ui->ring_drawn, -width), &focused->clip,

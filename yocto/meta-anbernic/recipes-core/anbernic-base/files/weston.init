@@ -2,22 +2,21 @@
 # The UI as early as boot allows (rcS S01), in the background while the rest of rcS runs: udev
 # coldplug included, libinput adds input devices as udev gets to them.
 # /data first: logs, user init scripts and HOME (fontconfig, Mesa's shader cache) live there.
-# Then seatd, and as player (`session`): Weston on the LCD (DRM backend, kiosk shell: every
-# client fullscreen) and the launcher (one in /data/OS/overlay replaces the image's: `overlay`,
-# tools/deploy-launcher). The launcher is restarted whenever it exits, so a deploy only has to kill the old one.
+# Then seatd, as player (`session`) PipeWire and Weston on the LCD (DRM backend, kiosk shell: every
+# client fullscreen), and the launcher (one in /data/OS/overlay replaces the image's: `overlay`,
+# tools/deploy-launcher), started as root: it becomes shell itself, and starts the apps as player
+# (apps/launcher/running.h). What's shell's (/run/power, Wi-Fi's control socket, the apps'
+# cgroup) the apps can't reach. The launcher is restarted whenever it exits, so a deploy only has
+# to kill the old one.
 if [ "$1" = session ]; then
 	# Sound: PipeWire on the card, WirePlumber linking streams to it, the Pulse socket for ports
 	pipewire </dev/null >/var/log/pipewire.log 2>&1 &
 	wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
 	pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
-	weston --backend=drm --shell=kiosk --modules=volume-keys.so,frames.so --socket=$WAYLAND_DISPLAY \
-		--log=/var/log/weston.log </dev/null >/dev/null 2>&1 &
-	while :; do
-		# SDL gives up on wayland if the socket isn't there yet
-		while [ ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]; do usleep 20000; done
-		launcher
-		sleep 1
-	done
+	# Its socket the group's too: the launcher (shell) is in the player's group
+	umask 002
+	exec weston --backend=drm --shell=kiosk --modules=volume-keys.so,frames.so --socket=$WAYLAND_DISPLAY \
+		--log=/var/log/weston.log </dev/null >/dev/null 2>&1
 fi
 # seatd, then the session as player. Again (`restart`) after `ums` stopped it: seatd still runs.
 ui() {
@@ -29,8 +28,20 @@ ui() {
 	. /etc/profile.d/wayland.sh
 	. /etc/profile.d/panvk.sh
 	. /etc/profile.d/zz-data.sh
-	mkdir -p -m 0700 $XDG_RUNTIME_DIR
+	# The player's runtime dir, which shell (in the player's group) may read for Weston's socket
+	# (the launcher waits for it there) and frame counter; shell's own; the launcher's FIFO (the
+	# player's apps may launch and reload)
+	mkdir -p $XDG_RUNTIME_DIR
 	chown player:player $XDG_RUNTIME_DIR
+	chmod 0750 $XDG_RUNTIME_DIR
+	s=/run/user/$(id -u shell)
+	mkdir -p -m 0700 $s
+	chown shell:shell $s
+	[ -p /run/launcher ] || mkfifo -m 0620 /run/launcher
+	chown shell:player /run/launcher
+	# Shell's home: the launcher's settings, state and caches
+	mkdir -p /data/OS/launcher
+	chown shell:shell /data/OS/launcher
 	# Mesa (kmsro) opens the panfrost render node itself, as the player, not through seatd. devtmpfs
 	# creates it 0600 root and udev (S04, after us) only later makes it 0666: Weston's EGL init lost
 	# that race once Mesa got small enough to load before udev ran. Same mode udev's default rule sets.
@@ -40,8 +51,14 @@ ui() {
 		echo 0 > $c/ui/cgroup.procs
 		[ -S /run/seatd.sock ] || seatd -g seat </dev/null >/dev/null 2>&1 &
 		while [ ! -S /run/seatd.sock ]; do usleep 5000; done
-		exec su -p -s /bin/sh player -c "$0 session"
+		su -p -s /bin/sh player -c "$0 session" &
+		while :; do
+			launcher
+			sleep 1
+		done
 	) </dev/null >/var/log/launcher.log 2>&1 &
+	# `ums` stops this loop before the launcher
+	echo $! > /run/launcher.loop
 }
 [ "$1" = restart ] && { c=/sys/fs/cgroup/session; ui; exit 0; }
 [ "$1" = start ] || exit 0
@@ -53,8 +70,8 @@ cat /usr/lib64/libgallium-*.so >/dev/null &
 
 # cgroup v2: the UI (seatd, Weston, launcher) and the apps the launcher starts. Apps get all the
 # RAM but 160 MB, and run out of it on their own: the OOM kill takes the whole app. The UI wins
-# CPU contention 10:1 and keeps its pages (Mesa included) when memory gets tight. The player may
-# move its processes between the two (the launcher moves each app), the limits are root's.
+# CPU contention 10:1 and keeps its pages (Mesa included) when memory gets tight. Shell (the
+# launcher) moves each app into apps; the limits are root's.
 c=/sys/fs/cgroup/session
 mount -t cgroup2 none /sys/fs/cgroup
 echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
@@ -65,7 +82,7 @@ echo 64M > $c/ui/memory.low
 echo $(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024 - 160))M > $c/apps/memory.max
 echo 1 > $c/apps/memory.oom.group
 echo 1024 > $c/apps/pids.max
-chown player:player $c/cgroup.procs $c/ui/cgroup.procs $c/apps/cgroup.procs
+chown shell:shell $c/cgroup.procs $c/ui/cgroup.procs $c/apps/cgroup.procs
 
 ab mount	# /uboot, /data: mount points exist in the (read-only) image
 # What root runs or trusts from /data is root's, so a game (as player) can't break the OS:

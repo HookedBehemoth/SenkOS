@@ -1,0 +1,5 @@
+#!/bin/sh
+# udhcpc hook (run-parts from its default.script): a lease on Wi-Fi sets the clock and the RTC, for TLS
+# (certificates' dates) and the status bar, and guesses the time zone (clock)
+[ "$1" = bound ] || [ "$1" = renew ] || exit 0
+/usr/sbin/clock net "$1" </dev/null >/dev/null 2>&1 &

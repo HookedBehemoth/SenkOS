@@ -56,6 +56,20 @@ void ui_icon(int icon, int px, int x, int y, gfx_color color);
 bool ui_atlas_add(const uint8_t *coverage, int w, int h, int pitch, skyline_region *out);
 void ui_atlas_draw(skyline_region r, int x, int y, gfx_color color);
 
+/* Wrapped lines: slices of the text wrapped, which must outlive them */
+typedef struct {
+  str *lines;
+  size_t count, cap;
+} ui_lines;
+/* `line` wrapped to `width` pixels at `px`, appended; false without memory */
+bool ui_wrap(ui_lines *out, str line, int px, float width);
+/* The same for each of the text's lines */
+bool ui_wrap_text(ui_lines *out, str text, int px, float width);
+/* A readme's Markdown as text to show (on the heap, free .p): headings, emphasis, code
+ * marks, images and HTML go, links are their text, list items get bullets, table rows
+ * their cells. */
+str ui_markdown(str md);
+
 /* The library's reasons to win_wake (win.h), then the app's own from
  * UI_WAKE_APP */
 enum {

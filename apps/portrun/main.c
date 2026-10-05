@@ -571,6 +571,18 @@ static void serve_layer(const layer *l) {
   closedir(d);
 }
 
+/* The host's socket `name` (in `runtime`, or a path) in the sandbox's runtime dir */
+static void bind_runtime(const char *runtime, const char *name) {
+  char src[PATH_MAX], dst[PATH_MAX];
+  const char *base = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
+  if (name[0] == '/')
+    snprintf(src, sizeof(src), HOST "%s", name);
+  else
+    snprintf(src, sizeof(src), HOST "%s/%s", runtime, name);
+  snprintf(dst, sizeof(dst), "/newroot/run/user/%u/%s", getuid(), base);
+  bind_mount(src, dst, true);
+}
+
 /* The port's process, as pid 1 of its namespace: the new root built, the
  * command run, its status returned */
 static int sandbox(int log) {
@@ -578,6 +590,10 @@ static int sandbox(int log) {
     fail("make / private", NULL);
   if (mount("tmpfs", "/tmp", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0)
     fail("mount tmpfs at", "/tmp");
+  /* squashfuse's root changes with ours, and its threads each open /dev/fuse for a channel of
+   * their own (clone_fd): there in this root too, not just the final one */
+  if (layer_count > 0)
+    bind_mount("/dev/fuse", "/tmp/dev/fuse", true);
   for (size_t i = 0; i < layer_count; i++)
     serve_layer(&layers[i]);
   mkdirs("/tmp/oldroot");
@@ -610,14 +626,16 @@ static int sandbox(int log) {
   if (mount("proc", "/newroot/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0)
     fail("mount", "/proc");
 
-  /* /dev: the harmless nodes, the GPU, sound and input */
+  /* /dev: the harmless nodes, the GPU, input; FUSE for squashfuse (above; the host's is 0666) */
   mkdirs("/newroot/dev");
   if (mount("tmpfs", "/newroot/dev", "tmpfs", MS_NOSUID, "mode=0755") != 0)
     fail("mount tmpfs at", "/dev");
   static const char *const nodes[] = {"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
-                                      "/dev/tty", "/dev/dri", "/dev/input", "/dev/snd"};
-  for (size_t i = 0; i < COUNTOF(nodes) - quiet; i++)
+                                      "/dev/tty", "/dev/dri", "/dev/input", "/dev/fuse"};
+  for (size_t i = 0; i < COUNTOF(nodes); i++)
     bind_host(nodes[i], true);
+  if (!quiet)
+    bind_host("/dev/snd", true);
   mkdirs("/newroot/dev/shm");
   if (mount("tmpfs", "/newroot/dev/shm", "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777") != 0)
     fail("mount tmpfs at", "/dev/shm");
@@ -636,20 +654,11 @@ static int sandbox(int log) {
   mkdirs(dst);
   if (mount("tmpfs", dst, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0700") != 0)
     fail("mount tmpfs at", dst);
-  if (runtime != NULL) {
-    static const char *const sockets[] = {"pipewire-0", "pulse"};
-    for (size_t i = 0; i < COUNTOF(sockets) + 1; i++) {
-      const char *name = i < COUNTOF(sockets) ? sockets[i] : wayland;
-      if (name == NULL || (quiet && i < COUNTOF(sockets)))
-        continue;
-      const char *base = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
-      if (name[0] == '/')
-        snprintf(src, sizeof(src), HOST "%s", name);
-      else
-        snprintf(src, sizeof(src), HOST "%s/%s", runtime, name);
-      snprintf(dst, sizeof(dst), "/newroot/run/user/%u/%s", getuid(), base);
-      bind_mount(src, dst, true);
-    }
+  if (runtime != NULL && wayland != NULL)
+    bind_runtime(runtime, wayland);
+  if (runtime != NULL && !quiet) {
+    bind_runtime(runtime, "pipewire-0");
+    bind_runtime(runtime, "pulse");
   }
   if (x_socket[0] != '\0') {
     snprintf(src, sizeof(src), HOST "%s", x_socket);

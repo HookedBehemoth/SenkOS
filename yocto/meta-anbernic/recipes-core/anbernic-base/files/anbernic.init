@@ -61,6 +61,10 @@ usb </dev/null >/dev/null 2>&1 &
 amixer -q -c 0 set 'Line Out' 70% unmute
 amixer -q -c 0 set DAC unmute
 
-# lid close / power key -> suspend; /run/power: the launcher's (player's) suspend, reboot, poweroff
-mkfifo -m 0620 /run/power && chgrp player /run/power
+# lid close / power key -> suspend; /run/power: the launcher's (shell's, not the apps') requests
+mkfifo -m 0620 /run/power && chgrp shell /run/power
 [ -x /usr/sbin/sleepd ] && sleepd > /dev/console 2>&1 &
+
+# downloadd: ports and system updates for the store and the launcher. Wi-Fi comes on once the
+# launcher is up (sleepd's "up").
+downloadd </dev/null >/var/log/downloadd.log 2>&1 &

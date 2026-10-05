@@ -3,6 +3,8 @@ LICENSE = "MIT"
 
 inherit image
 
+# Wi-Fi (anbernic-base's wifi): rtw88 as a module, its firmware, the regulatory database
+# downloadd, store: ports and system updates over the network (TLS: ca-certificates)
 # libsdl2: for what lives in /data (the bindless demo, SuperTuxKart, ports); our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
@@ -20,6 +22,10 @@ IMAGE_INSTALL = " \
     kernel-devicetree \
     anbernic-base \
     sleepd \
+    downloadd store \
+    wpa-supplicant wpa-supplicant-cli kernel-module-rtw88-8821cs linux-firmware-rtl8821 wireless-regdb-static \
+    ca-certificates \
+    tzdata \
     kmscube \
     libgallium \
     libegl-mesa \
@@ -91,6 +97,13 @@ ROOTFS_BOOTSTRAP_INSTALL = ""
 ROOTFS_POSTPROCESS_COMMAND:append = " dropbear_key_on_data"
 dropbear_key_on_data () {
 	sed -i 's#^DROPBEAR_RSAKEY_DIR=.*#DROPBEAR_RSAKEY_DIR=/data/OS/dropbear#' ${IMAGE_ROOTFS}/etc/default/dropbear
+	# The launcher's Debug (sleepd's "ssh ..."): SSH off, or on every network rather than the USB
+	# cable's alone (anbernic.init gives it 10.55.0.1 before rc5 starts dropbear). Ifs, not &&: the
+	# init script sources this under set -e, and a false last command would end it.
+	cat >> ${IMAGE_ROOTFS}/etc/default/dropbear <<-EOF
+		if [ -e /data/OS/dropbear/disabled ]; then NO_START=1; fi
+		if [ ! -e /data/OS/dropbear/everywhere ]; then DROPBEAR_PORT=10.55.0.1:22; fi
+	EOF
 }
 
 # /etc/init.d/weston (anbernic-base) starts seatd right before Weston; its own script would
@@ -98,6 +111,20 @@ dropbear_key_on_data () {
 ROOTFS_POSTPROCESS_COMMAND:append = " no_seatd_initscript"
 no_seatd_initscript () {
 	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??seatd
+}
+
+# The build, for system updates (downloadd asks the server for a newer one; tools/publish-os
+# reads it out of the slot image): UTC, YYYYMMDDHHMMSS, so newer sorts higher
+ROOTFS_POSTPROCESS_COMMAND:append = " anbernic_build"
+anbernic_build () {
+	date -u +%Y%m%d%H%M%S > ${IMAGE_ROOTFS}${sysconfdir}/build
+}
+
+# The time zone is the settings' (`clock`, anbernic-base); UTC until one is set
+ROOTFS_POSTPROCESS_COMMAND:append = " anbernic_localtime"
+anbernic_localtime () {
+	rm -f ${IMAGE_ROOTFS}${sysconfdir}/timezone
+	ln -sfn /data/OS/time/localtime ${IMAGE_ROOTFS}${sysconfdir}/localtime
 }
 
 # `smb` (anbernic-base) starts avahi with the SMB server

@@ -2,7 +2,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <linux/capability.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,9 +15,11 @@
 #include <sys/pidfd.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "util.h"
 #include "wake.h"
 
 /* weston.init's cgroup for apps: memory and CPU limits that keep the UI usable */
@@ -24,6 +29,77 @@
 
 running runs[RUNNING_MAX];
 static uint32_t seq;
+
+/* run_drop_root: the apps' environment, user and groups; app_groups < 0: apps run as we do */
+extern char **environ;
+static char **app_environ;
+static uid_t app_uid;
+static gid_t app_gid, app_group_list[32];
+static int app_groups = -1;
+
+/* Effective and permitted; nothing inheritable */
+static bool set_caps(uint32_t caps) {
+  struct __user_cap_header_struct h = {.version = _LINUX_CAPABILITY_VERSION_3};
+  struct __user_cap_data_struct d[2] = {{.effective = caps, .permitted = caps}};
+  return syscall(SYS_capset, &h, d) == 0;
+}
+
+bool run_drop_root(void) {
+  if (getuid() != 0)
+    return true;
+  const struct passwd *player = getpwnam("player");
+  if (player == NULL)
+    return false;
+  app_uid = player->pw_uid;
+  app_gid = player->pw_gid;
+  int n = COUNTOF(app_group_list);
+  if (getgrouplist("player", app_gid, app_group_list, &n) < 0)
+    return false;
+  size_t count = 0;
+  while (environ[count] != NULL)
+    count++;
+  if ((app_environ = calloc(count + 1, sizeof(*app_environ))) == NULL)
+    return false;
+  for (size_t i = 0; i < count; i++)
+    if ((app_environ[i] = strdup(environ[i])) == NULL)
+      return false;
+  const struct passwd *shell = getpwnam("shell");
+  if (shell == NULL)
+    return false;
+  const uid_t uid = shell->pw_uid;
+  const gid_t gid = shell->pw_gid;
+  STRBUF(256) home;
+  sb_set(home, str_c(shell->pw_dir));
+  if (initgroups("shell", gid) != 0 || prctl(PR_SET_KEEPCAPS, 1) != 0 || setresgid(gid, gid, gid) != 0 ||
+      setresuid(uid, uid, uid) != 0 || !set_caps(1u << CAP_SETUID | 1u << CAP_SETGID | 1u << CAP_KILL))
+    return false;
+  app_groups = n;
+  prctl(PR_SET_KEEPCAPS, 0);
+  /* Weston's socket by its path: the apps' runtime dir lets the player's group in */
+  const char *display = getenv("WAYLAND_DISPLAY"), *run = run_app_env("XDG_RUNTIME_DIR");
+  STRBUF(256) path;
+  if (display != NULL && display[0] != '/' && run != NULL && sb_set(path, str_c(run), S("/"), str_c(display)))
+    setenv("WAYLAND_DISPLAY", path.p, 1);
+  path.n = 0;
+  sb_fmt(path, "/run/user/%u", (unsigned)uid);
+  setenv("XDG_RUNTIME_DIR", path.p, 1);
+  static const char *const dirs[][2] = {{"XDG_CONFIG_HOME", "/config"}, {"XDG_STATE_HOME", "/state"},
+                                        {"XDG_CACHE_HOME", "/cache"}};
+  for (size_t i = 0; i < COUNTOF(dirs); i++)
+    if (sb_set(path, sb_str(home), str_c(dirs[i][1])))
+      setenv(dirs[i][0], path.p, 1);
+  return true;
+}
+
+const char *run_app_env(const char *name) {
+  if (app_environ == NULL)
+    return getenv(name);
+  const size_t n = strlen(name);
+  for (char **e = app_environ; *e != NULL; e++)
+    if (strncmp(*e, name, n) == 0 && (*e)[n] == '=')
+      return *e + n + 1;
+  return NULL;
+}
 
 /* Wakes the UI once the app is gone. Ours can't be reaped before that is
  * handled, so the pid stays valid until then. */
@@ -41,8 +117,6 @@ static void *exit_thread(void *data) {
   win_wake(UI_EXITED, pid);
   return NULL;
 }
-
-extern char **environ;
 
 running *run_launch(str label, str icon, str exec, str arg, str dir) {
   running *r = NULL;
@@ -71,14 +145,15 @@ running *run_launch(str label, str icon, str exec, str arg, str dir) {
     return NULL;
   }
   /* Built before fork: the child of a threaded process should not malloc */
+  char **const base = app_environ != NULL ? app_environ : environ;
   size_t n = 0;
-  while (environ[n] != NULL)
+  while (base[n] != NULL)
     n++;
   char **env = malloc((n + 2) * sizeof(*env));
   char channel[64];
   snprintf(channel, sizeof(channel), APPCTL_ENV "=%d,%d", pair[1], mem);
   if (env != NULL) {
-    memcpy(env, environ, n * sizeof(*env));
+    memcpy(env, base, n * sizeof(*env));
     env[n] = channel;
     env[n + 1] = NULL;
   }
@@ -86,16 +161,23 @@ running *run_launch(str label, str icon, str exec, str arg, str dir) {
   const pid_t pid = env != NULL ? fork() : -1;
   if (pid == 0) {
     setsid();
-    /* Gone with the launcher, even if it crashes */
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
-    if (getppid() != parent)
-      _exit(1);
-    /* Without the cgroup the app runs as it is, unlimited */
+    /* Without the cgroup the app runs as it is, unlimited. Moved while it's still ours: the
+     * cgroups are shell's. */
     const int cg = open(APPS_CGROUP, O_WRONLY | O_CLOEXEC);
     if (cg >= 0) {
       (void)!write(cg, "0", 1);
       close(cg);
     }
+    /* The player's, and none of our capabilities: with no root uid on either side, setresuid
+     * keeps them */
+    if (app_groups >= 0 &&
+        (setgroups((size_t)app_groups, app_group_list) != 0 || setresgid(app_gid, app_gid, app_gid) != 0 ||
+         setresuid(app_uid, app_uid, app_uid) != 0 || !set_caps(0)))
+      _exit(126);
+    /* Gone with the launcher, even if it crashes. After the switch, which clears it. */
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (getppid() != parent)
+      _exit(1);
     /* The app's ends survive exec */
     fcntl(pair[1], F_SETFD, 0);
     fcntl(mem, F_SETFD, 0);

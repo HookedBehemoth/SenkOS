@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "apps.h"
+#include "running.h"
 #include "util.h"
 
 enum { STEPS_MAX = 16, FPS_MIN = 30, FPS_MAX = 60, FPS_STEP = 5 };
@@ -125,6 +126,12 @@ static void save(void) {
   free((char *)text.p);
 }
 
+void power_apply(void) {
+  if (brightness_max > 0 && brightness > 0)
+    request("brightness", brightness);
+  set_clocks(app_cpu, app_gpu);
+}
+
 void power_init(void) {
   cpu_count = read_steps("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies", cpu_steps);
   gpu_count = read_steps("/sys/class/devfreq/*.gpu/available_frequencies", gpu_steps);
@@ -156,7 +163,8 @@ static int frames_fd = -1;
 
 static bool read_frames(uint32_t *out) {
   if (frames_fd < 0) {
-    const char *dir = getenv("XDG_RUNTIME_DIR");
+    /* Weston's, in the apps' runtime dir */
+    const char *dir = run_app_env("XDG_RUNTIME_DIR");
     char path[256];
     snprintf(path, sizeof(path), "%s/frames", dir ? dir : "/tmp");
     frames_fd = open(path, O_RDONLY | O_CLOEXEC);

@@ -57,6 +57,10 @@ gfx_target *gfx_target_create(win *window, bool translucent);
 /* False when there is nothing to draw to (minimized, lost surface). */
 bool gfx_begin(gfx_target *t, int *w, int *h);
 void gfx_push(gfx_quad q);
+/* A quad's place now, drawn later (gfx_set): under what comes after. Nothing until set. */
+uint32_t gfx_reserve(void);
+/* What the reserved quad is: its clip as given */
+void gfx_set(uint32_t at, gfx_quad q);
 void gfx_clip(float x, float y, float w, float h);
 void gfx_noclip(void);
 void gfx_end(gfx_target *t);

@@ -26,6 +26,8 @@ enum { POWER_CALIBRATE, POWER_CPU, POWER_GPU, POWER_BRIGHTNESS, POWER_ROWS };
 
 /* The tables, and the saved brightness set */
 void power_init(void);
+/* The saved brightness and the clocks in use, again: at start sleepd may not be there yet */
+void power_apply(void);
 /* `key`'s clocks (an app's: its ROM, folder or command) set; "": home, Auto */
 void power_use(str key);
 /* A row's value as shown: "60 fps", "Auto", "1008 MHz", "50%" */

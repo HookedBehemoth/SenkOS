@@ -865,6 +865,18 @@ void gfx_push(gfx_quad q) {
   building->map[quad_count++] = q;
 }
 
+uint32_t gfx_reserve(void) {
+  const uint32_t at = quad_count;
+  gfx_push((gfx_quad){.tex = GFX_WHITE});
+  return quad_count > at ? at : UINT32_MAX;
+}
+
+/* Written, never read back: the buffer is the GPU's */
+void gfx_set(uint32_t at, gfx_quad q) {
+  if (building != NULL && at < quad_count)
+    building->map[at] = q;
+}
+
 bool gfx_begin(gfx_target *t, int *w, int *h) {
   /* Unmapped: nothing may be attached until it's configured again */
   if (!t->window->configured)

@@ -5,8 +5,14 @@
  * (shutdown sends SIGTERM) is shown again at start.
  *
  * D-pad moves (left/right past the edge, or L1/R1, change page), A launches,
- * Start or Menu opens the quick menu (Storage, Licenses, power), Select on a game picks
- * its core. Storage: Libraries adds folders on the other card to systems
+ * Start or Menu opens the quick menu (Store, Settings, Power, Sleep, Reboot, Power off), Select on a game picks
+ * its core, on a port its readme or its page in the store. Power: home's clocks and the backlight
+ * (power.h). Settings: Storage, Wi-Fi, Time, Updates, Licenses. Wi-Fi: on or off, the networks
+ * (wifi.h), a password typed on the on-screen keyboard (keyboard.h). Time (clock.h): the zone,
+ * guessed or picked; NTP, or the date and time by hand. Updates: a newer system
+ * from the server, downloaded into the other slot by downloadd (updates.h); once up, the
+ * launcher tells sleepd ("up"), which commits a slot on trial and turns Wi-Fi on if it was. "reload" on the FIFO (downloadd,
+ * a port came or went) reads the page again. Storage: Libraries adds folders on the other card to systems
  * (their games join the system's page while the card is in), and what a PC
  * gets over USB (`usb`: MTP, UMS or SMB). Licenses: what the image holds,
  * and each one's texts to scroll through (licenses.h).
@@ -24,7 +30,7 @@
  * patched kiosk shell keeps it on top of everything without focus.
  *
  * `launcher launch PATH` (a port's folder, a ROM, an executable) starts that
- * app as A on its tile does: through $XDG_RUNTIME_DIR/launcher, a FIFO the
+ * app as A on its tile does: through /run/launcher (a desktop: $XDG_RUNTIME_DIR/launcher), a FIFO the
  * running launcher reads. Only at home: the app owns the screen and the pad
  * until it exits or Menu pauses it.
  *
@@ -41,6 +47,7 @@
 #include <poll.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -54,7 +61,9 @@
 #include "assets.h"
 #include "capture.h"
 #include "cfg.h"
+#include "clock.h"
 #include "gfx.h"
+#include "keyboard.h"
 #include "licenses.h"
 #include "nav.h"
 #include "pad.h"
@@ -62,10 +71,14 @@
 #include "romdb.h"
 #include "running.h"
 #include "ui.h"
+#include "updates.h"
 #include "wake.h"
 #include "util.h"
+#include "wifi.h"
 
-enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, ICON_PX = 22, MARGIN = 12 };
+enum { BAR = 32, BAR_TEXT = 18, BAR_ICON = 18, ROW = 44, ROW_TEXT = 22, ICON_PX = 22, MARGIN = 12 };
+/* A tree's step in: a row's icon under its parent's label */
+enum { TREE = ICON_PX + MARGIN };
 enum { TILE_W = 144, TILE_H = 160, ICON = 128, TILE_TEXT = 16, LETTER = 40,
        RADIUS = 12, GAP = 8 };
 enum { OSD_W = 320, OSD_H = 40, OSD_MS = 1500, RESULT_MS = 5000 };
@@ -93,15 +106,19 @@ static const gfx_color ACTIVE = {0x6a, 0x9c, 0xff, 0xff};
 static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
 /* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sleepd */
+/* HEADER: a section's title, not a row to choose */
 enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
-       STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN };
+       STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
+       WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
+       SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE };
 typedef struct {
   str label;
   str command;
   int action;
   int icon;     /* ICON_*, -1 for none */
-  int category; /* SETTINGS: appctl's; BROWSE_OPEN, LICENSE_OPEN: the row; TOGGLE_SYSTEM: into categories */
+  int category; /* SETTINGS: appctl's; BROWSE_OPEN, LICENSE_OPEN, ZONE_*: the row; TOGGLE_SYSTEM: into categories */
   bool checked; /* a check mark at the end */
+  int depth;    /* under the row above it at depth - 1: a tree's branch */
 } entry;
 
 /* All of it for an app on the control channel, else Resume, Power, Home and Quit.
@@ -125,20 +142,26 @@ static const entry pause_entries[] = {
 static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES + 1];
 /* sleepd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
-    {.label = S("Storage"), .action = STORAGE, .icon = -1},
-    {.label = S("Licenses"), .action = LICENSES_OPEN, .icon = -1},
-    {.label = S("Sleep"), .command = S("echo suspend > /run/power"), .action = RUN_COMMAND, .icon = -1},
-    {.label = S("Reboot"), .command = S("echo reboot > /run/power"), .action = RUN_COMMAND, .icon = -1},
-    {.label = S("Power off"), .command = S("echo poweroff > /run/power"), .action = RUN_COMMAND, .icon = -1},
+    {.label = S("Store"), .command = S("store"), .action = RUN_COMMAND, .icon = ICON_SHOPPING_BAG},
+    {.label = S("Settings"), .action = SYSTEM_SETTINGS, .icon = ICON_COG},
+    {.label = S("Power"), .action = HOME_POWER, .icon = ICON_ZAP},
+    {.label = S("Sleep"), .command = S("suspend\n"), .action = POWER, .icon = ICON_MOON},
+    {.label = S("Reboot"), .command = S("reboot\n"), .action = POWER, .icon = ICON_ROTATE_CW},
+    {.label = S("Power off"), .command = S("poweroff\n"), .action = POWER, .icon = ICON_POWER},
 };
-/* A request to sleepd (/run/power); the menu stays, and shows what came of it */
-static void power(str request) {
+/* Power's key at home (power.h): apps' are paths and commands */
+#define HOME_KEY S("home")
+/* A request to sleepd (/run/power); the menu stays, and shows what came of it. False when
+ * sleepd isn't there (yet). */
+static bool power(str request) {
   const int fd = open("/run/power", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-  if (fd >= 0) {
-    if (write(fd, request.p, request.n) != (ssize_t)request.n)
-      fprintf(stderr, "launcher: /run/power: %s\n", strerror(errno));
-    close(fd);
-  }
+  if (fd < 0)
+    return false;
+  const bool sent = write(fd, request.p, request.n) == (ssize_t)request.n;
+  if (!sent)
+    fprintf(stderr, "launcher: /run/power: %s\n", strerror(errno));
+  close(fd);
+  return sent;
 }
 
 /* What a PC gets over USB, by the usb script (sleepd runs it): /run/usb is
@@ -175,33 +198,37 @@ static bool usb_is(int i, str word) {
   return false;
 }
 
-/* Libraries, then the USB settings: on, the mode, and for UMS the cards and
- * Stop while a PC has them */
-enum { STORAGE_MAX = 8 };
+/* Libraries, then the USB settings as a tree: on, under it (while on) the modes, under UMS the
+ * cards and Stop while a PC has them */
+enum { STORAGE_MAX = 9 };
 static size_t storage_entries(entry *out) {
   static const str modes[] = {S("MTP"), S("UMS"), S("SMB")};
   static const str mode_cmds[] = {S("usb mtp\n"), S("usb ums\n"), S("usb smb\n")};
   static const str mode_words[] = {S("mtp"), S("ums"), S("smb")};
+  static const int mode_icons[] = {ICON_SMARTPHONE, ICON_HARD_DRIVE, ICON_NETWORK};
   const bool on = usb_is(0, S("on"));
   size_t n = 0;
-  out[n++] = (entry){.label = S("Libraries"), .action = BROWSE, .icon = -1};
-  out[n++] = (entry){.label = S("Enabled"), .command = on ? S("usb off\n") : S("usb on\n"), .action = POWER,
-                     .icon = -1, .checked = on};
-  for (size_t i = 0; i < COUNTOF(modes); i++)
-    out[n++] = (entry){.label = modes[i], .command = mode_cmds[i], .action = POWER, .icon = -1,
-                       .checked = usb_is(1, mode_words[i])};
-  if (usb_is(1, S("ums"))) {
-    out[n++] = (entry){.label = S("SD card"), .command = S("usb sd\n"), .action = POWER, .icon = -1,
-                       .checked = usb_is(-1, S("sd"))};
-    out[n++] = (entry){.label = S("Main card"), .command = S("usb data\n"), .action = POWER, .icon = -1,
-                       .checked = usb_is(-1, S("data"))};
+  out[n++] = (entry){.label = S("Libraries"), .action = BROWSE, .icon = ICON_LIBRARY};
+  out[n++] = (entry){.label = S("USB connection"), .command = on ? S("usb off\n") : S("usb on\n"), .action = POWER,
+                     .icon = ICON_USB, .checked = on};
+  /* Collapsed while off */
+  for (size_t i = 0; on && i < COUNTOF(modes); i++) {
+    out[n++] = (entry){.label = modes[i], .command = mode_cmds[i], .action = POWER, .icon = mode_icons[i],
+                       .checked = usb_is(1, mode_words[i]), .depth = 1};
+    if (i != 1 || !usb_is(1, S("ums")))
+      continue;
+    out[n++] = (entry){.label = S("SD card"), .command = S("usb sd\n"), .action = POWER, .icon = ICON_MEMORY_STICK,
+                       .checked = usb_is(-1, S("sd")), .depth = 2};
+    out[n++] = (entry){.label = S("Main card"), .command = S("usb data\n"), .action = POWER,
+                       .icon = ICON_MEMORY_STICK, .checked = usb_is(-1, S("data")), .depth = 2};
     if (ums_on)
-      out[n++] = (entry){.label = S("Stop"), .command = S("ums stop\n"), .action = POWER, .icon = -1};
+      out[n++] = (entry){.label = S("Stop"), .command = S("ums stop\n"), .action = POWER, .icon = ICON_SQUARE,
+                         .depth = 2};
   }
   return n;
 }
-static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = -1},
-                                        {.label = S("Ignore for this app"), .action = IGNORE, .icon = -1}};
+static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = ICON_CHECK},
+                                        {.label = S("Ignore for this app"), .action = IGNORE, .icon = ICON_EYE_OFF}};
 /* The core picker's rows: one per core, PICK_CORE (CORES_MAX: apps.h) */
 
 /* Running (only while something is), then the categories */
@@ -214,7 +241,7 @@ static str page_name(size_t page) {
 typedef struct {
   int battery; /* percent, -1 without one */
   bool charging;
-  int wifi; /* bars 0-4, -1 without a wireless interface */
+  int wifi; /* wifi_signal: -1 off, 0 on no network, bars 1-4 */
 } status;
 
 static void redraw(win *w);
@@ -257,11 +284,13 @@ static struct {
 /* Over home: the quick menu, or Select on a game whose system has more than
  * one core: which runs it. Instead of home: Storage, Libraries, and a
  * folder's systems; Licenses, and one's texts. */
-enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS, MODAL_LICENSES,
-       MODAL_LICENSE };
+enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_PORT, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS, MODAL_LICENSES,
+       MODAL_LICENSE, MODAL_WIFI, MODAL_KEYBOARD, MODAL_UPDATES, MODAL_README, MODAL_SETTINGS, MODAL_POWER,
+       MODAL_ZONES, MODAL_ZONE, MODAL_CLOCK, MODAL_TIME, MODAL_DEBUG };
 static struct {
   int kind;
-  STRBUF(512) rom; /* MODAL_CORES: the game's arg, as a rescan reorders */
+  STRBUF(512) rom; /* MODAL_CORES: the game's arg, as a rescan reorders; MODAL_PORT, MODAL_README: its folder */
+  STRBUF(64) name; /* MODAL_PORT, MODAL_README: the port's */
   nav_id back;
 } modal;
 /* The tile focused on the page, the row in the last menu; -1: none */
@@ -397,7 +426,7 @@ static STRBUF(600) starting_image;
 /* The launcher has the screen again, at the focus it left */
 static void go_home(nav *ui) {
   front = NULL;
-  power_use(S(""));
+  power_use(HOME_KEY);
   starting = S("");
   paused = in_settings = false;
   capture.option = -1;
@@ -588,17 +617,7 @@ static void read_status(status *s) {
                   strncmp(line, "Charging", 8) == 0;
     globfree(&g);
   }
-  /* Two header lines, then "wlan0: 0000   54.  -56. ...": link quality of 70. */
-  s->wifi = -1;
-  FILE *f = fopen("/proc/net/wireless", "r");
-  if (f != NULL) {
-    float quality;
-    if (fgets(line, sizeof(line), f) && fgets(line, sizeof(line), f) &&
-        fgets(line, sizeof(line), f) &&
-        sscanf(line, "%*[^:]: %*x %f", &quality) == 1)
-      s->wifi = CLAMP((int)(quality * 4 / 70 + 0.5f), 0, 4);
-    fclose(f);
-  }
+  s->wifi = wifi_signal();
 }
 
 /* Speaker, then the level as a bar. Created on first use: a second
@@ -645,7 +664,7 @@ static void show_text(str text, int ms) {
   osd_until = ms_now() + ms;
 }
 
-/* "[time]      [page]         [wifi bars][battery%][battery symbol]" */
+/* "[time]      [page]         [wifi][battery%][battery symbol]"; no Wi-Fi symbol while it's off */
 static void top_bar(int width, str page, const status *s) {
   char clock[8];
   const time_t now = time(NULL);
@@ -669,10 +688,10 @@ static void top_bar(int width, str page, const status *s) {
     x -= 6 + ui_text_width(BAR_TEXT, sb_str(percent));
     ui_text(BAR_TEXT, (int)x, y, sb_str(percent), FG);
   }
-  x -= 10 + 4 * 5;
-  for (int i = 0; i < 4; i++) {
-    const float h = 4 + 3 * i;
-    ui_rounded(x + i * 5, BAR / 2 + 7 - h, 3, h, i < s->wifi ? FG : DIM, 1, 0);
+  if (s->wifi >= 0) {
+    static const int arcs[] = {ICON_WIFI_OFF, ICON_WIFI_LOW, ICON_WIFI_HIGH, ICON_WIFI, ICON_WIFI};
+    x -= 10 + BAR_ICON;
+    ui_icon(arcs[CLAMP(s->wifi, 0, 4)], BAR_ICON, (int)x, (BAR - BAR_ICON) / 2, s->wifi > 0 ? FG : DIM);
   }
   ui_fill(0, BAR, width, 1, DIM);
 }
@@ -690,15 +709,45 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
   const float offset =
       nav_scroll_begin(ui, nav_str("menu"), view, UI_VERTICAL,
                        count * ROW + MARGIN * 2, ROW, 0);
+  nav_fill(ui, FOCUS, 6);
   gfx_clip(view.x, view.y, view.w, view.h);
   for (size_t i = 0; i < count; i++) {
-    const ui_rect r = {view.x + MARGIN, view.y + MARGIN + i * ROW - offset,
-                       view.w - MARGIN * 2, ROW - 4};
+    const int depth = entries[i].depth;
+    const float top = view.y + MARGIN + i * ROW - offset;
+    const ui_rect r = {view.x + MARGIN + depth * TREE, top, view.w - MARGIN * 2 - depth * TREE, ROW - 4};
+    const bool shown = r.y < view.y + view.h && r.y + r.h > view.y;
+    if (entries[i].action == HEADER) {
+      if (shown) {
+        ui_icon(entries[i].icon, ICON_PX, (int)r.x + MARGIN, (int)r.y + ((int)r.h - ICON_PX) / 2, DIM);
+        ui_text(ROW_TEXT, (int)r.x + MARGIN * 2 + ICON_PX, (int)r.y + ((int)r.h - ui_text_height(ROW_TEXT)) / 2,
+                entries[i].label, DIM);
+      }
+      continue;
+    }
     const unsigned flags = nav_item(ui, nav_int(i), r, view);
     nav_ring(ui, r, 8);
-    if (flags & NAV_FOCUSED) {
-      ui_rounded(r.x, r.y, r.w, r.h, FOCUS, 6, 0);
+    if (flags & NAV_FOCUSED)
       menu_focus = (int)i;
+    if (flags & NAV_ACTIVATED)
+      chosen = &entries[i];
+    if (!shown)
+      continue;
+    /* The tree: down from the parent's icon (or the sibling above), across to this one's,
+     * and on down past it to the next sibling; an ancestor's line passes by */
+    const float mid = r.y + r.h / 2;
+    for (int k = 1; k <= depth; k++) {
+      const float lx = view.x + MARGIN + (k - 1) * TREE + MARGIN + ICON_PX / 2 - 1;
+      bool on = false;
+      for (size_t j = i + 1; j < count && entries[j].depth >= k && !on; j++)
+        on = entries[j].depth == k;
+      if (k < depth) {
+        if (on)
+          ui_fill(lx, r.y - 4, 2, ROW, DIM);
+        continue;
+      }
+      const float from = i > 0 && entries[i - 1].depth == k - 1 ? r.y - 4 - (ROW - 4) / 2 + ICON_PX / 2 + 3 : r.y - 4;
+      ui_fill(lx, from, 2, (on ? r.y + r.h : mid + 1) - from, DIM);
+      ui_fill(lx, mid - 1, r.x - 2 - lx, 2, DIM);
     }
     int x = (int)r.x + MARGIN;
     if (entries[i].icon >= 0) {
@@ -710,17 +759,14 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
             ui_text_fit(ROW_TEXT, entries[i].label, room, NULL), FG);
     if (entries[i].checked)
       ui_icon(ICON_CHECK, ICON_PX, (int)(r.x + r.w) - MARGIN - ICON_PX, (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
-    if (flags & NAV_ACTIVATED)
-      chosen = &entries[i];
   }
   gfx_noclip();
   nav_scroll_end(ui);
   return chosen;
 }
 
-static void tile(const app *a, ui_rect r, unsigned flags) {
-  ui_rounded(r.x, r.y, r.w, r.h, flags & NAV_FOCUSED ? FOCUS : TILE, RADIUS, 0);
-  ui_rounded(r.x, r.y, r.w, r.h, EDGE, RADIUS, 1);
+/* Over its background (tiles) */
+static void tile(const app *a, ui_rect r) {
   if (run_same(sb_str(a->exec), sb_str(a->arg), sb_str(a->dir)) != NULL)
     ui_rounded(r.x + r.w - 16, r.y + 8, 8, 8, ACTIVE, 4, 0);
   const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 8;
@@ -765,6 +811,16 @@ static const app *tiles(nav *ui, const category *c, ui_rect view) {
   const app *chosen = NULL;
   tiles_focus = -1;
   gfx_clip(view.x, view.y, view.w, view.h);
+  /* The backgrounds first: the focus's fill goes over them, under the icons */
+  for (size_t i = 0; i < c->count; i++) {
+    const ui_rect r = {left + (i % cols) * (TILE_W + GAP), view.y + GAP + (i / cols) * (TILE_H + GAP) - offset,
+                       TILE_W, TILE_H};
+    if (r.y < view.y + view.h && r.y + r.h > view.y) {
+      ui_rounded(r.x, r.y, r.w, r.h, TILE, RADIUS, 0);
+      ui_rounded(r.x, r.y, r.w, r.h, EDGE, RADIUS, 1);
+    }
+  }
+  nav_fill(ui, FOCUS, RADIUS);
   for (size_t i = 0; i < c->count; i++) {
     const ui_rect r = {left + (i % cols) * (TILE_W + GAP),
                        view.y + GAP + (i / cols) * (TILE_H + GAP) - offset,
@@ -776,7 +832,7 @@ static const app *tiles(nav *ui, const category *c, ui_rect view) {
     if (flags & NAV_FOCUSED)
       tiles_focus = (int)i;
     if (r.y < view.y + view.h && r.y + r.h > view.y)
-      tile(&c->apps[i], r, flags);
+      tile(&c->apps[i], r);
     if (flags & NAV_ACTIVATED)
       chosen = &c->apps[i];
   }
@@ -810,6 +866,7 @@ static void settings(nav *ui, running *r, ui_rect view) {
   }
   const float offset = nav_scroll_begin(ui, nav_str("settings"), view, UI_VERTICAL,
                                         rows * ROW + MARGIN * 2, ROW, 0);
+  nav_fill(ui, FOCUS, 6);
   gfx_clip(view.x, view.y, view.w, view.h);
   for (uint32_t i = 0, at = 0; i < n; i++) {
     if (r->shm->options[i].category != settings_category)
@@ -818,10 +875,8 @@ static void settings(nav *ui, running *r, ui_rect view) {
                          view.w - MARGIN * 2, ROW - 4};
     const unsigned flags = nav_item(ui, nav_int(i), row, view);
     nav_ring(ui, row, 8);
-    if (flags & NAV_FOCUSED) {
-      ui_rounded(row.x, row.y, row.w, row.h, FOCUS, 6, 0);
+    if (flags & NAV_FOCUSED)
       settings_focus = (int)i;
-    }
     /* The app wrote these: bounded here */
     const appctl_option *o = &r->shm->options[i];
     const bool binding = o->kind == APPCTL_BINDING;
@@ -853,24 +908,26 @@ static void settings(nav *ui, running *r, ui_rect view) {
   nav_scroll_end(ui);
 }
 
-/* Power (power.h): left/right step a row; A on calibration starts it.
- * Returns whether to start it. */
+/* Power (power.h): left/right step a row; A on calibration starts it (an app's: home has
+ * none). Returns whether to start it. */
 static int power_focus = -1;
 
-static bool power_page(nav *ui, ui_rect view) {
+static bool power_page(nav *ui, ui_rect view, bool calibration) {
   static const str labels[POWER_ROWS] = {S("Automatic calibration"), S("CPU"), S("GPU"), S("Brightness")};
+  static const int icons[POWER_ROWS] = {ICON_GAUGE, ICON_CPU, ICON_MICROCHIP, ICON_SUN};
   bool calibrate = false;
   settings_focus = power_focus = -1;
-  const float offset = nav_scroll_begin(ui, nav_str("power"), view, UI_VERTICAL, POWER_ROWS * ROW + MARGIN * 2, ROW, 0);
+  const int first = calibration ? 0 : POWER_CPU;
+  const float offset =
+      nav_scroll_begin(ui, nav_str("power"), view, UI_VERTICAL, (POWER_ROWS - first) * ROW + MARGIN * 2, ROW, 0);
+  nav_fill(ui, FOCUS, 6);
   gfx_clip(view.x, view.y, view.w, view.h);
-  for (int i = 0; i < POWER_ROWS; i++) {
-    const ui_rect row = {view.x + MARGIN, view.y + MARGIN + i * ROW - offset, view.w - MARGIN * 2, ROW - 4};
+  for (int i = first; i < POWER_ROWS; i++) {
+    const ui_rect row = {view.x + MARGIN, view.y + MARGIN + (i - first) * ROW - offset, view.w - MARGIN * 2, ROW - 4};
     const unsigned flags = nav_item(ui, nav_int(i), row, view);
     nav_ring(ui, row, 8);
-    if (flags & NAV_FOCUSED) {
-      ui_rounded(row.x, row.y, row.w, row.h, FOCUS, 6, 0);
+    if (flags & NAV_FOCUSED)
       power_focus = i;
-    }
     if ((flags & NAV_ACTIVATED) && i == POWER_CALIBRATE)
       calibrate = true;
     else if (flags & NAV_ACTIVATED)
@@ -878,8 +935,9 @@ static bool power_page(nav *ui, ui_rect view) {
     STRBUF(64) value;
     sb_set(value, S("\u2039 "), power_value(i), S(" \u203a"));
     const int y = (int)row.y + ((int)row.h - ui_text_height(ROW_TEXT)) / 2;
-    const int vw = ui_text_width(ROW_TEXT, sb_str(value));
-    ui_text(ROW_TEXT, (int)row.x + MARGIN, y, ui_text_fit(ROW_TEXT, labels[i], row.w - vw - MARGIN * 3, NULL), FG);
+    const int vw = ui_text_width(ROW_TEXT, sb_str(value)), lx = (int)row.x + MARGIN * 2 + ICON_PX;
+    ui_icon(icons[i], ICON_PX, (int)row.x + MARGIN, (int)row.y + ((int)row.h - ICON_PX) / 2, FG);
+    ui_text(ROW_TEXT, lx, y, ui_text_fit(ROW_TEXT, labels[i], row.x + row.w - lx - vw - MARGIN * 2, NULL), FG);
     ui_text(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, sb_str(value), flags & NAV_FOCUSED ? FG : DIM);
   }
   gfx_noclip();
@@ -961,9 +1019,22 @@ static const entry *core_dialog(nav *ui, int w, int h, category *c) {
   }
   const size_t n = c->core_count;
   for (size_t i = 0; i < n; i++) {
-    core_rows[i] = (entry){.label = sb_str(c->cores[i].name), .action = PICK_CORE, .icon = -1, .checked = (int)i == a->core};
+    core_rows[i] = (entry){.label = sb_str(c->cores[i].name), .action = PICK_CORE, .icon = ICON_GAMEPAD_2,
+                           .checked = (int)i == a->core};
   }
   return dialog_box(ui, w, h, sb_str(a->name), S("Run with"), core_rows, n);
+}
+
+/* Select on a port: its readme, its page in the store */
+static const entry *port_dialog(nav *ui, int w, int h) {
+  static entry rows[2];
+  size_t n = 0;
+  STRBUF(600) md;
+  sb_set(md, sb_str(modal.rom), S("/port.md"));
+  if (access(md.p, F_OK) == 0)
+    rows[n++] = (entry){.label = S("Readme"), .action = PORT_README, .icon = ICON_BOOK_OPEN};
+  rows[n++] = (entry){.label = S("Store page"), .action = PORT_STORE, .icon = ICON_SHOPPING_BAG};
+  return dialog_box(ui, w, h, sb_str(modal.name), S(""), rows, n);
 }
 
 /* Libraries: the card's partitions (where sdcard.rules mounts them)
@@ -1098,6 +1169,270 @@ static void license_screen(nav *ui, ui_rect view) {
   nav_scroll_end(ui);
 }
 
+/* MODAL_README: the port's port.md as text, wrapped to the width it was last shown at */
+static str readme_text;
+static ui_lines readme_lines;
+static float readme_width;
+
+static void readme_load(void) {
+  STRBUF(600) path;
+  sb_set(path, sb_str(modal.rom), S("/port.md"));
+  const str md = str_read(fopen(path.p, "r"));
+  free((char *)readme_text.p);
+  readme_text = md.p != NULL ? ui_markdown(md) : (str){0};
+  free((char *)md.p);
+  readme_width = 0;
+}
+
+static void readme_screen(nav *ui, ui_rect view) {
+  if (readme_width != view.w) {
+    readme_width = view.w;
+    readme_lines.count = 0;
+    ui_wrap_text(&readme_lines, readme_text, LICENSE_TEXT, view.w - MARGIN * 4);
+  }
+  const int line = ui_text_height(LICENSE_TEXT) + 2;
+  const float offset = nav_scroll_begin(ui, nav_str("readme"), view, UI_VERTICAL,
+                                        readme_lines.count * line + MARGIN * 2, 0, line);
+  gfx_clip(view.x, view.y, view.w, view.h);
+  for (size_t i = (size_t)MAX(0, (offset - MARGIN) / line); i < readme_lines.count; i++) {
+    const float y = view.y + MARGIN + i * line - offset;
+    if (y >= view.y + view.h)
+      break;
+    ui_text(LICENSE_TEXT, (int)view.x + MARGIN * 2, (int)y, readme_lines.lines[i], FG);
+  }
+  gfx_noclip();
+  nav_scroll_end(ui);
+}
+
+/* MODAL_KEYBOARD: the network the password is for */
+static struct {
+  STRBUF(160) ssid;
+} wifi_pick;
+
+static void keyboard_submit(nav *ui) {
+  if (!wifi_connect(sb_str(wifi_pick.ssid), true, keyboard_text()))
+    fprintf(stderr, "launcher: wifi: couldn't add %s\n", wifi_pick.ssid.p);
+  modal.kind = MODAL_WIFI;
+  nav_focus(ui, 0);
+}
+
+/* "142 MB" */
+static str megabytes(unsigned long long bytes) {
+  static STRBUF(32) out;
+  out.n = 0;
+  sb_fmt(out, "%llu MB", (bytes + (1 << 19)) >> 20);
+  return sb_str(out);
+}
+
+/* downloadd's "https://…/v1/os?…: Couldn't resolve host name" as its reason alone */
+static str without_url(str why) {
+  const size_t scheme = str_find(why, ':');
+  if (scheme + 2 < why.n && why.p[scheme + 1] == '/' && why.p[scheme + 2] == '/')
+    for (size_t i = scheme + 3; i + 1 < why.n; i++)
+      if (why.p[i] == ':' && why.p[i + 1] == ' ')
+        return str_at(why, i + 2);
+  return why;
+}
+
+/* Updates: what the server has, then what can be done about it */
+static size_t update_rows(entry *rows, str *said) {
+  static STRBUF(64) labels[3];
+  static STRBUF(700) text;
+  pthread_mutex_lock(&updates_lock);
+  const update_state u = updates;
+  pthread_mutex_unlock(&updates_lock);
+  size_t n = 0;
+  sb_set(text, S("This system: "), updates_build(), S(". "));
+  if (!u.connected)
+    sb_add(text, S("The download service isn't running."));
+  else if (u.job == UPDATE_IDLE && str_eq(sb_str(u.job_state), S("failed")))
+    sb_add(text, S("The update failed: "), sb_str(u.job_message));
+  else if (u.check == UPDATE_CHECKING)
+    sb_add(text, S("Checking\u2026"));
+  else if (u.check == UPDATE_CURRENT)
+    sb_add(text, S("It's up to date."));
+  else if (u.check == UPDATE_AVAILABLE)
+    sb_add(text, S("Build "), sb_str(u.build), S(" is out. "), sb_str(u.notes));
+  else if (u.check == UPDATE_FAILED)
+    sb_add(text, S("Couldn't check: "), without_url(sb_str(u.notes)));
+  *said = sb_str(text);
+  if (u.job == UPDATE_READY) {
+    rows[n++] = (entry){.label = S("Restart to finish the update"), .command = S("reboot\n"), .action = POWER,
+                        .icon = ICON_ROTATE_CW};
+    return n;
+  }
+  if (u.job == UPDATE_RUNNING) {
+    labels[0].n = 0;
+    if (str_eq(sb_str(u.job_state), S("downloading")))
+      sb_fmt(labels[0], "Downloading %d%%", u.total ? (int)(u.done * 100 / u.total) : 0);
+    else if (str_eq(sb_str(u.job_state), S("installing")))
+      sb_set(labels[0], S("Installing\u2026"));
+    else
+      sb_set(labels[0], S("Waiting\u2026"));
+    rows[n++] = (entry){.label = sb_str(labels[0]), .action = NOTHING, .icon = ICON_HOURGLASS};
+    return n;
+  }
+  if (u.check == UPDATE_AVAILABLE) {
+    sb_set(labels[1], S("Download and install ("), megabytes(u.size), S(")"));
+    rows[n++] = (entry){.label = sb_str(labels[1]), .action = UPDATE_INSTALL, .icon = ICON_DOWNLOAD};
+  }
+  rows[n++] = (entry){.label = S("Check for updates"), .action = UPDATE_CHECK, .icon = ICON_REFRESH_CW};
+  return n;
+}
+
+/* SSH (dropbear: root, no password) is off while this is there, and on the USB cable's network
+ * alone unless SSH_ALL is; sleepd's "ssh on|off|all|usb" */
+#define SSH_OFF "/data/OS/dropbear/disabled"
+#define SSH_ALL "/data/OS/dropbear/everywhere"
+
+/* Settings, Time and Debug: what each row does */
+enum { PAGE_MAX = 8 };
+static size_t page_rows(int kind, entry *rows) {
+  static STRBUF(96) zone, when;
+  size_t n = 0;
+  if (kind == MODAL_TIME) {
+    const str z = clock_zone();
+    sb_set(zone, S("Time zone  \u00b7  "), z.n > 0 ? z : S("UTC"), clock_zone_chosen() ? S("") : S(" (automatic)"));
+    rows[n++] = (entry){.label = sb_str(zone), .action = ZONES, .icon = ICON_GLOBE};
+    rows[n++] = (entry){.label = S("Set the time automatically"), .action = NTP, .icon = ICON_REFRESH_CW,
+                        .checked = clock_ntp()};
+    if (!clock_ntp()) {
+      char text[32];
+      const time_t now = time(NULL);
+      strftime(text, sizeof(text), "%Y-%m-%d  %H:%M", localtime(&now));
+      sb_set(when, S("Date and time  \u00b7  "), str_c(text));
+      rows[n++] = (entry){.label = sb_str(when), .action = CLOCK, .icon = ICON_CALENDAR_CLOCK};
+    }
+  } else if (kind == MODAL_DEBUG) {
+    const bool on = access(SSH_OFF, F_OK) != 0;
+    rows[n++] = (entry){.label = S("SSH  \u00b7  root, no password"), .action = SSH, .icon = ICON_NETWORK,
+                        .checked = on};
+    if (on)
+      rows[n++] = (entry){.label = S("On every network, not just USB"), .action = SSH_EVERYWHERE,
+                          .icon = ICON_TRIANGLE_ALERT, .checked = access(SSH_ALL, F_OK) == 0, .depth = 1};
+  } else {
+    rows[n++] = (entry){.label = S("Storage"), .action = STORAGE, .icon = ICON_HARD_DRIVE};
+    rows[n++] = (entry){.label = S("Wi-Fi"), .action = WIFI, .icon = ICON_WIFI};
+    rows[n++] = (entry){.label = S("Time"), .action = TIME, .icon = ICON_CLOCK};
+    rows[n++] = (entry){.label = S("Updates"), .action = UPDATES, .icon = ICON_DOWNLOAD};
+    rows[n++] = (entry){.label = S("Debug"), .action = DEBUG, .icon = ICON_CPU};
+    rows[n++] = (entry){.label = S("Licenses"), .action = LICENSES_OPEN, .icon = ICON_SCROLL_TEXT};
+  }
+  return n;
+}
+
+static const char *page_scope(int kind) {
+  return kind == MODAL_TIME ? "time" : kind == MODAL_DEBUG ? "debug" : "system";
+}
+
+/* Settings, Time or Debug, on the row that does `action` (none: the top) */
+static void open_page(nav *ui, int kind, int action) {
+  entry rows[PAGE_MAX];
+  const size_t n = page_rows(kind, rows);
+  modal.kind = kind;
+  nav_focus(ui, 0);
+  for (size_t i = 0; i < n; i++)
+    if (rows[i].action == action)
+      nav_focus(ui, menu_row(nav_str(page_scope(kind)), i));
+}
+
+/* MODAL_ZONE: the region whose zones are shown */
+static STRBUF(32) zone_region;
+
+/* MODAL_ZONES on the zone's region, MODAL_ZONE on the zone */
+static void open_zones(nav *ui, int kind) {
+  const str *names;
+  const str zone = clock_zone();
+  const size_t n = kind == MODAL_ZONES ? clock_regions(&names) : clock_zones(sb_str(zone_region), &names);
+  const str want = kind == MODAL_ZONES ? str_head(zone, str_find(zone, '/')) : zone;
+  modal.kind = kind;
+  nav_focus(ui, 0);
+  for (size_t i = 0; i < n; i++)
+    if (str_eq(names[i], want))
+      nav_focus(ui, menu_row(nav_str(kind == MODAL_ZONES ? "zones" : "zone"), i + (kind == MODAL_ZONES)));
+}
+
+/* MODAL_CLOCK: year, month, day, hour, minute; the field changed by up and down */
+enum { CLOCK_FIELDS = 5 };
+static struct {
+  int field[CLOCK_FIELDS];
+  int at;
+} clock_edit;
+
+static void clock_open(void) {
+  const time_t now = time(NULL);
+  const struct tm *t = localtime(&now);
+  clock_edit = (typeof(clock_edit)){{t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min}, 0};
+  modal.kind = MODAL_CLOCK;
+}
+
+static void clock_step(int by) {
+  static const int mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  int *f = clock_edit.field;
+  const int y = f[0], leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+  const int days = mdays[f[1] - 1] + (f[1] == 2 && leap);
+  const int low[] = {2020, 1, 1, 0, 0}, high[] = {2099, 12, days, 23, 59};
+  const int i = clock_edit.at, span = high[i] - low[i] + 1;
+  f[i] = low[i] + ((f[i] - low[i] + by) % span + span) % span;
+  /* A shorter month: its last day */
+  const int now_days = mdays[f[1] - 1] + (f[1] == 2 && ((f[0] % 4 == 0 && f[0] % 100 != 0) || f[0] % 400 == 0));
+  f[2] = MIN(f[2], now_days);
+}
+
+/* To sleepd, as seconds: the fields are this zone's time */
+static void clock_set(void) {
+  const int *f = clock_edit.field;
+  struct tm t = {.tm_year = f[0] - 1900, .tm_mon = f[1] - 1, .tm_mday = f[2], .tm_hour = f[3], .tm_min = f[4],
+                 .tm_isdst = -1};
+  const time_t when = mktime(&t);
+  STRBUF(48) request;
+  request.n = 0;
+  sb_fmt(request, "clock set %lld\n", (long long)when);
+  if (when != (time_t)-1)
+    power(sb_str(request));
+}
+
+/* Over Settings: the date's fields, then the time's, the one changing ringed */
+static void clock_dialog(int w, int h) {
+  ui_fill(0, 0, w, h, SCRIM);
+  /* "2026 - 10 - 05     18 : 30" */
+  static const char *const after[CLOCK_FIELDS] = {"-", "-", "", ":", ""};
+  const int text = ui_text_height(ROW_TEXT), digits = ui_text_width(ROW_TEXT, S("00")) + MARGIN;
+  const float field_w[CLOCK_FIELDS] = {ui_text_width(ROW_TEXT, S("0000")) + MARGIN, digits, digits, digits, digits};
+  const float sep = ui_text_width(ROW_TEXT, S(" - ")), gap = MARGIN * 4;
+  float total = gap;
+  for (int i = 0; i < CLOCK_FIELDS; i++)
+    total += field_w[i] + (after[i][0] ? sep : 0);
+  const float dw = MAX(total + MARGIN * 4, 320), dh = MARGIN * 5 + text * 3 + 4 + ROW;
+  const float x = (w - dw) / 2, y = (h - dh) / 2;
+  ui_rounded(x, y, dw, dh, TILE, RADIUS, 0);
+  ui_rounded(x, y, dw, dh, EDGE, RADIUS, 1);
+  ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)y + MARGIN * 2, S("Date and time"), FG);
+  float fx = x + (dw - total) / 2;
+  const float ly = y + MARGIN * 3 + text, fy = ly + text + 4, fh = ROW;
+  for (int i = 0; i < CLOCK_FIELDS; i++) {
+    if (i == 0 || i == 3)
+      ui_text(ROW_TEXT, (int)fx, (int)ly, i == 0 ? S("Date") : S("Time"), DIM);
+    ui_rounded(fx, fy, field_w[i], fh, i == clock_edit.at ? FOCUS : BG, 6, 0);
+    if (i == clock_edit.at)
+      ui_rounded(fx - 2, fy - 2, field_w[i] + 4, fh + 4, (gfx_color){RING[0], RING[1], RING[2], RING[3]}, 8, 2);
+    STRBUF(8) value;
+    value.n = 0;
+    sb_fmt(value, i == 0 ? "%04d" : "%02d", clock_edit.field[i]);
+    ui_text(ROW_TEXT, (int)(fx + (field_w[i] - ui_text_width(ROW_TEXT, sb_str(value))) / 2), (int)(fy + (fh - text) / 2),
+            sb_str(value), FG);
+    fx += field_w[i];
+    if (after[i][0]) {
+      const str a = str_c(after[i]);
+      ui_text(ROW_TEXT, (int)(fx + (sep - ui_text_width(ROW_TEXT, a)) / 2), (int)(fy + (fh - text) / 2), a, DIM);
+      fx += sep;
+    }
+    if (i == 2)
+      fx += gap;
+  }
+  ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(fy + fh + MARGIN), S("A: set    B: cancel"), DIM);
+}
+
 /* Instead of home: Storage; a folder's rows, each with the systems it's a
  * source of; or that folder's systems, its own checked; Licenses, or one's
  * texts */
@@ -1124,27 +1459,119 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
           sb_add(labels[i], first ? S("  \u00b7  ") : S(", "), categories[sources[k].category].name);
           first = false;
         }
-      rows[i] = (entry){.label = sb_str(labels[i]), .action = BROWSE_OPEN, .icon = -1, .category = (int)i};
+      rows[i] = (entry){.label = sb_str(labels[i]), .action = BROWSE_OPEN, .icon = ICON_FOLDER, .category = (int)i};
     }
     NAV_SCOPE(ui, nav_str(browse_dir.p)) { chosen = menu(ui, rows, browse_count, list); }
     hint = browse_count > 0 ? S("A: open    X: systems    B: back") : S("B: back");
   } else if (modal.kind == MODAL_LICENSES) {
     top_bar(w, S("Licenses"), st);
     for (size_t i = 0; i < license_count; i++)
-      rows[i] = (entry){.label = licenses[i].label, .action = LICENSE_OPEN, .icon = -1, .category = (int)i};
+      rows[i] = (entry){.label = licenses[i].label, .action = LICENSE_OPEN, .icon = ICON_FILE_TEXT, .category = (int)i};
     NAV_SCOPE(ui, nav_str("licenses")) { chosen = menu(ui, rows, license_count, list); }
     hint = license_count > 0 ? S("A: read    B: back") : S("B: back");
   } else if (modal.kind == MODAL_LICENSE) {
     top_bar(w, licenses[license_shown].name, st);
     license_screen(ui, list);
     hint = S("Up, down: scroll    Left, right: page    B: back");
+  } else if (modal.kind == MODAL_README) {
+    top_bar(w, sb_str(modal.name), st);
+    readme_screen(ui, list);
+    hint = S("Up, down: scroll    Left, right: page    B: back");
+  } else if (modal.kind == MODAL_WIFI) {
+    top_bar(w, S("Wi-Fi"), st);
+    const bool on = wifi_on();
+    size_t n = 0;
+    rows[n++] = (entry){.label = S("Wi-Fi"), .command = on ? S("wifi off\n") : S("wifi on\n"), .action = POWER,
+                        .icon = on ? ICON_WIFI : ICON_WIFI_OFF, .checked = on};
+    for (size_t i = 0; i < wifi_count; i++) {
+      const wifi_network *net = &wifi_networks[i];
+      /* The signal is the icon's */
+      sb_set(labels[i], sb_str(net->ssid), net->saved ? S("  \u00b7  saved") : !net->secured ? S("  \u00b7  open") : S(""));
+      static const int arcs[] = {ICON_WIFI_ZERO, ICON_WIFI_LOW, ICON_WIFI_HIGH, ICON_WIFI, ICON_WIFI};
+      rows[n++] = (entry){.label = sb_str(labels[i]), .action = WIFI_PICK, .icon = arcs[CLAMP(net->bars, 0, 4)],
+                          .category = (int)i,
+                          .checked = net->current};
+    }
+    const int line = ui_text_height(ROW_TEXT) + MARGIN;
+    ui_text(ROW_TEXT, MARGIN * 2, (int)view.y + MARGIN, ui_text_fit(ROW_TEXT, wifi_status(), w - MARGIN * 4, NULL), DIM);
+    const ui_rect below = {list.x, list.y + line, list.w, list.h - line};
+    NAV_SCOPE(ui, nav_str("wifi")) { chosen = menu(ui, rows, n, below); }
+    hint = menu_focus > 0 && wifi_networks[menu_focus - 1].saved ? S("A: connect    X: forget    B: back")
+                                                                 : S("A: choose    B: back");
+  } else if (modal.kind == MODAL_KEYBOARD) {
+    top_bar(w, S("Wi-Fi"), st);
+    STRBUF(200) label;
+    sb_set(label, S("Password for "), sb_str(wifi_pick.ssid));
+    bool done = false;
+    NAV_SCOPE(ui, nav_str("keyboard")) { done = keyboard(ui, list, sb_str(label)); }
+    if (done)
+      keyboard_submit(ui);
+    hint = S("X: delete    Y: shift    Start: done    B: cancel");
+  } else if (modal.kind == MODAL_UPDATES) {
+    top_bar(w, S("Updates"), st);
+    str said;
+    const size_t n = update_rows(rows, &said);
+    ui_lines text = {0};
+    ui_wrap_text(&text, said, ROW_TEXT, w - MARGIN * 4);
+    const int line = ui_text_height(ROW_TEXT) + 4;
+    const size_t shown_lines = MIN(text.count, 4);
+    for (size_t i = 0; i < shown_lines; i++)
+      ui_text(ROW_TEXT, MARGIN * 2, (int)view.y + MARGIN + (int)i * line, text.lines[i], DIM);
+    free(text.lines);
+    const float top = MARGIN + shown_lines * line;
+    const ui_rect below = {list.x, list.y + top, list.w, list.h - top};
+    NAV_SCOPE(ui, nav_str("updates")) { chosen = menu(ui, rows, n, below); }
+    hint = S("A: choose    B: back");
+  } else if (modal.kind == MODAL_SETTINGS || modal.kind == MODAL_TIME || modal.kind == MODAL_DEBUG ||
+             modal.kind == MODAL_CLOCK) {
+    /* The clock's popup is over Time */
+    const int kind = modal.kind == MODAL_CLOCK ? MODAL_TIME : modal.kind;
+    top_bar(w, kind == MODAL_TIME ? S("Time") : kind == MODAL_DEBUG ? S("Debug") : S("Settings"), st);
+    const size_t n = page_rows(kind, rows);
+    nav_set_inert(ui, modal.kind == MODAL_CLOCK);
+    NAV_SCOPE(ui, nav_str(page_scope(kind))) { chosen = menu(ui, rows, n, list); }
+    nav_set_inert(ui, false);
+    hint = S("A: choose    B: back");
+    if (modal.kind == MODAL_CLOCK) {
+      clock_dialog(w, h);
+      hint = S("Up, down: change    Left, right: move");
+    }
+  } else if (modal.kind == MODAL_POWER) {
+    top_bar(w, S("Power"), st);
+    NAV_SCOPE(ui, nav_str("home power")) { power_page(ui, list, false); }
+    hint = S("Left, right: change    B: back");
+  } else if (modal.kind == MODAL_ZONES) {
+    top_bar(w, S("Time zone"), st);
+    const str *regions;
+    const size_t n = MIN(clock_regions(&regions), BROWSE_MAX - 1);
+    rows[0] = (entry){.label = S("Automatic"), .action = ZONE_AUTO, .icon = ICON_GLOBE, .checked = !clock_zone_chosen()};
+    for (size_t i = 0; i < n; i++)
+      rows[i + 1] = (entry){.label = regions[i], .action = ZONE_REGION, .icon = ICON_FOLDER, .category = (int)i,
+                            .checked = clock_zone_chosen() && str_eq(regions[i], str_head(clock_zone(), str_find(clock_zone(), '/')))};
+    NAV_SCOPE(ui, nav_str("zones")) { chosen = menu(ui, rows, n + 1, list); }
+    hint = S("A: choose    B: back");
+  } else if (modal.kind == MODAL_ZONE) {
+    top_bar(w, sb_str(zone_region), st);
+    const str *zones;
+    const size_t n = MIN(clock_zones(sb_str(zone_region), &zones), BROWSE_MAX);
+    for (size_t i = 0; i < n; i++) {
+      /* "America/Argentina/Buenos_Aires" as "Argentina / Buenos Aires" */
+      labels[i].n = 0;
+      const str place = str_at(zones[i], zone_region.n + 1);
+      for (size_t k = 0; k < place.n; k++)
+        sb_add(labels[i], place.p[k] == '_' ? S(" ") : place.p[k] == '/' ? S(" / ") : str_head(str_at(place, k), 1));
+      rows[i] = (entry){.label = sb_str(labels[i]), .action = ZONE_PICK, .icon = ICON_CLOCK, .category = (int)i,
+                        .checked = str_eq(zones[i], clock_zone())};
+    }
+    NAV_SCOPE(ui, nav_str("zone")) { chosen = menu(ui, rows, n, list); }
+    hint = S("A: choose    B: back");
   } else {
     top_bar(w, shown(sb_str(pick_path)), st);
     size_t n = 0;
     for (size_t i = 0; i < category_count && n < BROWSE_MAX; i++) {
       if (categories[i].roms.n == 0)
         continue;
-      rows[n++] = (entry){.label = categories[i].name, .action = TOGGLE_SYSTEM, .icon = -1,
+      rows[n++] = (entry){.label = categories[i].name, .action = TOGGLE_SYSTEM, .icon = ICON_GAMEPAD_2,
                           .category = (int)i, .checked = sources_has(sb_str(pick_path), i)};
     }
     NAV_SCOPE(ui, nav_str("systems")) { chosen = menu(ui, rows, n, list); }
@@ -1277,10 +1704,14 @@ static void *ctl_thread(void *arg) {
     n += (size_t)got;
     for (char *end; (end = memchr(line, '\n', n)) != NULL;) {
       *end = '\0';
-      pthread_mutex_lock(&ctl_lock);
-      sb_set(ctl_path, str_c(line));
-      pthread_mutex_unlock(&ctl_lock);
-      win_wake(UI_LAUNCH, 0);
+      if (strcmp(line, "reload") == 0) {
+        win_wake(UI_RELOAD, 0);
+      } else {
+        pthread_mutex_lock(&ctl_lock);
+        sb_set(ctl_path, str_c(line));
+        pthread_mutex_unlock(&ctl_lock);
+        win_wake(UI_LAUNCH, 0);
+      }
       n -= (size_t)(end + 1 - line);
       memmove(line, end + 1, n);
     }
@@ -1291,12 +1722,20 @@ static void *ctl_thread(void *arg) {
   return NULL;
 }
 
-static bool open_ctl(void) {
+/* /run/launcher, which weston.init makes (shell's; the player may write to it too: launch,
+ * reload), else $XDG_RUNTIME_DIR/launcher (on a desktop) */
+#define CTL_FIFO "/run/launcher"
+static bool ctl_name(void) {
   const char *run = getenv("XDG_RUNTIME_DIR");
-  if (run == NULL)
-    return false;
-  snprintf(ctl_fifo, sizeof(ctl_fifo), "%s/launcher", run);
-  return (mkfifo(ctl_fifo, 0600) == 0 || errno == EEXIST) && spawn("ctl", ctl_thread, NULL);
+  if (access(CTL_FIFO, F_OK) == 0)
+    snprintf(ctl_fifo, sizeof(ctl_fifo), "%s", CTL_FIFO);
+  else if (run != NULL)
+    snprintf(ctl_fifo, sizeof(ctl_fifo), "%s/launcher", run);
+  return run != NULL || ctl_fifo[0] != '\0';
+}
+
+static bool open_ctl(void) {
+  return ctl_name() && (mkfifo(ctl_fifo, 0600) == 0 || errno == EEXIST) && spawn("ctl", ctl_thread, NULL);
 }
 
 /* The app whose tile `path` is (its ROM, folder or program), started as A on it does */
@@ -1328,12 +1767,10 @@ static void launch_path(nav *ui) {
 /* `launcher launch PATH`: to the running launcher */
 static int request_launch(const char *arg) {
   char path[PATH_MAX];
-  const char *run = getenv("XDG_RUNTIME_DIR");
-  if (realpath(arg, path) == NULL || run == NULL) {
-    fprintf(stderr, "launcher: %s: %s\n", arg, run == NULL ? "no XDG_RUNTIME_DIR" : strerror(errno));
+  if (realpath(arg, path) == NULL || !ctl_name()) {
+    fprintf(stderr, "launcher: %s: %s\n", arg, ctl_fifo[0] == '\0' ? "no XDG_RUNTIME_DIR" : strerror(errno));
     return 1;
   }
-  snprintf(ctl_fifo, sizeof(ctl_fifo), "%s/launcher", run);
   const int fd = open(ctl_fifo, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
   if (fd < 0 || dprintf(fd, "%s\n", path) < 0) {
     fprintf(stderr, "launcher: no launcher running (%s)\n", ctl_fifo);
@@ -1356,6 +1793,7 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   case UI_VOLUME: show_volume(value); return true;
   case UI_HASHED: rescan(*page); return true;
   case UI_LAUNCH: launch_path(ui); return true;
+  case UI_RELOAD: rescan(*page); return true;
   case UI_EXITED: {
     running *r = run_find(value);
     if (r != NULL)
@@ -1451,8 +1889,25 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     nav_focus(ui, menu_row(nav_str("licenses"), license_shown));
     return true;
   }
+  if (modal.kind == MODAL_KEYBOARD && !paused) {
+    switch (button) {
+    case APPCTL_B:
+      modal.kind = MODAL_WIFI;
+      nav_focus(ui, 0);
+      return true;
+    case APPCTL_X: keyboard_delete(); return true;
+    case APPCTL_Y: keyboard_shift(); return true;
+    case APPCTL_START: keyboard_submit(ui); return true;
+    }
+  }
+  if (button == APPCTL_X && modal.kind == MODAL_WIFI && !paused && menu_focus > 0 &&
+      (size_t)menu_focus <= wifi_count) {
+    wifi_forget(sb_str(wifi_networks[menu_focus - 1].ssid));
+    wifi_poll();
+    return true;
+  }
   /* Nothing to focus: the text scrolls, by lines or by pages */
-  if (modal.kind == MODAL_LICENSE && !paused) {
+  if ((modal.kind == MODAL_LICENSE || (modal.kind == MODAL_README && button != APPCTL_B)) && !paused) {
     const int page_lines = (window.h - BAR - ROW * 2) / (ui_text_height(LICENSE_TEXT) + 2);
     switch (button) {
     case APPCTL_UP: nav_step(ui, -1); break;
@@ -1465,6 +1920,41 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   if (button == APPCTL_B && modal.kind == MODAL_BROWSE) {
     modal.kind = MODAL_STORAGE;
     nav_focus(ui, menu_row(nav_str("storage"), 0));
+    return true;
+  }
+  /* Settings' screens: back to it */
+  if (button == APPCTL_B && !paused) {
+    /* The screen, the page it's on, the row there that opened it */
+    static const int opened_by[][3] = {
+        {MODAL_STORAGE, MODAL_SETTINGS, STORAGE}, {MODAL_WIFI, MODAL_SETTINGS, WIFI},
+        {MODAL_UPDATES, MODAL_SETTINGS, UPDATES}, {MODAL_LICENSES, MODAL_SETTINGS, LICENSES_OPEN},
+        {MODAL_TIME, MODAL_SETTINGS, TIME},       {MODAL_DEBUG, MODAL_SETTINGS, DEBUG},
+        {MODAL_ZONES, MODAL_TIME, ZONES},         {MODAL_CLOCK, MODAL_TIME, CLOCK}};
+    for (size_t i = 0; i < COUNTOF(opened_by); i++)
+      if (modal.kind == opened_by[i][0]) {
+        open_page(ui, opened_by[i][1], opened_by[i][2]);
+        return true;
+      }
+    if (modal.kind == MODAL_ZONE) {
+      open_zones(ui, MODAL_ZONES);
+      return true;
+    }
+  }
+  if (modal.kind == MODAL_CLOCK && !paused) {
+    switch (button) {
+    case APPCTL_LEFT: clock_edit.at = MAX(clock_edit.at - 1, 0); break;
+    case APPCTL_RIGHT: clock_edit.at = MIN(clock_edit.at + 1, CLOCK_FIELDS - 1); break;
+    case APPCTL_UP: clock_step(1); break;
+    case APPCTL_DOWN: clock_step(-1); break;
+    case APPCTL_A:
+      clock_set();
+      open_page(ui, MODAL_TIME, CLOCK);
+      break;
+    }
+    return true;
+  }
+  if (modal.kind == MODAL_POWER && !paused && power_focus >= 0 && (button == APPCTL_LEFT || button == APPCTL_RIGHT)) {
+    power_step(power_focus, button == APPCTL_LEFT ? -1 : 1);
     return true;
   }
   if (button == APPCTL_X && modal.kind == MODAL_BROWSE && menu_focus >= 0 &&
@@ -1484,6 +1974,21 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     modal.back = ui->focus;
     nav_focus(ui, 0);
     return true;
+  }
+  /* Select on a port: its readme, its store page */
+  if (button == APPCTL_SELECT && !paused && !dialog && *page >= 1 && tiles_focus >= 0 &&
+      (size_t)tiles_focus < categories[*page - 1].count) {
+    const app *a = &categories[*page - 1].apps[tiles_focus];
+    STRBUF(600) ini;
+    sb_set(ini, sb_str(a->dir), S("/port.ini"));
+    if (a->dir.n > 0 && access(ini.p, F_OK) == 0) {
+      modal.kind = MODAL_PORT;
+      modal.back = ui->focus;
+      sb_set(modal.rom, sb_str(a->dir));
+      sb_set(modal.name, sb_str(a->name));
+      nav_focus(ui, 0);
+      return true;
+    }
   }
   /* Select on a game: which core runs it, when there's a choice */
   if (button == APPCTL_SELECT && !paused && !dialog && *page >= 1 && tiles_focus >= 0 &&
@@ -1516,8 +2021,15 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     step_option(front, settings_focus, button == APPCTL_LEFT ? -1 : 1);
     return true;
   }
-  /* Lists go round; the grids stop at their edges */
+  /* Lists go round; the grids stop at their edges, but for the keyboard's */
   const bool list = paused || dialog;
+  if (modal.kind == MODAL_KEYBOARD && button >= APPCTL_UP && button <= APPCTL_RIGHT) {
+    static const nav_dir dirs[] = {[APPCTL_UP] = NAV_UP, [APPCTL_DOWN] = NAV_DOWN, [APPCTL_LEFT] = NAV_LEFT,
+                                   [APPCTL_RIGHT] = NAV_RIGHT};
+    if (!nav_move(ui, dirs[button]))
+      nav_wrap_around(ui, dirs[button]);
+    return true;
+  }
   switch (button) {
   case APPCTL_UP:
     if (!nav_move(ui, NAV_UP) && list)
@@ -1549,6 +2061,33 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   return true;
 }
 
+/* Weston's socket, which may not be there yet: Weston and the launcher start together. Watched
+ * before it's looked for, so its creation can't slip in between. */
+static void wait_for_display(void) {
+  const char *display = getenv("WAYLAND_DISPLAY"), *run = getenv("XDG_RUNTIME_DIR");
+  char path[PATH_MAX];
+  if (display == NULL)
+    display = "wayland-0";
+  if (display[0] == '/')
+    snprintf(path, sizeof(path), "%s", display);
+  else if (run != NULL)
+    snprintf(path, sizeof(path), "%s/%s", run, display);
+  else
+    return;
+  char dir[PATH_MAX];
+  snprintf(dir, sizeof(dir), "%.*s", (int)(strrchr(path, '/') - path), path);
+  const int fd = inotify_init1(IN_CLOEXEC);
+  if (fd < 0 || inotify_add_watch(fd, dir, IN_CREATE) < 0) {
+    if (fd >= 0)
+      close(fd);
+    return;
+  }
+  char events[1024];
+  while (access(path, F_OK) != 0 && read(fd, events, sizeof(events)) > 0)
+    ;
+  close(fd);
+}
+
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "launch") == 0)
     return request_launch(argv[2]);
@@ -1558,6 +2097,11 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: launcher [launch PATH]\n");
     return 2;
   }
+  if (!run_drop_root()) {
+    fprintf(stderr, "launcher: can't become shell: %s\n", strerror(errno));
+    return 1;
+  }
+  wait_for_display();
   if (!win_connect(key)) {
     fprintf(stderr, "launcher: no Wayland display\n");
     return 1;
@@ -1578,6 +2122,8 @@ int main(int argc, char **argv) {
   set_listening(true);
   open_pad();
   power_init();
+  power_use(HOME_KEY);
+  clock_refresh();
   spawn("volume", volume_thread, NULL);
   if (!open_ctl())
     fprintf(stderr, "launcher: no launch FIFO\n");
@@ -1648,6 +2194,11 @@ int main(int argc, char **argv) {
     /* Events (input, an icon loaded, an app gone) count as changes */
     bool dirty = animating;
     if (now - status_at >= 1000) {
+      /* Up: a slot on trial (an update) works, Wi-Fi may come on. Once sleepd is there:
+       * the first frame comes before rcS has started it. */
+      static bool told_up;
+      if (!told_up && (told_up = power(S("up\n"))))
+        power_apply();
       const status was = st;
       read_status(&st);
       status_at = now;
@@ -1656,6 +2207,13 @@ int main(int argc, char **argv) {
       dirty |= was.battery != st.battery || was.charging != st.charging ||
                was.wifi != st.wifi || time(NULL) / 60 != shown_minute || ums_on != ums_was;
       dirty |= read_usb();
+      dirty |= clock_refresh();
+      /* Time's rows: the zone, NTP and the clock as `clock` left them; Debug's SSH as sleepd did */
+      dirty |= modal.kind == MODAL_TIME || modal.kind == MODAL_DEBUG;
+      if (modal.kind == MODAL_WIFI) {
+        wifi_poll();
+        dirty = true;
+      }
       /* A card came or went, or a source was added: the page again, or
        * another if it has nothing left.
        * ponytail: polled with the status; inotify on /run/media if a second is too slow. */
@@ -1708,7 +2266,7 @@ int main(int argc, char **argv) {
         /* The bottom row is the hint's */
         const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
         if (settings_category == POWER_PAGE)
-          NAV_SCOPE(&ui, nav_int(settings_category)) { calibrate = power_page(&ui, list); }
+          NAV_SCOPE(&ui, nav_int(settings_category)) { calibrate = power_page(&ui, list, true); }
         else
           NAV_SCOPE(&ui, nav_int(settings_category)) { settings(&ui, front, list); }
         const bool on_binding = settings_focus >= 0 &&
@@ -1757,6 +2315,8 @@ int main(int argc, char **argv) {
         NAV_SCOPE(&ui, nav_str("start")) {
           chosen = dialog_box(&ui, w, h, S("Menu"), S(""), system_entries, COUNTOF(system_entries));
         }
+      if (modal.kind == MODAL_PORT)
+        NAV_SCOPE(&ui, nav_str("port")) { chosen = port_dialog(&ui, w, h); }
       if (modal.kind == MODAL_CORES && page >= 1)
         NAV_SCOPE(&ui, nav_str("cores")) { chosen = core_dialog(&ui, w, h, &categories[page - 1]); }
       nav_set_inert(&ui, false);
@@ -1823,11 +2383,89 @@ int main(int argc, char **argv) {
       nav_focus(&ui, modal.back);
       break;
     }
-    case POWER: power(chosen->command); break;
+    case POWER:
+      power(chosen->command);
+      /* Sleep, Reboot, Power off: the quick menu is done */
+      if (modal.kind == MODAL_MENU) {
+        modal.kind = MODAL_NONE;
+        nav_focus(&ui, modal.back);
+      }
+      break;
     case STORAGE:
       modal.kind = MODAL_STORAGE;
       nav_focus(&ui, 0);
       break;
+    case SYSTEM_SETTINGS:
+      modal.kind = MODAL_SETTINGS;
+      nav_focus(&ui, 0);
+      break;
+    case HOME_POWER:
+      modal.kind = MODAL_POWER;
+      nav_focus(&ui, 0);
+      break;
+    case ZONES: open_zones(&ui, MODAL_ZONES); break;
+    case ZONE_REGION: {
+      const str *regions;
+      if ((size_t)chosen->category < clock_regions(&regions))
+        sb_set(zone_region, regions[chosen->category]);
+      open_zones(&ui, MODAL_ZONE);
+      break;
+    }
+    case ZONE_AUTO:
+    case ZONE_PICK: {
+      const str *zones;
+      STRBUF(96) request = {0};
+      if (chosen->action == ZONE_AUTO)
+        sb_set(request, S("clock zone auto\n"));
+      else if ((size_t)chosen->category < clock_zones(sb_str(zone_region), &zones))
+        sb_set(request, S("clock zone "), zones[chosen->category], S("\n"));
+      power(sb_str(request));
+      open_page(&ui, MODAL_TIME, ZONES);
+      break;
+    }
+    case NTP: power(clock_ntp() ? S("clock ntp off\n") : S("clock ntp on\n")); break;
+    case CLOCK: clock_open(); break;
+    case TIME: open_page(&ui, MODAL_TIME, 0); break;
+    case DEBUG: open_page(&ui, MODAL_DEBUG, 0); break;
+    case SSH: power(access(SSH_OFF, F_OK) != 0 ? S("ssh off\n") : S("ssh on\n")); break;
+    case SSH_EVERYWHERE: power(access(SSH_ALL, F_OK) == 0 ? S("ssh usb\n") : S("ssh all\n")); break;
+    case WIFI:
+      modal.kind = MODAL_WIFI;
+      wifi_poll();
+      nav_focus(&ui, 0);
+      break;
+    case WIFI_PICK:
+      if ((size_t)chosen->category < wifi_count) {
+        const wifi_network *net = &wifi_networks[chosen->category];
+        if (net->saved || !net->secured) {
+          wifi_connect(sb_str(net->ssid), net->secured, S(""));
+        } else {
+          sb_set(wifi_pick.ssid, sb_str(net->ssid));
+          keyboard_open();
+          modal.kind = MODAL_KEYBOARD;
+          nav_focus(&ui, 0);
+        }
+      }
+      break;
+    case UPDATES:
+      modal.kind = MODAL_UPDATES;
+      updates_check();
+      nav_focus(&ui, 0);
+      break;
+    case UPDATE_CHECK: updates_check(); break;
+    case UPDATE_INSTALL: updates_install(); break;
+    case PORT_README:
+      readme_load();
+      modal.kind = MODAL_README;
+      nav_forget(&ui, nav_str("readme"));
+      break;
+    case PORT_STORE: {
+      const str dir = sb_str(modal.rom), id = str_at(dir, str_rfind(dir, '/') + 1);
+      modal.kind = MODAL_NONE;
+      nav_focus(&ui, modal.back);
+      start(&ui, S("Store"), S(""), S("store \"$1\""), id, S(""));
+      break;
+    }
     case LICENSES_OPEN:
       licenses_load();
       modal.kind = MODAL_LICENSES;

@@ -16,13 +16,29 @@ root=$(readlink -f /sys/dev/block/$(mountpoint -d /))
 disk=/dev/$(basename $(dirname $root))
 case $disk in *[0-9]) disk=${disk}p ;; esac
 log() { echo "ums: $*" > /dev/kmsg; }
+# A partition the host may write to must not be mounted anywhere: not by a bind elsewhere (which
+# doesn't make `umount` of the other one fail) nor in another mount namespace
+mounted() {
+	n=$(mountpoint -x "$1") || return 1
+	grep -qs "^[0-9]* [0-9]* $n " /proc/[0-9]*/mountinfo
+}
+# Its mount points here, for the log
+where() {
+	awk -v n=$(mountpoint -x "$1") '$3 == n { m = m $5 " " } END { print m ? m : "in another mount namespace" }' /proc/self/mountinfo
+}
+# What the host wrote, checked before it's mounted here again: the host may not have finished
+check_fs() { e2fsck -p "$1" > /dev/kmsg 2>&1 || [ $? -le 1 ] || log "e2fsck $1: $?"; }
+downloadd_start() { downloadd </dev/null >/var/log/downloadd.log 2>&1 9>&- & }
 has() { grep -qx "$1" /run/ums 2>/dev/null; }
 # One at a time. What this starts that stays (the UI, syslogd, the watch) must not keep the lock:
 # started with 9>&-.
 case "$1" in watch) ;; *) exec 9> /run/ums.lock; flock 9 ;; esac
 
-# Every player process (the session: Weston, the launcher, games, which save on SIGTERM)
+# The launcher's restart loop, the launcher (shell), every player process (the session: Weston,
+# games, which save on SIGTERM)
 ui_stop() {
+	[ -e /run/launcher.loop ] && kill $(cat /run/launcher.loop) 2>/dev/null
+	su -s /bin/sh shell -c 'kill -TERM -1' 2>/dev/null
 	su -s /bin/sh player -c 'kill -TERM -1' 2>/dev/null
 	i=0
 	# (busybox: no pgrep -u, and kill -0 -1 always succeeds)
@@ -66,6 +82,7 @@ sd)
 			rmdir "$m"
 		fi
 	done
+	for p in /dev/mmcblk1p*; do mounted $p && { log "$p is still mounted: $(where $p)"; failed=1; }; done
 	[ -n "$failed" ] && { sd_mount; exit 1; }
 	echo /dev/mmcblk1 > $f/lun.1/file || { sd_mount; exit 1; }
 	echo sd >> /run/ums
@@ -75,17 +92,21 @@ sd)
 data)
 	has data && exit 0
 	ui_stop
+	# It logs in /var/log and downloads into /data (its jobs, as player, are gone already)
+	killall downloadd 2>/dev/null
 	sync
 	rm -rf /run/data
 	mkdir -p /run/data/OS
 	cp -a /data/OS/dropbear /run/data/OS/
 	chown player:player /run/data
 	/etc/init.d/syslog stop
-	umount /var/volatile/log
-	if ! umount /data; then
-		log "/data is busy"
-		mount --bind /data/OS/log/0 /var/volatile/log
+	while mountpoint -q /var/volatile/log && umount /var/volatile/log; do :; done
+	if mountpoint -q /var/volatile/log || ! umount /data || mounted ${disk}4; then
+		log "${disk}4 is still mounted: $(where ${disk}4)"
+		mountpoint -q /data || ab mount
+		mountpoint -q /var/volatile/log || mount --bind /data/OS/log/0 /var/volatile/log
 		/etc/init.d/syslog start 9>&-
+		downloadd_start
 		/etc/init.d/weston restart 9>&-
 		exit 1
 	fi
@@ -114,10 +135,12 @@ stop)
 		echo 1 > $f/lun.0/forced_eject
 		ui_stop
 		umount /data
+		check_fs ${disk}4
 		ab mount
 		/etc/init.d/syslog stop
 		mount --bind /data/OS/log/0 /var/volatile/log
 		/etc/init.d/syslog start 9>&-
+		downloadd_start
 		/etc/init.d/weston restart 9>&-
 	fi
 	;;

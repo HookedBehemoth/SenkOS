@@ -1,0 +1,5 @@
+# The store's server, for downloadd and the store (apps/downloadd): /v1/ports, /v1/os.
+# Root's: what it names is trusted with system updates. /data/OS/overlay/etc/store for another.
+[Store]
+Server=https://store.invalid
+Channel=stable

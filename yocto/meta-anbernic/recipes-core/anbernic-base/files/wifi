@@ -1,0 +1,70 @@
+#!/bin/sh
+# Wi-Fi: the RTL8821CS on SDIO, its driver (rtw88) a module loaded when Wi-Fi is turned on.
+# The launcher's Wi-Fi settings: sleepd runs `wifi on|off` on "wifi on|off" in /run/power, and
+# the networks go through wpa_supplicant's control socket, /run/wpa_supplicant/wlan0 (group
+# shell: the launcher's, not the apps'). Saved in /data/OS/wifi, root's alone (0700): wpa_supplicant.conf, the networks (its
+# SAVE_CONFIG writes them), and `enabled`. In effect in /run/wifi (what the launcher shows): on|off.
+#   wifi                 once the launcher is up (sleepd): on if it was
+#   wifi on|off
+#   wifi wlan0 CONNECTED|DISCONNECTED     wpa_cli's events: DHCP (udhcpc.d/90ntp sets the clock)
+d=/data/OS/wifi
+run=/run/wpa_supplicant
+
+up() {
+	mkdir -p $d
+	chown -R root:root $d
+	chmod 0700 $d
+	[ -s $d/wpa_supplicant.conf ] ||
+		printf 'ctrl_interface=DIR=%s GROUP=shell\nupdate_config=1\n' $run > $d/wpa_supplicant.conf
+	sed -i 's/ GROUP=player$/ GROUP=shell/' $d/wpa_supplicant.conf
+	chmod 0600 $d/wpa_supplicant.conf
+	modprobe rtw88_8821cs || return 1
+	i=0
+	until [ -d /sys/class/net/wlan0 ]; do
+		[ $i -ge 50 ] && { echo "wifi: no wlan0" >&2; return 1; }
+		usleep 100000; i=$((i + 1))
+	done
+	[ -e /run/wpa_supplicant.pid ] && kill -0 $(cat /run/wpa_supplicant.pid) 2>/dev/null && return 0
+	wpa_supplicant -B -s -i wlan0 -c $d/wpa_supplicant.conf -P /run/wpa_supplicant.pid || return 1
+	wpa_cli -B -i wlan0 -p $run -a /usr/sbin/wifi -P /run/wpa_cli.pid
+}
+
+down() {
+	for p in wpa_cli wpa_supplicant udhcpc.wlan0; do
+		[ -e /run/$p.pid ] && kill $(cat /run/$p.pid) 2>/dev/null
+		rm -f /run/$p.pid
+	done
+	[ -d /sys/class/net/wlan0 ] && ip addr flush dev wlan0 && ip link set wlan0 down
+}
+
+case "$1" in
+"")
+	[ -e $d/enabled ] || { echo off > /run/wifi; exit 0; }
+	up && echo on > /run/wifi
+	;;
+on)
+	mkdir -p -m 0700 $d
+	touch $d/enabled
+	up && echo on > /run/wifi
+	;;
+off)
+	rm -f $d/enabled
+	down
+	echo off > /run/wifi
+	;;
+wlan0)
+	case "$2" in
+	CONNECTED)
+		[ -e /run/udhcpc.wlan0.pid ] && kill $(cat /run/udhcpc.wlan0.pid) 2>/dev/null
+		udhcpc -b -R -i wlan0 -p /run/udhcpc.wlan0.pid >/dev/null 2>&1
+		;;
+	DISCONNECTED)
+		[ -e /run/udhcpc.wlan0.pid ] && kill $(cat /run/udhcpc.wlan0.pid) 2>/dev/null
+		rm -f /run/udhcpc.wlan0.pid
+		ip addr flush dev wlan0
+		;;
+	esac
+	;;
+*)
+	sed -n '2,9s/^# \?//p' $0 >&2; exit 1 ;;
+esac

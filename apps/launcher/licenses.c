@@ -51,44 +51,7 @@ void licenses_load(void) {
   }
 }
 
-/* A line into `width`: whole words while they fit, at least one */
-static size_t fit(str line, int px, float width) {
-  size_t n = 0;
-  float w = 0;
-  while (n < line.n) {
-    size_t end = n;
-    while (end < line.n && line.p[end] == ' ')
-      end++;
-    while (end < line.n && line.p[end] != ' ')
-      end++;
-    w += ui_text_width(px, (str){line.p + n, end - n});
-    if (w > width && n > 0)
-      break;
-    n = end;
-  }
-  return n;
-}
-
-/* `line` wrapped onto the lines; false without memory */
-static str *out;
-static size_t count, cap;
-static bool add(str line, int px, float width) {
-  do {
-    if (count == cap) {
-      str *grown = realloc(out, (cap = cap ? cap * 2 : 1024) * sizeof(*out));
-      if (grown == NULL)
-        return false;
-      out = grown;
-    }
-    const size_t take = fit(line, px, width);
-    out[count++] = str_head(line, take);
-    line = str_at(line, take);
-    /* The spaces a line was broken at */
-    while (line.n > 0 && line.p[0] == ' ')
-      line = str_at(line, 1);
-  } while (line.n > 0);
-  return true;
-}
+static ui_lines text;
 
 size_t license_text(size_t i, int px, float width, const str **lines) {
   static size_t shown_i = (size_t)-1;
@@ -96,17 +59,15 @@ size_t license_text(size_t i, int px, float width, const str **lines) {
   static float shown_width;
   if (i != shown_i || px != shown_px || width != shown_width) {
     shown_i = i, shown_px = px, shown_width = width;
-    count = 0;
+    text.count = 0;
     /* Each paragraph (a file's heading is one), a blank line between */
     bool ok = true;
     for (uint32_t r = licenses[i].run; ok && r < licenses[i].run + licenses[i].runs; r++)
       for (uint32_t p = runs[r * 2]; ok && p < (uint32_t)runs[r * 2] + runs[r * 2 + 1]; p++) {
-        str rest = string(p);
-        ok = count == 0 || add(S(""), px, width);
-        while (ok && rest.n > 0)
-          ok = add(str_cut(&rest, '\n'), px, width);
+        const str rest = string(p);
+        ok = (text.count == 0 || ui_wrap(&text, S(""), px, width)) && ui_wrap_text(&text, rest, px, width);
       }
   }
-  *lines = out;
-  return count;
+  *lines = text.lines;
+  return text.count;
 }

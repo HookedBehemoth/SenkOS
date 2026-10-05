@@ -2,16 +2,20 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://pipewire.conf"
+SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://90ntp file://store file://clock"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
 
-# Weston, the launcher and the apps it starts run as player: uid 1000, as files tar'ed in from a
+# Weston and the apps the launcher starts run as player: uid 1000, as files tar'ed in from a
 # host usually are. HOME is /data. seat: seatd's socket (seatd's recipe makes the group too).
+# The launcher runs as shell (weston.init): what only it may do (sleepd's /run/power, Wi-Fi's
+# control socket) the apps can't. In the player's group for Weston's socket and the player's
+# files; input for the pad, audio for the mixer.
 USERADD_PACKAGES = "${PN}"
 GROUPADD_PARAM:${PN} = "-r seat"
-USERADD_PARAM:${PN} = "-u 1000 -U -d /data -M -s /bin/sh -G video,input,audio,seat player"
+USERADD_PARAM:${PN} = "-u 1000 -U -d /data -M -s /bin/sh -G video,input,audio,seat player; \
+                       -u 1001 -U -d /data/OS/launcher -M -s /bin/false -G player,video,input,audio shell"
 
 do_install() {
     install -Dm0755 ${S}/anbernic.init ${D}${sysconfdir}/init.d/anbernic
@@ -21,6 +25,13 @@ do_install() {
     install -Dm0755 ${S}/ums ${D}${sbindir}/ums
     install -Dm0755 ${S}/usb ${D}${sbindir}/usb
     install -Dm0755 ${S}/overlay ${D}${sbindir}/overlay
+    install -Dm0755 ${S}/wifi ${D}${sbindir}/wifi
+    install -Dm0755 ${S}/clock ${D}${sbindir}/clock
+    install -Dm0755 ${S}/90ntp ${D}${sysconfdir}/udhcpc.d/90ntp
+    install -Dm0644 ${S}/store ${D}${sysconfdir}/store
+    # udev would load it at boot, by the card's alias, Wi-Fi off or not: `wifi on` loads it by name
+    install -d ${D}${sysconfdir}/modprobe.d
+    echo "blacklist rtw88_8821cs" > ${D}${sysconfdir}/modprobe.d/wifi.conf
     install -Dm0755 ${S}/data-init.init ${D}${sysconfdir}/init.d/data-init
     install -Dm0644 ${S}/udhcpd.conf ${D}${sysconfdir}/udhcpd.conf
     install -Dm0644 ${S}/pipewire.conf ${D}${sysconfdir}/pipewire/pipewire.conf.d/10-anbernic.conf
@@ -32,6 +43,7 @@ do_install() {
     install -Dm0644 ${S}/sdcard.rules ${D}${sysconfdir}/udev/rules.d/90-sdcard.rules
     install -Dm0644 ${S}/usb-gadget.rules ${D}${sysconfdir}/udev/rules.d/90-usb-gadget.rules
     install -Dm0644 ${S}/uinput.rules ${D}${sysconfdir}/udev/rules.d/90-uinput.rules
+    install -Dm0644 ${S}/wake.rules ${D}${sysconfdir}/udev/rules.d/90-wake.rules
     install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot ${D}/data
     # The UI first (mounts /data, runs data-init, starts seatd itself); the rest after
     # populate-volatile (S37); trial timer last, once everything else came up
@@ -43,4 +55,4 @@ do_install() {
 }
 
 FILES:${PN} += "/uboot /data"
-RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk util-linux-mount e2fsprogs-mke2fs alsa-utils-amixer weston-volume-keys weston-frames ksmbd-tools avahi-daemon umtprd anbernic-data"
+RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk util-linux-mount e2fsprogs-mke2fs e2fsprogs-e2fsck alsa-utils-amixer weston-volume-keys weston-frames ksmbd-tools avahi-daemon umtprd anbernic-data"

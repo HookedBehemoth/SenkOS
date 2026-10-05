@@ -16,4 +16,5 @@ A small, fast-booting OS for the Anbernic **RG35XX-SP** (Allwinner H700).
 - [dev-workflow.md](dev-workflow.md): USB link (ssh/serial), A/B slots, OTA updates, `/data`, kernel iteration
 - [suspend.md](suspend.md): how suspend to RAM works
 - [fel.md](fel.md): FEL USB boot mode for recovery
+- [store.md](store.md): the store's server, publishing ports and system updates, downloadd, Wi-Fi
 - [ports.md](ports.md): proposal: PortMaster's library as declarative ports (runtime, layers, OS requirements)

@@ -14,7 +14,7 @@ One flash of the full card image, then everything goes over the USB-C (OTG) cabl
 Fixed MACs (`02:35:58:00:00:01` device, `…:02` host), so the host keeps the same connection across reboots.
 `musb` is `dr_mode = "otg"` with the ID pin on PI4: a cable to a PC makes it a gadget, an OTG adapter (keyboard) makes it a host.
 
-`tools/ssh [cmd]` runs ssh to `root@10.55.0.1` (dropbear, empty root password, bring-up only). It doesn't record host keys, because every flashed slot makes new ones.
+`tools/ssh [cmd]` runs ssh to `root@10.55.0.1` (dropbear, empty root password, bring-up only). It doesn't record host keys, because every flashed slot makes new ones. dropbear listens on every interface, Wi-Fi too; Settings → Debug → SSH stops it (sleepd's `ssh off`), and `/data/OS/dropbear/disabled` keeps it off at boot.
 
 ## A/B slots
 
@@ -52,6 +52,39 @@ tools/ssh ab status
 
 Device side: [ab](../yocto/meta-anbernic/recipes-core/anbernic-base/files/ab) with `status|mount|flash|commit|boot`.
 
+## Wi-Fi
+
+The RTL8821CS (SDIO) is driven by `rtw88_8821cs`, a module (cfg80211 and mac80211 too) loaded only when Wi-Fi is
+turned on: the rest of the kernel stays built in. Its firmware is `linux-firmware-rtl8821`'s, the regulatory database
+`wireless-regdb-static`'s.
+
+[wifi](../yocto/meta-anbernic/recipes-core/anbernic-base/files/wifi) (sleepd runs `wifi on|off` for the launcher's
+Wi-Fi screen, and `wifi` once the launcher is up, so it stays out of the boot) loads it, starts `wpa_supplicant` on `wlan0` and `wpa_cli -a wifi`,
+whose CONNECTED runs `udhcpc` on it; a lease runs `clock net` (`udhcpc.d/90ntp`, see Time below).
+What's set lives in `/data/OS/wifi`, root's alone (0700): `wpa_supplicant.conf` (the networks, written by its
+`SAVE_CONFIG`) and `enabled`. `/run/wifi` says on or off. The launcher talks to `wpa_supplicant` over its control
+socket, `/run/wpa_supplicant/wlan0` (group player), as `wpa_cli` would:
+
+```
+tools/ssh 'wpa_cli -i wlan0 status; wpa_cli -i wlan0 scan_results'
+```
+
+The status bar's symbol is `SIGNAL_POLL`'s RSSI; there's none while Wi-Fi is off.
+
+## Time
+
+[clock](../yocto/meta-anbernic/recipes-core/anbernic-base/files/clock) (sleepd runs `clock ...` for the launcher's
+Settings) keeps `/data/OS/time` (root's, readable): `localtime`, a link into `/usr/share/zoneinfo` (tzdata) that
+`/etc/localtime` links to (none: UTC); `chosen` when the zone was picked; `manual` when NTP is off. Every DHCP lease
+sets the clock by NTP (`ntpd -q`, then the RTC) unless `manual`; a new one (a network joined, not a renewal) also
+guesses the zone unless `chosen`: `downloadd zone` asks ipapi.co where the address is. The launcher sets `TZ` to the
+zone's file whenever the link changes (glibc doesn't read `/etc/localtime` again by itself), so what it starts
+afterwards has it too.
+
+```
+tools/ssh 'clock zone Europe/Berlin; clock zone auto; clock ntp off; clock set $(date +%s)'
+```
+
 ## /data and the launcher
 
 `/data` is the writable, non-system part: the image never touches it, so what lives there survives
@@ -74,6 +107,9 @@ Ours on `/data` are `OS`, `apps`, `roms`, `music` and `videos`; the OS's own fil
 | `OS/saves/<core>/` | the cores' saves: save RAM, states, PPSSPP's memory stick |
 | `OS/config/` | settings: `corehost/<core>.opt`, `mediaplayer.opt`, `launcher-cores` (the emulator picked per game), `launcher-folders` (Libraries), `usb` (Storage) |
 | `OS/overlay/` | rootfs overlays: `OS/overlay/usr/bin/launcher` replaces `/usr/bin/launcher` and so on (`overlay`, at boot: copied into RAM, an overlayfs per top-level directory, so `/data` stays free to unmount; run it again after a change) |
+| `OS/time/` | the time zone and whether NTP sets the clock (see Time above) |
+| `OS/wifi/` | Wi-Fi: the networks and whether it's on, root's alone (see Wi-Fi above) |
+| `OS/layers/` | the ports' layers ([ports.md](ports.md)); the store puts those its ports use here |
 | `OS/dropbear/`, `OS/log/` | the ssh host key; the logs of the last 5 boots |
 | `.cache/launcher/crc32` | the launcher's CRC32 of each ROM (past an iNES, fwNES, Lynx or copier header), by path, size and mtime |
 | `OS/init.d/S*` | `/etc/init.d/data-init` (run by `/etc/init.d/weston`, rcS S01: after `/data` is mounted, before seatd and Weston) runs each executable one with `start`, in order. To change a file of the read-only rootfs, put it in `OS/overlay`. `touch /uboot/no-data-init` (FAT, editable from any PC) skips them all |
