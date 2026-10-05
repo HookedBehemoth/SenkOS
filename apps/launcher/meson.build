@@ -8,7 +8,7 @@ capture_protocol = [
     command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@']),
 ]
 
-executable('launcher', 'main.c', 'apps.c', 'capture.c', 'licenses.c', 'romdb.c', 'running.c', capture_protocol,
+executable('launcher', 'main.c', 'apps.c', 'capture.c', 'licenses.c', 'power.c', 'romdb.c', 'running.c', capture_protocol,
   dependencies: [
     common_dep,
     ui_dep,

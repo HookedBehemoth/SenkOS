@@ -14,6 +14,7 @@ enum {
   ICON_SAVE_OUT,
   ICON_SPEAKER,
   ICON_X,
+  ICON_ZAP,
   ICON_COUNT
 };
 
@@ -154,6 +155,21 @@ static const float icon_x[] = {
     ICON_MOVE, 18.0f, 6.0f, ICON_LINE, 6.0f, 18.0f, ICON_MOVE, 6.0f,
     6.0f, ICON_LINE, 18.0f, 18.0f, ICON_END,
 };
+static const float icon_zap[] = {
+    ICON_MOVE, 4.0f, 14.0f, ICON_CUBIC, 3.614f, 14.001f, 3.261f, 13.780f,
+    3.095f, 13.432f, ICON_CUBIC, 2.928f, 13.083f, 2.977f, 12.670f, 3.220f,
+    12.370f, ICON_LINE, 13.120f, 2.170f, ICON_CUBIC, 13.273f, 1.993f, 13.528f,
+    1.946f, 13.734f, 2.057f, ICON_CUBIC, 13.940f, 2.167f, 14.042f, 2.405f,
+    13.980f, 2.630f, ICON_LINE, 12.060f, 8.650f, ICON_CUBIC, 11.945f, 8.958f,
+    11.988f, 9.302f, 12.176f, 9.571f, ICON_CUBIC, 12.364f, 9.841f, 12.672f,
+    10.001f, 13.0f, 10.0f, ICON_LINE, 20.0f, 10.0f, ICON_CUBIC, 20.386f,
+    9.999f, 20.739f, 10.220f, 20.905f, 10.568f, ICON_CUBIC, 21.072f, 10.917f,
+    21.023f, 11.330f, 20.780f, 11.630f, ICON_LINE, 10.880f, 21.830f, ICON_CUBIC,
+    10.727f, 22.007f, 10.472f, 22.054f, 10.266f, 21.943f, ICON_CUBIC, 10.060f,
+    21.833f, 9.958f, 21.595f, 10.020f, 21.370f, ICON_LINE, 11.940f, 15.350f,
+    ICON_CUBIC, 12.055f, 15.042f, 12.012f, 14.698f, 11.824f, 14.429f, ICON_CUBIC,
+    11.636f, 14.159f, 11.328f, 13.999f, 11.0f, 14.0f, ICON_CLOSE, ICON_END,
+};
 static const float *const icon_paths[ICON_COUNT] = {
     icon_check,
     icon_cog,
@@ -166,5 +182,6 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_save_out,
     icon_speaker,
     icon_x,
+    icon_zap,
 };
 #endif

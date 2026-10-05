@@ -17,7 +17,8 @@
  * the app paused in the background, on the Running page. An app on the control channel (running.h, corehost)
  * also gets Save state, Load state and Settings (its options). The focus at
  * home, and in each app's pause menu, is kept meanwhile. While an app has the screen the launcher
- * sleeps: only the pad's Menu, the mixer and an app's exit wake it.
+ * sleeps: only the pad's Menu, the mixer and an app's exit wake it (and power calibration's
+ * steps). Every app's pause menu has Power (power.h): its clocks, and the backlight.
  *
  * A second window, "osd", shows the volume whenever the mixer changes; the
  * patched kiosk shell keeps it on top of everything without focus.
@@ -57,6 +58,7 @@
 #include "licenses.h"
 #include "nav.h"
 #include "pad.h"
+#include "power.h"
 #include "romdb.h"
 #include "running.h"
 #include "ui.h"
@@ -66,7 +68,7 @@
 enum { BAR = 32, BAR_TEXT = 18, ROW = 44, ROW_TEXT = 22, ICON_PX = 22, MARGIN = 12 };
 enum { TILE_W = 144, TILE_H = 160, ICON = 128, TILE_TEXT = 16, LETTER = 40,
        RADIUS = 12, GAP = 8 };
-enum { OSD_W = 240, OSD_H = 40, OSD_MS = 1500 };
+enum { OSD_W = 320, OSD_H = 40, OSD_MS = 1500, RESULT_MS = 5000 };
 enum { LICENSE_TEXT = 16 };
 
 /* portrun's state for each port (docs/ports.md) */
@@ -102,9 +104,10 @@ typedef struct {
   bool checked; /* a check mark at the end */
 } entry;
 
-/* All of it for an app on the control channel, else Resume, Home and Quit.
+/* All of it for an app on the control channel, else Resume, Power, Home and Quit.
  * The settings: an entry per category (named as appctl_category_names), for
- * those the app has options in. */
+ * those the app has options in; Power, the launcher's own, for every app. */
+enum { POWER_PAGE = APPCTL_CATEGORIES };
 static const entry pause_entries[] = {
     {.label = S("Resume"), .action = RESUME, .icon = ICON_PLAY},
     {.label = S("Restart"), .action = RESTART, .icon = ICON_ROTATE_CCW},
@@ -114,11 +117,12 @@ static const entry pause_entries[] = {
     {.label = S("Graphics"), .action = SETTINGS, .icon = ICON_IMAGE, .category = APPCTL_GRAPHICS},
     {.label = S("Audio"), .action = SETTINGS, .icon = ICON_SPEAKER, .category = APPCTL_AUDIO},
     {.label = S("Input"), .action = SETTINGS, .icon = ICON_DPAD, .category = APPCTL_INPUT},
+    {.label = S("Power"), .action = SETTINGS, .icon = ICON_ZAP, .category = POWER_PAGE},
     {.label = S("Home"), .action = HOME, .icon = ICON_HOUSE},
     {.label = S("Quit"), .action = QUIT, .icon = ICON_X},
 };
 /* appctl's names, measured once (main) */
-static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES];
+static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES + 1];
 /* sleepd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
     {.label = S("Storage"), .action = STORAGE, .icon = -1},
@@ -393,6 +397,7 @@ static STRBUF(600) starting_image;
 /* The launcher has the screen again, at the focus it left */
 static void go_home(nav *ui) {
   front = NULL;
+  power_use(S(""));
   starting = S("");
   paused = in_settings = false;
   capture.option = -1;
@@ -403,10 +408,16 @@ static void go_home(nav *ui) {
   nav_focus(ui, home_focus);
 }
 
+/* Its power settings' key: the ROM, else the port's folder, else the command */
+static str power_key(const running *r) {
+  return r->arg.n > 0 ? sb_str(r->arg) : r->dir.n > 0 ? sb_str(r->dir) : sb_str(r->exec);
+}
+
 static void hand_over(nav *ui, running *r) {
   if (front == NULL)
     home_focus = ui->focus;
   front = r;
+  power_use(power_key(r));
   paused = in_settings = false;
   set_listening(false);
   grab(false);
@@ -452,6 +463,7 @@ static void start(nav *ui, str label, str icon, str exec, str arg, str dir) {
  * released (input): the app saw all of it, and nothing more until it resumes. */
 static void pause_front(nav *ui) {
   run_pause(front);
+  power_cancel();
   drop_backdrop();
   int w, h;
   uint8_t *rgba = capture_blurred(&w, &h);
@@ -614,6 +626,23 @@ static void show_volume(int percent) {
   ui_rounded(bx, y - 3, bw * percent / 100, 6, FG, 3, 0);
   gfx_end(osd_screen);
   osd_until = ms_now() + OSD_MS;
+}
+
+/* A line on the OSD, for `ms` */
+static void show_text(str text, int ms) {
+  if (!osd.configured)
+    win_map(&osd);
+  if (osd_screen == NULL)
+    osd_screen = gfx_target_create(&osd, true);
+  int w, h;
+  if (osd_screen == NULL || !gfx_begin(osd_screen, &w, &h))
+    return;
+  ui_fill(0, 0, w, h, (gfx_color){BG.r, BG.g, BG.b, SCRIM.a});
+  int tw;
+  text = ui_text_fit(BAR_TEXT, text, w - MARGIN * 2, &tw);
+  ui_text(BAR_TEXT, (w - tw) / 2, (h - ui_text_height(BAR_TEXT)) / 2, text, FG);
+  gfx_end(osd_screen);
+  osd_until = ms_now() + ms;
 }
 
 /* "[time]      [page]         [wifi bars][battery%][battery symbol]" */
@@ -822,6 +851,40 @@ static void settings(nav *ui, running *r, ui_rect view) {
   }
   gfx_noclip();
   nav_scroll_end(ui);
+}
+
+/* Power (power.h): left/right step a row; A on calibration starts it.
+ * Returns whether to start it. */
+static int power_focus = -1;
+
+static bool power_page(nav *ui, ui_rect view) {
+  static const str labels[POWER_ROWS] = {S("Automatic calibration"), S("CPU"), S("GPU"), S("Brightness")};
+  bool calibrate = false;
+  settings_focus = power_focus = -1;
+  const float offset = nav_scroll_begin(ui, nav_str("power"), view, UI_VERTICAL, POWER_ROWS * ROW + MARGIN * 2, ROW, 0);
+  gfx_clip(view.x, view.y, view.w, view.h);
+  for (int i = 0; i < POWER_ROWS; i++) {
+    const ui_rect row = {view.x + MARGIN, view.y + MARGIN + i * ROW - offset, view.w - MARGIN * 2, ROW - 4};
+    const unsigned flags = nav_item(ui, nav_int(i), row, view);
+    nav_ring(ui, row, 8);
+    if (flags & NAV_FOCUSED) {
+      ui_rounded(row.x, row.y, row.w, row.h, FOCUS, 6, 0);
+      power_focus = i;
+    }
+    if ((flags & NAV_ACTIVATED) && i == POWER_CALIBRATE)
+      calibrate = true;
+    else if (flags & NAV_ACTIVATED)
+      power_step(i, 1);
+    STRBUF(64) value;
+    sb_set(value, S("\u2039 "), power_value(i), S(" \u203a"));
+    const int y = (int)row.y + ((int)row.h - ui_text_height(ROW_TEXT)) / 2;
+    const int vw = ui_text_width(ROW_TEXT, sb_str(value));
+    ui_text(ROW_TEXT, (int)row.x + MARGIN, y, ui_text_fit(ROW_TEXT, labels[i], row.w - vw - MARGIN * 3, NULL), FG);
+    ui_text(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, sb_str(value), flags & NAV_FOCUSED ? FG : DIM);
+  }
+  gfx_noclip();
+  nav_scroll_end(ui);
+  return calibrate;
 }
 
 /* Over home: a title, text under it if any (wrapped, up to 8 lines), then the
@@ -1443,6 +1506,11 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     run_request(front, APPCTL_OPTIONS, 0);
     return true;
   }
+  if (in_settings && settings_category == POWER_PAGE && power_focus >= 0 &&
+      (button == APPCTL_LEFT || button == APPCTL_RIGHT)) {
+    power_step(power_focus, button == APPCTL_LEFT ? -1 : 1);
+    return true;
+  }
   if (in_settings && settings_focus >= 0 &&
       (button == APPCTL_LEFT || button == APPCTL_RIGHT)) {
     step_option(front, settings_focus, button == APPCTL_LEFT ? -1 : 1);
@@ -1506,8 +1574,10 @@ int main(int argc, char **argv) {
     button_names[b] = str_c(appctl_button_names[b]);
   for (int c = 0; c < APPCTL_CATEGORIES; c++)
     category_names[c] = str_c(appctl_category_names[c]);
+  category_names[POWER_PAGE] = S("Power");
   set_listening(true);
   open_pad();
+  power_init();
   spawn("volume", volume_thread, NULL);
   if (!open_ctl())
     fprintf(stderr, "launcher: no launch FIFO\n");
@@ -1539,6 +1609,17 @@ int main(int argc, char **argv) {
     if (starting.n > 0 && window.configured && !window.activated && front != NULL)
       starting = S("");
     int wait = front != NULL && !paused && starting.n == 0 ? -1 : animating ? 16 : 1000;
+    /* Calibrating: its next step; what it found on the OSD */
+    str said = S("");
+    const int step = power_tick(ms_now(), &said);
+    /* Up until calibration is done, then its result for a while */
+    if (said.n > 0)
+      show_text(said, power_calibrating() ? INT_MAX / 2 : RESULT_MS);
+    /* Calibration given up (a pause, Home, the app gone): its line goes */
+    if (osd_until > ms_now() + RESULT_MS && !power_calibrating())
+      osd_until = ms_now();
+    if (step >= 0 && (wait < 0 || step < wait))
+      wait = step;
     if (osd_until != 0) {
       const int left = (int)(osd_until - MIN(osd_until, ms_now()));
       if (wait < 0 || left < wait)
@@ -1604,6 +1685,7 @@ int main(int argc, char **argv) {
     nav_begin(&ui, &ctx, now);
     const entry *chosen = NULL;
     const app *picked = NULL;
+    bool calibrate = false;
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
     if (front != NULL && !paused) {
       const asset splash = starting_image.n > 0 ? assets_get(sb_str(starting_image)) : (asset){.slot = GFX_PLACEHOLDER};
@@ -1625,7 +1707,10 @@ int main(int argc, char **argv) {
       if (in_settings) {
         /* The bottom row is the hint's */
         const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
-        NAV_SCOPE(&ui, nav_int(settings_category)) { settings(&ui, front, list); }
+        if (settings_category == POWER_PAGE)
+          NAV_SCOPE(&ui, nav_int(settings_category)) { calibrate = power_page(&ui, list); }
+        else
+          NAV_SCOPE(&ui, nav_int(settings_category)) { settings(&ui, front, list); }
         const bool on_binding = settings_focus >= 0 &&
                                 front->shm->options[settings_focus].kind == APPCTL_BINDING;
         const bool own = settings_focus >= 0 && (front->shm->flags & APPCTL_OWN_OPTIONS);
@@ -1633,6 +1718,8 @@ int main(int argc, char **argv) {
                           : on_binding && own ? S("A: record    X: clear    Y: this game")
                           : on_binding        ? S("A: record    X: clear")
                           : own               ? S("Y: this game")
+                          : settings_category == POWER_PAGE && power_focus == POWER_CALIBRATE
+                                              ? S("A: find the lowest clocks for this frame rate")
                                               : S("");
         if (hint.n > 0)
           ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, DIM);
@@ -1641,7 +1728,8 @@ int main(int argc, char **argv) {
         size_t n = 0;
         for (size_t i = 0; i < COUNTOF(pause_entries); i++) {
           const int a = pause_entries[i].action;
-          if (a == SETTINGS ? run_controlled(front) && has_settings(front, pause_entries[i].category)
+          if (a == SETTINGS ? pause_entries[i].category == POWER_PAGE ||
+                                  (run_controlled(front) && has_settings(front, pause_entries[i].category))
               : a == SAVE_STATE || a == LOAD_STATE || a == RESTART ? run_controlled(front) && front->shm->slots > 0
               : run_controlled(front) || a == RESUME || a == HOME || a == QUIT)
             items[n++] = pause_entries[i];
@@ -1689,6 +1777,12 @@ int main(int argc, char **argv) {
       clock_gettime(CLOCK_BOOTTIME, &ts);
       fprintf(stderr, "first frame at %.3f s\n", ts.tv_sec + ts.tv_nsec / 1e9);
       presented = true;
+    }
+    if (calibrate) {
+      /* In the game, at its pace: the frames counted are its */
+      resume_front();
+      power_calibrate();
+      show_text(power_calibrating() ? power_progress() : S("No frame counter"), power_calibrating() ? INT_MAX / 2 : RESULT_MS);
     }
     int result = 0;
     switch (chosen ? chosen->action : -1) {
