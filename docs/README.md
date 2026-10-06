@@ -12,6 +12,7 @@ A small, fast-booting OS for the Anbernic **RG35XX-SP** (Allwinner H700).
 | Build | Yocto (oe-core + meta-arm + meta-anbernic) via kas in a container |
 
 - [hardware.md](hardware.md): SoC, peripherals, how they map to devices
+- [straps.md](straps.md): board straps (DRAM type, panel revision), how the stock boot0 picks its DRAM parameters
 - [yocto.md](yocto.md): building, flashing a card, the layer
 - [dev-workflow.md](dev-workflow.md): USB link (ssh/serial), A/B slots, OTA updates, `/data`, kernel iteration
 - [suspend.md](suspend.md): how suspend to RAM works
