@@ -11,6 +11,14 @@ an unconnected one follows the pull. [tools/h700-fingerprint](../tools/h700-fing
 
 On our SP the DRAM straps are unconnected (all read high with the pull-up) and PE6 is driven high.
 
+What we do with them:
+- SPL (U-Boot patch 0008, `CONFIG_SUNXI_DRAM_H616_LPDDR3_STRAPS`) reads the DRAM straps like boot0 before DRAM
+  init. 14 → LPDDR3: DCDC3 to 1.2 V and boot0's LPDDR3 set with ROCKNIX's DX delays (`tpr11` 0x10121013, `tpr12`
+  0x0d0e0d0e); anything else → our LPDDR4 set. The kernel keeps that voltage: the dts gives DCDC3 a range
+  (1.1-1.2 V), as stock gives it the full range. The LPDDR3 path is untested: we have no LPDDR3 unit.
+- `boot.scr` loads `sun50i-h700-anbernic-rg35xx-sp-v2-panel.dtb` when PE6 is low (`gpio input PE6`). PE6 is driven by
+  the board, not the panel, so the panel needs no power or reset for it.
+
 ## Stock firmware
 
 From the stock RG35XX-SP V1.1.5 image:
@@ -62,7 +70,10 @@ At boot0 header + `0x348`:
   15 LPDDR4 at 672 MHz. No DDR4 set. Every set has `tpr3` 0, so the default voltages apply.
 - Set 15 differs from the header set (`para1` 0x310a, `para2` 0, `tpr6` 0x40808080, `tpr11` and `tpr12` 0), and
   the parameters the stock OS runs with are set 15's: the selection is live on our SP, which reads 15.
-- Which value DDR3 units read is not known yet. Value 14 (only PH6 low) would be LPDDR3 at 1200 mV.
+- The other memory Anbernic ships is LPDDR3, not DDR3: ROCKNIX's "DDR3" images build U-Boot with
+  `SUNXI_DRAM_H616_LPDDR3`, 672 MHz, DCDC3 1.2 V and `TPR6` 0x2fb08080 (the stock LPDDR3 set's), with `TPR11`
+  0x10121013 and `TPR12` 0x0d0e0d0e where the SP image has 0x0e0e0f0e and 0x0f10110f. They list the RG35XX-SP among
+  them. Which strap value those units read is not confirmed; value 14 is PH6 low, the rest high.
 - The generic DDR3 set matches mainline `orangepi_zero2_defconfig` (`DX_ODT` 0x08080808, `DX_DRI` 0x0e0e0e0e,
   `CA_DRI` 0x0e0e, `TPR10` 0xf83438, `SUNXI_DRAM_H616_DDR3_1333`).
 
