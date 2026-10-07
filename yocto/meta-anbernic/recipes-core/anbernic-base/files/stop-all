@@ -2,6 +2,7 @@
 # First shutdown step (inittab): SIGTERM to every process, then up to 1 s for them to exit.
 # Games save on SIGTERM, and /data is still writable: init unmounts only after this. What is
 # left gets SIGKILL from init.
+save-settings
 kill -TERM -1
 i=0
 while [ $i -lt 100 ]; do

@@ -45,10 +45,9 @@ launcher. PipeWire and the rest of rcS (udev's coldplug, the USB gadget, sleepd,
 launcher's first frame (3 s at most): run alongside, they delayed it by ~0.7 s. A udevd runs for Weston's start
 meanwhile, so libinput still gets the input devices from the coldplug.
 
-Brightness and volume survive reboots in `/uboot/settings.txt`, written by `save-settings` at shutdown and before
-suspend (only when changed). U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054
-makes pwm-backlight honour it without a levels table), so the panel lights at that level; weston.init sets the
-codec's Line Out before the UI starts.
+The brightness survives reboots in `/uboot/settings.txt`, written by `save-settings` at shutdown and before suspend
+(only when changed). U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054 makes
+pwm-backlight honour it without a levels table), so the panel lights at that level.
 
 Things that count as a failed try:
 - A hang in U-Boot or the early kernel: the U-Boot-armed SoC watchdog (16 s) resets the board.
@@ -143,8 +142,8 @@ The UI is [apps/launcher/](../apps/launcher) (Wayland + Vulkan + HarfBuzz + font
 - PSP and Dreamcast also offer `PPSSPP (Vulkan)` and `Flycast (Vulkan)` in the per-ROM core picker (Select). These set `COREHOST_RENDER=vulkan`; leave the core's Backend option on `auto` to follow that preference. Backend changes require quitting and relaunching the game. Deploy both the launcher and corehost when updating their control table: v4 has 128 options, enough for PPSSPP's 76 plus host graphics and input bindings. The launcher also accepts v3 clients such as the image's media player. Vulkan startup logs `corehost: Vulkan: Mali-G31 MC1, instance API ..., 640x480` in `/var/log/launcher.log`; loaded GLES/EGL libraries alone do not identify the active backend because a core can link both. Corehost requests the loader's supported instance API: PPSSPP's metadata says 1.0, but its context uses newer promoted functions, which would otherwise be missing.
 - The PPSSPP recipe carries fixes for live Vulkan output resizing/cropping and empty movie reads with system FFmpeg. Deploy the rebuilt `ppsspp_libretro.so` (the image's, or `OS/overlay/usr/lib64/libretro/`) as well as corehost; the frontend alone cannot fix these. Regression checks: change Rendering Resolution 1×→2×→3×→1× while playing, toggle Crop to 16x9, save/load a state, and let the post-character-creation movie end naturally. Resized output must fill the same display area without repeated edges, and the movie must return to gameplay without a decoder spin.
 - Menu icons are SVG strokes in `apps/common/ui/icons` (Lucide's, and ours in its style). `tools/icon-paths` turns them into `apps/common/ui/icons.inc`; run it after adding or changing one. FreeType strokes them at the size drawn, into the glyph atlas.
-- Sound goes through ALSA's dmix (`/etc/asound.conf`, 48 kHz), so a game paused in the background doesn't keep the next one silent. A paused app writes nothing. Per-app volume would need a sound server (PipeWire); nothing needs it yet.
-- Volume keys: Weston's `volume-keys.so` sets Line Out, and the launcher's `osd` window shows the level. The patched kiosk shell keeps that window on top without focus.
+- Sound goes through PipeWire (ALSA's default is PipeWire, Pulse clients use pipewire-pulse). A paused app writes nothing.
+- Volume: WirePlumber owns it (the default sink's volume drives the codec's Line Out) and restores it when it starts. The launcher reads the volume keys (evdev, whatever has the focus), steps it with `wpctl` and shows the level in its `osd` window. Nothing may write Line Out directly, or WirePlumber's stored volume goes stale. The patched kiosk shell keeps that window on top without focus.
 - [data/](../data) holds `/data` files that live in this repo (a new card gets them): `tar cf - -C data . | tools/ssh tar xf - -C /data`. They include the
   GPU benchmarks (glmark2, vkmark), which show Mesa's HUD (`GALLIUM_HUD`, `VK_LAYER_MESA_overlay`)
   and write their scores to `/var/log`.

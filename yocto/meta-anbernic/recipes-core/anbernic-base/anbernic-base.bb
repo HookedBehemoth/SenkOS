@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://90ntp file://store file://clock"
+SRC_URI = "file://anbernic.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://save-settings file://ums file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://90ntp file://store file://clock"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
@@ -22,6 +22,7 @@ do_install() {
     install -Dm0755 ${S}/ab ${D}${sbindir}/ab
     install -Dm0755 ${S}/usb-gadget-check ${D}${sbindir}/usb-gadget-check
     install -Dm0755 ${S}/stop-all ${D}${sbindir}/stop-all
+    install -Dm0755 ${S}/save-settings ${D}${sbindir}/save-settings
     install -Dm0755 ${S}/ums ${D}${sbindir}/ums
     install -Dm0755 ${S}/usb ${D}${sbindir}/usb
     install -Dm0755 ${S}/overlay ${D}${sbindir}/overlay
@@ -55,4 +56,4 @@ do_install() {
 }
 
 FILES:${PN} += "/uboot /data"
-RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk util-linux-mount e2fsprogs-mke2fs e2fsprogs-e2fsck alsa-utils-amixer weston-volume-keys weston-frames ksmbd-tools avahi-daemon umtprd anbernic-data"
+RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk util-linux-mount e2fsprogs-mke2fs e2fsprogs-e2fsck alsa-utils-amixer weston-frames ksmbd-tools avahi-daemon umtprd anbernic-data"

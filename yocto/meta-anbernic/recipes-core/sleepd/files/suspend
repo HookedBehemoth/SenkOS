@@ -19,6 +19,7 @@ if [ "$1" = lid ]; then
 else
 	echo disabled > $lid
 fi
+save-settings
 echo mem > /sys/power/state
 ret=$?
 [ -n "$alarm" ] && echo 0 > $alarm

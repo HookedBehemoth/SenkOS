@@ -23,11 +23,11 @@
  * the app paused in the background, on the Running page. An app on the control channel (running.h, corehost)
  * also gets Save state, Load state and Settings (its options). The focus at
  * home, and in each app's pause menu, is kept meanwhile. While an app has the screen the launcher
- * sleeps: only the pad's Menu, the mixer and an app's exit wake it (and power calibration's
+ * sleeps: only the pad's Menu, the volume keys and an app's exit wake it (and power calibration's
  * steps). Every app's pause menu has Power (power.h): its clocks, and the backlight.
  *
- * A second window, "osd", shows the volume whenever the mixer changes; the
- * patched kiosk shell keeps it on top of everything without focus.
+ * The volume keys are the launcher's (volume_thread); a second window, "osd",
+ * shows the level, and the patched kiosk shell keeps it on top without focus.
  *
  * `launcher launch PATH` (a port's folder, a ROM, an executable) starts that
  * app as A on its tile does: through /run/launcher (a desktop: $XDG_RUNTIME_DIR/launcher), a FIFO the
@@ -37,7 +37,6 @@
  * Drawn with Vulkan (gfx.h); icons come off the card in the background
  * (assets.h). Runs on a desktop too: LAUNCHER_DATA=apps/launcher/testdata.
  */
-#include <alsa/asoundlib.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -552,43 +551,44 @@ static void step_option(running *r, int i, int by) {
   run_request(r, APPCTL_OPTIONS, 0);
 }
 
-/* Line Out on hw:0, which weston's volume-keys module sets and which is also
- * PipeWire's volume (WirePlumber drives it as the speaker's). Posts the level
- * in percent, 0 when muted, whenever it changes. */
+/* The volume keys (read here, whatever has the focus): the default sink's
+ * volume through PipeWire, which WirePlumber keeps and restores at boot, then
+ * the OSD with the level read back. Presses queued meanwhile all count; a held
+ * key's repeats one step a round, so nothing lags behind on release. */
 static void *volume_thread(void *data) {
-  (void)data;
-  snd_mixer_t *mixer;
-  snd_mixer_selem_id_t *id;
-  snd_mixer_selem_id_alloca(&id);
-  snd_mixer_selem_id_set_name(id, "Line Out");
-  snd_mixer_elem_t *elem;
-  long min, max;
-  if (snd_mixer_open(&mixer, 0) < 0)
-    return NULL;
-  if (snd_mixer_attach(mixer, "hw:0") < 0 ||
-      snd_mixer_selem_register(mixer, NULL, NULL) < 0 ||
-      snd_mixer_load(mixer) < 0 ||
-      (elem = snd_mixer_find_selem(mixer, id)) == NULL ||
-      snd_mixer_selem_get_playback_volume_range(elem, &min, &max) < 0 ||
-      max <= min) {
-    snd_mixer_close(mixer);
-    return NULL;
+  const int fd = (int)(intptr_t)data;
+  struct input_event e;
+  while (read(fd, &e, sizeof(e)) == sizeof(e)) {
+    int steps = 0, held = 0;
+    do {
+      if (e.type != EV_KEY || (e.code != KEY_VOLUMEUP && e.code != KEY_VOLUMEDOWN))
+        continue;
+      const int by = e.code == KEY_VOLUMEUP ? 1 : -1;
+      if (e.value == 1)
+        steps += by;
+      else if (e.value == 2)
+        held = by;
+    } while (poll(&(struct pollfd){.fd = fd, .events = POLLIN}, 1, 0) > 0 &&
+             read(fd, &e, sizeof(e)) == sizeof(e));
+    if (steps == 0)
+      steps = held;
+    if (steps == 0)
+      continue;
+    STRBUF(256) cmd;
+    sb_set(cmd, S("{ "), steps > 0 ? S("wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 && ") : S(""),
+           S("wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ "));
+    sb_fmt(cmd, "%.4f", 0.0625 * abs(steps));
+    sb_add(cmd, steps > 0 ? S("+") : S("-"), S(" && wpctl get-volume @DEFAULT_AUDIO_SINK@; } 2>/dev/null"));
+    FILE *p = popen(cmd.p, "r");
+    if (p == NULL)
+      continue;
+    float volume;
+    char muted[16] = "";
+    if (fscanf(p, "Volume: %f %15s", &volume, muted) >= 1)
+      win_wake(UI_VOLUME, muted[0] != '\0' ? 0 : (int)(volume * 100 + 0.5f));
+    pclose(p);
   }
-  int last = -1;
-  for (;;) {
-    long raw = min;
-    int on = 1;
-    snd_mixer_selem_get_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT, &raw);
-    snd_mixer_selem_get_playback_switch(elem, SND_MIXER_SCHN_FRONT_LEFT, &on);
-    const int percent = on ? (int)((raw - min) * 100 / (max - min)) : 0;
-    if (last >= 0 && percent != last) {
-      win_wake(UI_VOLUME, percent);
-    }
-    last = percent;
-    if (snd_mixer_wait(mixer, -1) < 0 || snd_mixer_handle_events(mixer) < 0)
-      break;
-  }
-  snd_mixer_close(mixer);
+  close(fd);
   return NULL;
 }
 
@@ -2128,7 +2128,9 @@ int main(int argc, char **argv) {
   power_init();
   power_use(HOME_KEY);
   clock_refresh();
-  spawn("volume", volume_thread, NULL);
+  const int volume_keys = input_open(S("gpio-keys-volume"), 0);
+  if (volume_keys >= 0)
+    spawn("volume", volume_thread, (void *)(intptr_t)volume_keys);
   if (!open_ctl())
     fprintf(stderr, "launcher: no launch FIFO\n");
   static nav ui = {.animate = true, .duration = 150};

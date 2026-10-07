@@ -28,6 +28,16 @@ load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 setenv fdtfile sun50i-h700-anbernic-rg35xx-sp.dtb
 if gpio input PE6; then setenv fdtfile sun50i-h700-anbernic-rg35xx-sp-v2-panel.dtb; fi
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
+# The brightness it was left at (save-settings), so the backlight comes up at it (kernel patch 0054)
+setenv brightness
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} settings.txt; then
+	env import -t ${scriptaddr} ${filesize} brightness
+fi
+if test -n "${brightness}"; then
+	fdt addr ${fdt_addr_r}
+	fdt resize
+	fdt set /backlight default-brightness-level <${brightness}>
+fi
 # The kernel shows its splash (kernel patch 0052) until Weston takes the display over. With
 # /uboot/fbdev present: the kernel console (fbcon) on the LCD instead.
 setenv client splash

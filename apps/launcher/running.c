@@ -75,11 +75,13 @@ bool run_drop_root(void) {
     return false;
   app_groups = n;
   prctl(PR_SET_KEEPCAPS, 0);
-  /* Weston's socket by its path: the apps' runtime dir lets the player's group in */
+  /* Weston's and PipeWire's sockets by their paths: the apps' runtime dir lets the player's group in */
   const char *display = getenv("WAYLAND_DISPLAY"), *run = run_app_env("XDG_RUNTIME_DIR");
   STRBUF(256) path;
   if (display != NULL && display[0] != '/' && run != NULL && sb_set(path, str_c(run), S("/"), str_c(display)))
     setenv("WAYLAND_DISPLAY", path.p, 1);
+  if (run != NULL && sb_set(path, str_c(run), S("/pipewire-0")))
+    setenv("PIPEWIRE_REMOTE", path.p, 1);
   path.n = 0;
   sb_fmt(path, "/run/user/%u", (unsigned)uid);
   setenv("XDG_RUNTIME_DIR", path.p, 1);

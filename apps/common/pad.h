@@ -8,8 +8,12 @@
 
 #include <stdint.h>
 
-/* Its event node, opened with `flags` besides O_RDONLY | O_CLOEXEC; -1
- * without one */
+#include "str.h"
+
+/* The event node of the input device called `name`, opened with `flags`
+ * besides O_RDONLY | O_CLOEXEC; -1 without one */
+int input_open(str name, int flags);
+/* The pad's (input_open) */
 int pad_open(int flags);
 /* APPCTL_* for an EV_KEY code, -1 for one that isn't the pad's */
 int pad_button(unsigned code);

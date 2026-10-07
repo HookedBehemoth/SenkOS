@@ -10,7 +10,7 @@
 #include "appctl.h"
 #include "str.h"
 
-int pad_open(int flags) {
+int input_open(str name, int flags) {
   glob_t g;
   if (glob("/sys/class/input/event*/device/name", 0, NULL, &g) != 0)
     return -1;
@@ -21,8 +21,8 @@ int pad_open(int flags) {
     const size_t n = f != NULL ? fread(line, 1, sizeof(line), f) : 0;
     if (f != NULL)
       fclose(f);
-    str name = {line, n};
-    if (!str_eq(str_cut(&name, '\n'), S("gpio-keys-gamepad")))
+    str dev = {line, n};
+    if (!str_eq(str_cut(&dev, '\n'), name))
       continue;
     /* /sys/class/input/eventN/device/name -> /dev/input/eventN */
     str event = str_c(strstr(g.gl_pathv[i], "event"));
@@ -33,6 +33,8 @@ int pad_open(int flags) {
   globfree(&g);
   return fd;
 }
+
+int pad_open(int flags) { return input_open(S("gpio-keys-gamepad"), flags); }
 
 int pad_button(unsigned code) {
   switch (code) {

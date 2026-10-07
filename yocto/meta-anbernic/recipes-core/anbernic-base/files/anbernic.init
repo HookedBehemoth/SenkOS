@@ -56,11 +56,6 @@ udhcpd -S /etc/udhcpd.conf
 usb-gadget-check </dev/null >/dev/null 2>&1 &
 usb </dev/null >/dev/null 2>&1 &
 
-# The codec boots muted with Line Out (the speaker amp's input) at 0; no alsa-state to restore.
-# WirePlumber then takes it as the speaker's volume, and restores the last one it had.
-amixer -q -c 0 set 'Line Out' 70% unmute
-amixer -q -c 0 set DAC unmute
-
 # lid close / power key -> suspend; /run/power: the launcher's (shell's, not the apps') requests
 mkfifo -m 0620 /run/power && chgrp shell /run/power
 [ -x /usr/sbin/sleepd ] && sleepd > /dev/console 2>&1 &

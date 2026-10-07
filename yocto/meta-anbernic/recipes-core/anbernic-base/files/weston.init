@@ -13,15 +13,15 @@ first_frame() {
 	done
 }
 if [ "$1" = session ]; then
+	# Weston's and PipeWire's sockets are the group's too: the launcher (shell) is in the player's group
+	umask 002
 	(
 		first_frame
 		pipewire </dev/null >/var/log/pipewire.log 2>&1 &
 		wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
 		pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
 	) &
-	# Weston's socket is the group's too: the launcher (shell) is in the player's group
-	umask 002
-	exec weston --backend=drm --shell=kiosk --modules=volume-keys.so,frames.so --socket=$WAYLAND_DISPLAY \
+	exec weston --backend=drm --shell=kiosk --modules=frames.so --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1
 fi
 # Again (`restart`) after `ums` stopped it: seatd still runs.
@@ -99,6 +99,9 @@ chown -R player:player $l/0 $l/1 2>/dev/null
 mount --bind $l/0 /var/volatile/log
 # .X11-unix: Weston exits without it, and populate-volatile (S37) comes too late
 mkdir -p -m 1777 /var/volatile/tmp /var/volatile/tmp/.X11-unix
+
+# The codec boots with its DAC muted; the volume is WirePlumber's (it restores it when it starts)
+amixer -q -c 0 sset DAC unmute &
 
 /etc/init.d/data-init start
 

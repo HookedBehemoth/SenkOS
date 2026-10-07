@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 22:33:44 +0200
+Subject: [PATCH] backlight: pwm_bl: honour default-brightness-level with the
+ default table
+
+Without brightness-levels, the backlight came up at half of the default
+(CIE 1931) table, whatever the device tree said. Read
+default-brightness-level for that table too, so a bootloader can set the
+level the user left, and the panel lights at it.
+
+Upstream-Status: Pending
+---
+ drivers/video/backlight/pwm_bl.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/video/backlight/pwm_bl.c b/drivers/video/backlight/pwm_bl.c
+index 237d3d3f3..d15bd6254 100644
+--- a/drivers/video/backlight/pwm_bl.c
++++ b/drivers/video/backlight/pwm_bl.c
+@@ -563,6 +563,10 @@ static int pwm_backlight_probe(struct platform_device *pdev)
+ 			goto err_alloc;
+ 		}
+ 
++		/* Also in the default table's steps, e.g. set by the bootloader */
++		of_property_read_u32(pdev->dev.of_node, "default-brightness-level",
++				     &data->dft_brightness);
++
+ 		for (i = 0; i <= data->max_brightness; i++) {
+ 			if (data->levels[i] > pb->scale)
+ 				pb->scale = data->levels[i];

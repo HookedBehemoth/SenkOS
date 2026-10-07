@@ -13,7 +13,6 @@ executable('launcher', 'main.c', 'apps.c', 'capture.c', 'licenses.c', 'power.c',
     common_dep,
     ui_dep,
     dependency('wayland-client'),
-    dependency('alsa'),
     dependency('zlib'),
   ],
   install: true)
