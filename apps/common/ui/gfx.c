@@ -392,18 +392,15 @@ static VkSemaphore semaphore(VkSemaphoreType type) {
 /* Graphics with present, and a transfer queue of its own when there is one:
  * a transfer-only family, else another family that copies (async compute),
  * else a second queue of the graphics family. */
-static bool pick_queues(VkSurfaceKHR surface, uint32_t *graphics_index,
-                        uint32_t *transfer_index) {
+/* Present support is checked per window (gfx_target_create) */
+static bool pick_queues(uint32_t *graphics_index, uint32_t *transfer_index) {
   uint32_t n = 16;
   VkQueueFamilyProperties qf[16];
   vkGetPhysicalDeviceQueueFamilyProperties(pdev, &n, qf);
   graphics_family = UINT32_MAX;
-  for (uint32_t i = 0; i < n && graphics_family == UINT32_MAX; i++) {
-    VkBool32 present = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR(pdev, i, surface, &present);
-    if (present && (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+  for (uint32_t i = 0; i < n && graphics_family == UINT32_MAX; i++)
+    if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
       graphics_family = i;
-  }
   if (graphics_family == UINT32_MAX)
     return false;
   *graphics_index = *transfer_index = 0;
@@ -432,12 +429,12 @@ static bool create_surface(win *window, VkSurfaceKHR *out) {
   return ok(vkCreateWaylandSurfaceKHR(instance, &ci, NULL, out), "surface");
 }
 
-bool gfx_init(win *window) {
+bool gfx_init(const char *name) {
   static const char *exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME};
   const uint32_t n_ext = COUNTOF(exts);
   VkApplicationInfo app = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = window->title,
+      .pApplicationName = name,
       .apiVersion = VK_API_VERSION_1_3,
   };
   VkInstanceCreateInfo ici = {
@@ -447,10 +444,6 @@ bool gfx_init(win *window) {
       .ppEnabledExtensionNames = exts,
   };
   if (!ok(vkCreateInstance(&ici, NULL, &instance), "instance"))
-    return false;
-  /* The first window's surface picks the queue; it is kept for its target */
-  VkSurfaceKHR surface;
-  if (!create_surface(window, &surface))
     return false;
 
   uint32_t n_pdev = 8;
@@ -473,7 +466,7 @@ bool gfx_init(win *window) {
         !f12.shaderSampledImageArrayNonUniformIndexing ||
         !f12.timelineSemaphore || !f13.dynamicRendering ||
         !f13.synchronization2 ||
-        !pick_queues(surface, &graphics_index, &transfer_index))
+        !pick_queues(&graphics_index, &transfer_index))
       continue;
     slot_count = MIN(MAX_SLOTS,
                          MIN(props.limits.maxPerStageDescriptorSampledImages,
@@ -589,9 +582,6 @@ bool gfx_init(win *window) {
   for (uint32_t i = 0; i < slot_count; i++)
     gfx_bind(i, NULL);
   gfx_bind(GFX_WHITE, &white);
-
-  targets[0].window = window;
-  targets[0].surface = surface;
   return true;
 }
 

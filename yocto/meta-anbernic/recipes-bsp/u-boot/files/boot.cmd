@@ -28,11 +28,10 @@ load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 setenv fdtfile sun50i-h700-anbernic-rg35xx-sp.dtb
 if gpio input PE6; then setenv fdtfile sun50i-h700-anbernic-rg35xx-sp-v2-panel.dtb; fi
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
-# fbdev (kernel console on the LCD) only with /uboot/fbdev present: lighting the panel for fbcon
-# (~300 ms of init sleeps) holds up every later probe and the root mount. Without it, Weston's first
-# modeset lights the panel, before the launcher's first frame.
-setenv fbdev 0
-if test -e ${devtype} ${devnum}:${distro_bootpart} fbdev; then setenv fbdev 1; fi
+# The kernel shows its splash (kernel patch 0052) until Weston takes the display over. With
+# /uboot/fbdev present: the kernel console (fbcon) on the LCD instead.
+setenv client splash
+if test -e ${devtype} ${devnum}:${distro_bootpart} fbdev; then setenv client fbdev; fi
 # ro: slots are squashfs (an ext4 slot still works, init remounts it rw)
-setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 drm_kms_helper.fbdev_emulation=${fbdev} ab=${bslot}
+setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 drm_client_lib.active=${client} ab=${bslot}
 booti ${kernel_addr_r} - ${fdt_addr_r}

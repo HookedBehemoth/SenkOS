@@ -11,13 +11,14 @@ inherit allarch
 
 # /data's tree: `ab mount` copies it onto a freshly made data partition. Only OS, apps, roms,
 # music and videos are ours: settings in OS/config, the cores' saves in OS/saves, what they need in OS/assets/emulator
-# (PPSSPP's: its recipe), game packs in OS/assets/thumbnails, rootfs overlays in OS/overlay.
+# (PPSSPP's: its recipe), game packs in OS/assets/thumbnails, rootfs overlays in OS/overlay; root's
+# init.d, profile.d and dropbear keys.
 # Systems (*.system) and emulators and players (*.desktop): the image's; apps/systems and
 # apps/emulators on the card over them (apps/launcher/apps.h).
 do_install() {
     t=${D}${datadir}/anbernic
     install -d $t/data/apps/emulators $t/data/apps/systems $t/data/roms $t/data/music $t/data/videos \
-        $t/data/OS/config $t/data/OS/saves $t/data/OS/overlay \
+        $t/data/OS/config $t/data/OS/saves $t/data/OS/overlay $t/data/OS/init.d $t/data/OS/profile.d $t/data/OS/dropbear \
         $t/data/OS/assets/emulator $t/data/OS/assets/splash $t/data/OS/assets/thumbnails
     cp -r --no-preserve=ownership ${S}/data/. $t/data/
     install -d $t/systems $t/emulators

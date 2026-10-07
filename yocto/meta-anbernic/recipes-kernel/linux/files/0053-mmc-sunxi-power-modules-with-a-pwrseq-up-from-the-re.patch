@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 21:38:12 +0200
+Subject: [PATCH] mmc: sunxi: power modules with a pwrseq up from the rescan
+ work
+
+mmc_start_host() powers the card up in the host's probe, and with it
+waits out the pwrseq's post-power-on delay (200 ms for the RG35XX's
+RTL8821CS). The root mount waits for all probes, so that delay held it
+up. With MMC_CAP2_NO_PRESCAN_POWERUP the first rescan powers it up.
+
+Upstream-Status: Pending
+---
+ drivers/mmc/host/sunxi-mmc.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/mmc/host/sunxi-mmc.c b/drivers/mmc/host/sunxi-mmc.c
+index 0e1912bf9..020fbabcd 100644
+--- a/drivers/mmc/host/sunxi-mmc.c
++++ b/drivers/mmc/host/sunxi-mmc.c
+@@ -1465,6 +1465,14 @@ static int sunxi_mmc_probe(struct platform_device *pdev)
+ 	/* TODO: This driver doesn't support HS400 mode yet */
+ 	mmc->caps2 &= ~MMC_CAP2_HS400;
+ 
++	/*
++	 * Power an SDIO module up from the rescan work, not here: its pwrseq
++	 * delay (200 ms for some Wi-Fi modules) would hold up the probe, and
++	 * with it the root mount, which waits for all probes.
++	 */
++	if (mmc->pwrseq)
++		mmc->caps2 |= MMC_CAP2_NO_PRESCAN_POWERUP;
++
+ 	ret = sunxi_mmc_init_host(host);
+ 	if (ret)
+ 		goto error_free_dma;

@@ -2101,19 +2101,23 @@ int main(int argc, char **argv) {
     fprintf(stderr, "launcher: can't become shell: %s\n", strerror(errno));
     return 1;
   }
+  /* Vulkan, fonts and assets while Weston starts: none of it needs the display */
+  if (!gfx_init(window.title) || !ui_init("sans-serif")) {
+    fprintf(stderr, "launcher: can't draw\n");
+    return 1;
+  }
+  assets_init();
   wait_for_display();
   if (!win_connect(key)) {
     fprintf(stderr, "launcher: no Wayland display\n");
     return 1;
   }
   win_map(&window);
-  if (!gfx_init(&window) || (screen = gfx_target_create(&window, false)) == NULL ||
-      !ui_init("sans-serif")) {
+  if ((screen = gfx_target_create(&window, false)) == NULL) {
     fprintf(stderr, "launcher: can't draw\n");
     return 1;
   }
-  assets_init();
-  romdb_init();
+  romdb_init(); /* its wakes need the connection */
   for (int b = 0; b < APPCTL_BUTTONS; b++)
     button_names[b] = str_c(appctl_button_names[b]);
   for (int c = 0; c < APPCTL_CATEGORIES; c++)

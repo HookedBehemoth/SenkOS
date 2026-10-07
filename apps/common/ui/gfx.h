@@ -50,7 +50,8 @@ static inline uint32_t gfx_rgba(gfx_color c) {
   return c.r | c.g << 8 | c.b << 16 | (uint32_t)c.a << 24;
 }
 
-bool gfx_init(win *window);
+/* No window needed: a client can set up while the compositor starts */
+bool gfx_init(const char *name);
 /* A window to draw to. `translucent`: premultiplied alpha reaches the
  * compositor (the OSD); otherwise the window is opaque. */
 gfx_target *gfx_target_create(win *window, bool translucent);

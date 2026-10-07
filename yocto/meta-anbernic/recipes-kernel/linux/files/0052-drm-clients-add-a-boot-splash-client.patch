@@ -1,0 +1,338 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 21:38:12 +0200
+Subject: [PATCH] drm/clients: add a boot splash client
+
+Shows one built-in image until userspace takes over the display, from a
+work item: lighting a SPI-initialised panel sleeps ~250 ms, and doing
+that from the driver's bind held up every later probe and the root
+mount. A compositor that keeps the mode takes the lit panel over without
+a modeset.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/clients/Kconfig               |  21 +-
+ drivers/gpu/drm/clients/Makefile              |   1 +
+ drivers/gpu/drm/clients/drm_client_internal.h |   6 +
+ drivers/gpu/drm/clients/drm_client_setup.c    |   7 +
+ drivers/gpu/drm/clients/drm_splash.c          | 211 ++++++++++++++++++
+ 5 files changed, 245 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/gpu/drm/clients/drm_splash.c
+
+diff --git a/drivers/gpu/drm/clients/Kconfig b/drivers/gpu/drm/clients/Kconfig
+index 6096c623d..875bf584d 100644
+--- a/drivers/gpu/drm/clients/Kconfig
++++ b/drivers/gpu/drm/clients/Kconfig
+@@ -13,6 +13,7 @@ config DRM_CLIENT_SELECTION
+ 	tristate
+ 	depends on DRM
+ 	select DRM_CLIENT_LIB if DRM_CLIENT_LOG
++	select DRM_CLIENT_LIB if DRM_CLIENT_SPLASH
+ 	select DRM_CLIENT_LIB if DRM_FBDEV_EMULATION
+ 	help
+ 	  Drivers that support in-kernel DRM clients have to select this
+@@ -85,10 +86,21 @@ config DRM_CLIENT_LOG
+ 	  If you only need logs, but no terminal, or if you prefer userspace
+ 	  terminal, say "Y".
+ 
++config DRM_CLIENT_SPLASH
++	bool "Show a splash image until userspace takes over"
++	depends on DRM_CLIENT_SELECTION
++	select DRM_CLIENT
++	select DRM_CLIENT_SETUP
++	select FW_LOADER
++	help
++	  Shows splash.bin from the firmware (see drm_splash.c for the format) on
++	  every display, without a console. The first modeset runs asynchronously,
++	  so slow panels don't hold up the boot.
++
+ choice
+ 	prompt "Default DRM Client"
+ 	depends on DRM_CLIENT_SELECTION
+-	depends on DRM_FBDEV_EMULATION || DRM_CLIENT_LOG
++	depends on DRM_FBDEV_EMULATION || DRM_CLIENT_LOG || DRM_CLIENT_SPLASH
+ 	default DRM_CLIENT_DEFAULT_FBDEV
+ 	help
+ 	  Selects the default drm client.
+@@ -111,6 +123,12 @@ config DRM_CLIENT_DEFAULT_LOG
+ 	  screen, but doesn't implement a full terminal. For that you will need
+ 	  a userspace terminal using drm/kms.
+ 
++config DRM_CLIENT_DEFAULT_SPLASH
++	bool "splash"
++	depends on DRM_CLIENT_SPLASH
++	help
++	  Use the splash image as default drm client.
++
+ endchoice
+ 
+ config DRM_CLIENT_DEFAULT
+@@ -118,6 +136,7 @@ config DRM_CLIENT_DEFAULT
+        depends on DRM_CLIENT
+        default "fbdev" if DRM_CLIENT_DEFAULT_FBDEV
+        default "log" if DRM_CLIENT_DEFAULT_LOG
++       default "splash" if DRM_CLIENT_DEFAULT_SPLASH
+        default ""
+ 
+ endmenu
+diff --git a/drivers/gpu/drm/clients/Makefile b/drivers/gpu/drm/clients/Makefile
+index c16addbc3..3ab952926 100644
+--- a/drivers/gpu/drm/clients/Makefile
++++ b/drivers/gpu/drm/clients/Makefile
+@@ -4,5 +4,6 @@ subdir-ccflags-y += -I$(src)/..
+ 
+ drm_client_lib-y := drm_client_setup.o
+ drm_client_lib-$(CONFIG_DRM_CLIENT_LOG) += drm_log.o
++drm_client_lib-$(CONFIG_DRM_CLIENT_SPLASH) += drm_splash.o
+ drm_client_lib-$(CONFIG_DRM_FBDEV_EMULATION) += drm_fbdev_client.o
+ obj-$(CONFIG_DRM_CLIENT_LIB) += drm_client_lib.o
+diff --git a/drivers/gpu/drm/clients/drm_client_internal.h b/drivers/gpu/drm/clients/drm_client_internal.h
+index 6dc078bf6..3d66cf065 100644
+--- a/drivers/gpu/drm/clients/drm_client_internal.h
++++ b/drivers/gpu/drm/clients/drm_client_internal.h
+@@ -22,4 +22,10 @@ void drm_log_register(struct drm_device *dev);
+ static inline void drm_log_register(struct drm_device *dev) {}
+ #endif
+ 
++#ifdef CONFIG_DRM_CLIENT_SPLASH
++void drm_splash_register(struct drm_device *dev);
++#else
++static inline void drm_splash_register(struct drm_device *dev) {}
++#endif
++
+ #endif
+diff --git a/drivers/gpu/drm/clients/drm_client_setup.c b/drivers/gpu/drm/clients/drm_client_setup.c
+index 515aceac2..ceb4c2c95 100644
+--- a/drivers/gpu/drm/clients/drm_client_setup.c
++++ b/drivers/gpu/drm/clients/drm_client_setup.c
+@@ -56,6 +56,13 @@ void drm_client_setup(struct drm_device *dev, const struct drm_format_info *form
+ 		return;
+ 	}
+ #endif
++
++#ifdef CONFIG_DRM_CLIENT_SPLASH
++	if (!strcmp(drm_client_default, "splash")) {
++		drm_splash_register(dev);
++		return;
++	}
++#endif
+ 	if (strcmp(drm_client_default, ""))
+ 		drm_warn(dev, "Unknown DRM client %s\n", drm_client_default);
+ }
+diff --git a/drivers/gpu/drm/clients/drm_splash.c b/drivers/gpu/drm/clients/drm_splash.c
+new file mode 100644
+index 000000000..af15bc787
+--- /dev/null
++++ b/drivers/gpu/drm/clients/drm_splash.c
+@@ -0,0 +1,211 @@
++// SPDX-License-Identifier: GPL-2.0 or MIT
++/*
++ * Boot splash: shows one image from the firmware (built in with CONFIG_EXTRA_FIRMWARE, so
++ * it works before the root fs is mounted) until userspace takes over the display.
++ *
++ * The modeset runs from a work item: lighting a panel can sleep for hundreds of
++ * milliseconds (power, reset, init sequence), and done from the driver's bind it would
++ * hold up every later probe and the root mount. A compositor that keeps the mode takes
++ * over the lit panel without a modeset.
++ *
++ * splash.bin, little endian: u16 width, u16 height, u32 background (XRGB8888), then
++ * width * height XRGB8888 pixels, drawn centred on the background. No compression: the
++ * kernel image is compressed as a whole.
++ */
++
++#include <linux/firmware.h>
++#include <linux/iosys-map.h>
++#include <linux/module.h>
++#include <linux/workqueue.h>
++
++#include <drm/drm_client.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_print.h>
++
++#include "drm_client_internal.h"
++
++static char *file = "splash.bin";
++module_param(file, charp, 0444);
++MODULE_PARM_DESC(file, "Splash image in the firmware search path, default splash.bin");
++
++struct drm_splash_header {
++	__le16 width, height;
++	__le32 background;
++} __packed;
++
++struct drm_splash {
++	struct drm_client_dev client;
++	struct work_struct work;
++	struct drm_client_buffer **buffers;
++	unsigned int n_buffers;
++	bool queued;
++};
++
++static struct drm_splash *client_to_splash(struct drm_client_dev *client)
++{
++	return container_of(client, struct drm_splash, client);
++}
++
++static void drm_splash_draw(struct drm_client_buffer *buffer, const struct firmware *fw)
++{
++	const struct drm_splash_header *hdr = (const void *)fw->data;
++	const u32 *src = (const u32 *)(hdr + 1);
++	struct drm_framebuffer *fb = buffer->fb;
++	u32 bg = le32_to_cpu(hdr->background);
++	unsigned int w = le16_to_cpu(hdr->width), h = le16_to_cpu(hdr->height);
++	unsigned int x0, y0, x, y, sx = 0, sy = 0, cw = w, ch = h;
++	struct iosys_map map;
++	u32 *dst;
++
++	if (drm_client_buffer_vmap_local(buffer, &map))
++		return;
++	if (map.is_iomem)
++		goto out;
++
++	/* centred, cropped if larger than the screen */
++	if (w > fb->width) {
++		sx = (w - fb->width) / 2;
++		cw = fb->width;
++	}
++	if (h > fb->height) {
++		sy = (h - fb->height) / 2;
++		ch = fb->height;
++	}
++	x0 = (fb->width - cw) / 2;
++	y0 = (fb->height - ch) / 2;
++
++	for (y = 0; y < fb->height; y++) {
++		dst = map.vaddr + y * fb->pitches[0];
++		if (y < y0 || y >= y0 + ch) {
++			for (x = 0; x < fb->width; x++)
++				dst[x] = bg;
++			continue;
++		}
++		for (x = 0; x < x0; x++)
++			dst[x] = bg;
++		memcpy(dst + x0, src + (sy + y - y0) * w + sx, cw * 4);
++		for (x = x0 + cw; x < fb->width; x++)
++			dst[x] = bg;
++	}
++out:
++	drm_client_buffer_vunmap_local(buffer);
++	drm_client_buffer_flush(buffer, NULL);
++}
++
++static void drm_splash_free_buffers(struct drm_splash *splash)
++{
++	unsigned int i;
++
++	for (i = 0; i < splash->n_buffers; i++)
++		drm_client_buffer_delete(splash->buffers[i]);
++	kfree(splash->buffers);
++	splash->buffers = NULL;
++	splash->n_buffers = 0;
++}
++
++static void drm_splash_work(struct work_struct *work)
++{
++	struct drm_splash *splash = container_of(work, struct drm_splash, work);
++	struct drm_client_dev *client = &splash->client;
++	struct drm_device *dev = client->dev;
++	const struct drm_splash_header *hdr;
++	struct drm_client_buffer *buffer;
++	struct drm_mode_set *mode_set;
++	const struct firmware *fw;
++	unsigned int n = 0;
++	int ret;
++
++	if (request_firmware(&fw, file, dev->dev))
++		return;
++	hdr = (const void *)fw->data;
++	if (fw->size < sizeof(*hdr) ||
++	    fw->size < sizeof(*hdr) + 4 * le16_to_cpu(hdr->width) * le16_to_cpu(hdr->height)) {
++		drm_warn(dev, "splash: %s is truncated\n", file);
++		goto out;
++	}
++
++	ret = drm_client_modeset_probe(client, 0, 0);
++	if (ret)
++		goto out;
++
++	mutex_lock(&client->modeset_mutex);
++	drm_client_for_each_modeset(mode_set, client)
++		n++;
++	splash->buffers = kcalloc(n, sizeof(*splash->buffers), GFP_KERNEL);
++	drm_client_for_each_modeset(mode_set, client) {
++		if (!splash->buffers || !mode_set->mode)
++			continue;
++		buffer = drm_client_buffer_create_dumb(client, mode_set->mode->hdisplay,
++						       mode_set->mode->vdisplay,
++						       DRM_FORMAT_XRGB8888);
++		if (IS_ERR(buffer))
++			continue;
++		drm_splash_draw(buffer, fw);
++		mode_set->fb = buffer->fb;
++		splash->buffers[splash->n_buffers++] = buffer;
++	}
++	mutex_unlock(&client->modeset_mutex);
++
++	/* -EBUSY: userspace is master already */
++	if (splash->n_buffers && drm_client_modeset_commit(client))
++		drm_splash_free_buffers(splash);
++out:
++	release_firmware(fw);
++}
++
++static void drm_splash_client_unregister(struct drm_client_dev *client)
++{
++	struct drm_splash *splash = client_to_splash(client);
++
++	cancel_work_sync(&splash->work);
++	drm_splash_free_buffers(splash);
++	drm_client_release(client);
++}
++
++static void drm_splash_client_free(struct drm_client_dev *client)
++{
++	kfree(client_to_splash(client));
++}
++
++/* back to the splash when userspace lets go of the display, e.g. at shutdown */
++static int drm_splash_client_restore(struct drm_client_dev *client, bool force)
++{
++	if (!client_to_splash(client)->n_buffers)
++		return 0;
++	return force ? drm_client_modeset_commit_locked(client) : drm_client_modeset_commit(client);
++}
++
++static int drm_splash_client_hotplug(struct drm_client_dev *client)
++{
++	struct drm_splash *splash = client_to_splash(client);
++
++	/* once: a later hotplug (HDMI) is userspace's business */
++	if (!splash->queued) {
++		splash->queued = true;
++		queue_work(system_dfl_wq, &splash->work);
++	}
++	return 0;
++}
++
++static const struct drm_client_funcs drm_splash_client_funcs = {
++	.owner		= THIS_MODULE,
++	.free		= drm_splash_client_free,
++	.unregister	= drm_splash_client_unregister,
++	.restore	= drm_splash_client_restore,
++	.hotplug	= drm_splash_client_hotplug,
++};
++
++void drm_splash_register(struct drm_device *dev)
++{
++	struct drm_splash *splash = kzalloc(sizeof(*splash), GFP_KERNEL);
++
++	if (!splash)
++		return;
++	INIT_WORK(&splash->work, drm_splash_work);
++	if (drm_client_init(dev, &splash->client, "splash", &drm_splash_client_funcs)) {
++		kfree(splash);
++		return;
++	}
++	drm_client_register(&splash->client);
++}

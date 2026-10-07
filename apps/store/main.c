@@ -847,7 +847,7 @@ int main(int argc, char **argv) {
   }
   win_map(&window);
   gfx_target *target;
-  if (!gfx_init(&window) || (target = gfx_target_create(&window, false)) == NULL || !ui_init("sans-serif")) {
+  if (!gfx_init(window.title) || (target = gfx_target_create(&window, false)) == NULL || !ui_init("sans-serif")) {
     fprintf(stderr, "store: can't draw\n");
     return 1;
   }

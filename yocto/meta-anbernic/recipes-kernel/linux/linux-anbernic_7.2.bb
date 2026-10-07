@@ -8,7 +8,7 @@ COMPATIBLE_MACHINE = "rg35xx-sp"
 
 # 0001-0029: ROCKNIX's H700 board patches (their number is the second one in the name),
 # minus their out-of-tree joypad driver: the buttons are mainline gpio-keys.
-# 0030-0032, 0037, 0041-0051: ours (0044-0051: super standby, docs/suspend.md).
+# 0030-0032, 0037, 0041-0053: ours (0044-0051: super standby, docs/suspend.md; 0052: boot splash).
 # 0033-0036: Cedrus H616 + VP9 from LibreELEC; 0038-0040: its P010 output for 10-bit VP9 and
 # HEVC (without them the engine writes 10-bit streams as 8-bit NV12).
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
@@ -65,6 +65,8 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0049-usb-musb-sunxi-set-the-PHY-up-again-on-resume.patch \
     file://0050-clk-sunxi-ng-de2-restore-the-DE33-clock-registers-on.patch \
     file://0051-soc-sunxi-restore-the-SoC-state-after-an-H616-super-.patch \
+    file://0052-drm-clients-add-a-boot-splash-client.patch \
+    file://0053-mmc-sunxi-power-modules-with-a-pwrseq-up-from-the-re.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 

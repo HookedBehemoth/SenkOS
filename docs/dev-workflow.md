@@ -34,7 +34,21 @@ It reads `ab.txt`:
 
 After 3 failed tries, U-Boot boots `slot` again and drops `tryslot`.
 
-`touch /uboot/fbdev` turns on the kernel console on the LCD (fbdev emulation). It's off by default because it costs ~190 ms of boot.
+The kernel shows a splash (kernel patch 0052, `drm_splash`) from ~0.5 s until Weston takes the display over without a
+modeset. It lights the panel from a work item, so the panel's ~290 ms of init sleeps hold up nothing. The image is
+`firmware/splash.bin` in the kernel recipe, built into the kernel: `tools/mksplash.py` makes it from a 640x480 PNG
+(`splash.png` next to it); the top-left pixel is the background, and only the box around the rest is stored.
+`touch /uboot/fbdev` shows the kernel console (fbcon) instead.
+
+Userspace starts with the UI: rcS S01 (`/etc/init.d/weston`) mounts `/data` and starts seatd, Weston and the
+launcher. PipeWire and the rest of rcS (udev's coldplug, the USB gadget, sleepd, the watchdog) wait for the
+launcher's first frame (3 s at most): run alongside, they delayed it by ~0.7 s. A udevd runs for Weston's start
+meanwhile, so libinput still gets the input devices from the coldplug.
+
+Brightness and volume survive reboots in `/uboot/settings.txt`, written by `save-settings` at shutdown and before
+suspend (only when changed). U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054
+makes pwm-backlight honour it without a levels table), so the panel lights at that level; weston.init sets the
+codec's Line Out before the UI starts.
 
 Things that count as a failed try:
 - A hang in U-Boot or the early kernel: the U-Boot-armed SoC watchdog (16 s) resets the board.

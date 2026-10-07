@@ -1,36 +1,37 @@
 #!/bin/sh
-# The UI as early as boot allows (rcS S01), in the background while the rest of rcS runs: udev
-# coldplug included, libinput adds input devices as udev gets to them.
-# /data first: logs, user init scripts and HOME (fontconfig, Mesa's shader cache) live there.
-# Then seatd, as player (`session`) PipeWire and Weston on the LCD (DRM backend, kiosk shell: every
-# client fullscreen), and the launcher (one in /data/OS/overlay replaces the image's: `overlay`,
-# tools/deploy-launcher), started as root: it becomes shell itself, and starts the apps as player
-# (apps/launcher/running.h). What's shell's (/run/power, Wi-Fi's control socket, the apps'
-# cgroup) the apps can't reach. The launcher is restarted whenever it exits, so a deploy only has
-# to kill the old one.
+# The UI (rcS S01): /data, then seatd, the session as player (Weston, PipeWire) and the launcher as
+# root (it drops to shell itself). The rest of rcS waits for the launcher's first frame.
+# Waits (3 s at most) for the launcher's first frame: what isn't needed for it starts after
+first_frame() {
+	n=0
+	while [ $n -lt 150 ]; do
+		while read -r x; do
+			case $x in "first frame"*) return ;; esac
+		done 2>/dev/null </var/log/launcher.log
+		usleep 20000
+		n=$((n + 1))
+	done
+}
 if [ "$1" = session ]; then
-	# Sound: PipeWire on the card, WirePlumber linking streams to it, the Pulse socket for ports
-	pipewire </dev/null >/var/log/pipewire.log 2>&1 &
-	wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
-	pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
-	# Its socket the group's too: the launcher (shell) is in the player's group
+	(
+		first_frame
+		pipewire </dev/null >/var/log/pipewire.log 2>&1 &
+		wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
+		pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
+	) &
+	# Weston's socket is the group's too: the launcher (shell) is in the player's group
 	umask 002
 	exec weston --backend=drm --shell=kiosk --modules=volume-keys.so,frames.so --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1
 fi
-# seatd, then the session as player. Again (`restart`) after `ums` stopped it: seatd still runs.
+# Again (`restart`) after `ums` stopped it: seatd still runs.
 ui() {
 	export HOME=/data
-	# Settings in OS/config (corehost's, the media player's, the launcher's); state and caches
-	# stay in HOME's .local/state and .cache. The cores' saves in OS/saves/CORE, what they need
-	# (BIOS files, PPSSPP's assets) in OS/assets/emulator.
 	export XDG_CONFIG_HOME=/data/OS/config COREHOST_SAVE=/data/OS/saves COREHOST_SYSTEM=/data/OS/assets/emulator
 	. /etc/profile.d/wayland.sh
 	. /etc/profile.d/panvk.sh
 	. /etc/profile.d/zz-data.sh
-	# The player's runtime dir, which shell (in the player's group) may read for Weston's socket
-	# (the launcher waits for it there) and frame counter; shell's own; the launcher's FIFO (the
-	# player's apps may launch and reload)
+	# The player's runtime dir (shell reads Weston's socket there), shell's own, the launcher's FIFO
 	mkdir -p $XDG_RUNTIME_DIR
 	chown player:player $XDG_RUNTIME_DIR
 	chmod 0750 $XDG_RUNTIME_DIR
@@ -39,14 +40,15 @@ ui() {
 	chown shell:shell $s
 	[ -p /run/launcher ] || mkfifo -m 0620 /run/launcher
 	chown shell:player /run/launcher
-	# Shell's home: the launcher's settings, state and caches
 	mkdir -p /data/OS/launcher
 	chown shell:shell /data/OS/launcher
-	# Mesa (kmsro) opens the panfrost render node itself, as the player, not through seatd. devtmpfs
-	# creates it 0600 root and udev (S04, after us) only later makes it 0666: Weston's EGL init lost
-	# that race once Mesa got small enough to load before udev ran. Same mode udev's default rule sets.
+	# What udev's coldplug (S04, after the first frame) would set: Mesa opens the render node as the
+	# player, the launcher the buttons and the sound card as shell
 	chgrp video /dev/dri/renderD*
+	chgrp input /dev/input/event*
+	chgrp audio /dev/snd/*
 	chmod 0666 /dev/dri/renderD*
+	chmod 0660 /dev/input/event* /dev/snd/*
 	(
 		echo 0 > $c/ui/cgroup.procs
 		[ -S /run/seatd.sock ] || seatd -g seat </dev/null >/dev/null 2>&1 &
@@ -63,15 +65,10 @@ ui() {
 [ "$1" = restart ] && { c=/sys/fs/cgroup/session; ui; exit 0; }
 [ "$1" = start ] || exit 0
 
-# Mesa in one sequential read, from the start: Weston's GL init page-faulting it in from squashfs
-# took ~400 ms more than with a warm cache. Launcher up at 1.80 s instead of 1.92 s with this
-# started right before Weston: reading it slows everything below, but less than it saves.
+# Mesa in one sequential read: faulting it in from squashfs during Weston's GL init is slower
 cat /usr/lib64/libgallium-*.so >/dev/null &
 
-# cgroup v2: the UI (seatd, Weston, launcher) and the apps the launcher starts. Apps get all the
-# RAM but 160 MB, and run out of it on their own: the OOM kill takes the whole app. The UI wins
-# CPU contention 10:1 and keeps its pages (Mesa included) when memory gets tight. Shell (the
-# launcher) moves each app into apps; the limits are root's.
+# cgroup v2: the UI wins CPU 10:1 and keeps its pages; apps get all RAM but 160 MB, OOM kills the whole app
 c=/sys/fs/cgroup/session
 mount -t cgroup2 none /sys/fs/cgroup
 echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
@@ -84,34 +81,30 @@ echo 1 > $c/apps/memory.oom.group
 echo 1024 > $c/apps/pids.max
 chown shell:shell $c/cgroup.procs $c/ui/cgroup.procs $c/apps/cgroup.procs
 
-ab mount	# /uboot, /data: mount points exist in the (read-only) image
-# What root runs or trusts from /data is root's, so a game (as player) can't break the OS:
-# /data (HOME) and /data/OS are root:player 1775, the player creates in them but can't rename
-# or delete root's entries (sticky). Edited as root (ssh), or from a PC over UMS.
+ab mount
+# The player creates in /data and /data/OS but can't rename or delete root's entries
 chown root:player /data /data/OS
 chmod 1775 /data /data/OS
-for d in init.d overlay profile.d dropbear; do
-	d=/data/OS/$d
-	[ -L $d ] && rm $d
-	mkdir -p $d
-	chown -R root:root $d
-	chmod -R go-w $d
-done
-overlay	# /data/OS/overlay over the rootfs, before anything runs from it
+overlay
 
-# Persistent /var/log: the last 5 boots in /data/OS/log/0..4, 0 = this one. Apps log there too.
+# /var/log: the last 5 boots in /data/OS/log/0..4, 0 = this one
 l=/data/OS/log
 rm -rf $l/4
 for i in 3 2 1 0; do [ -d $l/$i ] && mv $l/$i $l/$((i + 1)); done
 mkdir -p $l/0 /var/volatile/log
-# The card's, so the player's: what root writes (syslogd, login, the launcher's redirect) goes
-# into files made for it here, which keep their owner (dmesg: anbernic.init). The rest (a
-# rotated messages.0) from the boots before.
+# The player's, like the rest of the card; 1: what root wrote there last boot (messages.0)
 for f in messages wtmp launcher.log; do : > $l/0/$f; done
-chown -R player:player $l
+chown player:player $l
+chown -R player:player $l/0 $l/1 2>/dev/null
 mount --bind $l/0 /var/volatile/log
-mkdir -p -m 1777 /var/volatile/tmp
+# .X11-unix: Weston exits without it, and populate-volatile (S37) comes too late
+mkdir -p -m 1777 /var/volatile/tmp /var/volatile/tmp/.X11-unix
 
 /etc/init.d/data-init start
 
+# libinput gets hotplug events only while udevd runs: one for Weston's start. rcS S04 starts its
+# own (and the coldplug) after the first frame.
+udevd -d
 ui
+first_frame
+udevadm control --exit
