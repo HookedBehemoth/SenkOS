@@ -6,9 +6,13 @@ COMPATIBLE_MACHINE:rg35xx-sp = "rg35xx-sp"
 # SRAM stub that puts DRAM into self-refresh, WFIs for the wake IRQ, and re-initialises DRAM.
 # The stub is built from U-Boot's own DRAM driver + our U-Boot defconfig, so it trains DRAM
 # with the exact parameters our SPL uses. BL31 refuses suspend if they don't match at runtime.
+# Super standby on top (0002 + the stub patch): the PMIC cuts the SoC's power, SPL resumes;
+# see docs/suspend.md.
 STUB_REV = "712653d11230b2450061ddb8e25f31e072da7a48"
 SRC_URI:append:rg35xx-sp = " \
     file://0001-allwinner-h616-psci-system-suspend.patch \
+    file://0002-allwinner-h616-super-standby.patch \
+    file://stub-0001-super-standby.patch;patchdir=${UNPACKDIR}/h700-suspend-stub-${STUB_REV} \
     https://github.com/Jacob-Matthew-Cook/h700-suspend-stub/archive/${STUB_REV}.tar.gz;name=stub;downloadfilename=h700-suspend-stub-${STUB_REV}.tar.gz \
     https://git.u-boot-project.org/u-boot/u-boot/-/archive/v2026.01/u-boot-v2026.01.tar.gz;name=uboot \
 "

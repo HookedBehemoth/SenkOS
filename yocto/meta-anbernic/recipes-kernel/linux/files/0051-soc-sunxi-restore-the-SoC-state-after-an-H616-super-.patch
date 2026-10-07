@@ -1,0 +1,302 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:39:03 +0200
+Subject: [PATCH 51/51] soc: sunxi: restore the SoC state after an H616 super
+ standby
+
+With TF-A's super standby the PMIC cuts the SoC's power and keeps only DRAM in
+self-refresh; SPL brings it back like a cold boot. The clock units, the pin controllers
+and a few other blocks come back at their reset values, while drivers set them up once
+and expect them unchanged. Save them at the very end of suspend (syscore) and, when TF-A
+says the power was cut ("SSTL" in RTC general purpose register 0), write back whatever
+differs first thing on resume: the main and R clock units (PLLs before what they feed,
+the CPU's PLL with the CPU parked on the oscillator), the PPU power gates, the NMI
+controller, both pin controllers, system control, the DMA controller's setup, the timers
+and watchdog, and the PWM. Only blocks whose bus clock stays on: a gated block reads as
+zeroes and its driver saves it instead.
+
+Upstream-Status: Pending
+---
+ drivers/soc/sunxi/Kconfig               |   8 +
+ drivers/soc/sunxi/Makefile              |   1 +
+ drivers/soc/sunxi/sun50i_h616_standby.c | 243 ++++++++++++++++++++++++
+ 3 files changed, 252 insertions(+)
+ create mode 100644 drivers/soc/sunxi/sun50i_h616_standby.c
+
+diff --git a/drivers/soc/sunxi/Kconfig b/drivers/soc/sunxi/Kconfig
+index 8aecbc9b1..5b0fc808b 100644
+--- a/drivers/soc/sunxi/Kconfig
++++ b/drivers/soc/sunxi/Kconfig
+@@ -11,6 +11,14 @@ config SUNXI_MBUS
+ 	  Say y to enable the fixups needed to support the Allwinner
+ 	  MBUS DMA quirks.
+ 
++config SUN50I_H616_SUPER_STANDBY
++	bool "Allwinner H616/H700 super standby support"
++	depends on ARCH_SUNXI && ARM64 && PM_SLEEP
++	help
++	  With TF-A's super standby, system suspend cuts the SoC's power and keeps
++	  only DRAM in self-refresh. This restores the clock units, pin controllers
++	  and other blocks that drivers set up once and expect unchanged.
++
+ config SUNXI_SRAM
+ 	bool
+ 	default ARCH_SUNXI
+diff --git a/drivers/soc/sunxi/Makefile b/drivers/soc/sunxi/Makefile
+index 549159571..4d669ed80 100644
+--- a/drivers/soc/sunxi/Makefile
++++ b/drivers/soc/sunxi/Makefile
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-$(CONFIG_SUNXI_MBUS) +=	sunxi_mbus.o
+ obj-$(CONFIG_SUNXI_SRAM) +=	sunxi_sram.o
++obj-$(CONFIG_SUN50I_H616_SUPER_STANDBY) += sun50i_h616_standby.o
+diff --git a/drivers/soc/sunxi/sun50i_h616_standby.c b/drivers/soc/sunxi/sun50i_h616_standby.c
+new file mode 100644
+index 000000000..9f91ab2da
+--- /dev/null
++++ b/drivers/soc/sunxi/sun50i_h616_standby.c
+@@ -0,0 +1,243 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * H616/H700 super standby: TF-A's PSCI SYSTEM_SUSPEND can have the PMIC cut the SoC's
++ * power, keeping only DRAM in self-refresh, and SPL brings it back like a cold boot. The
++ * clock units, the pin controllers and a few other blocks come back at their reset values;
++ * drivers that set them up once at probe expect them unchanged. Save them at the very end
++ * of suspend and, if TF-A says the power was cut, write back whatever differs first thing
++ * on resume, before any driver runs.
++ *
++ * Only blocks whose bus clock stays on are listed: a gated block reads as zeroes, and its
++ * driver saves it instead.
++ */
++
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/of.h>
++#include <linux/printk.h>
++#include <linux/slab.h>
++#include <linux/syscore_ops.h>
++
++/* TF-A writes this to RTC general purpose register 0 after a super standby resume */
++#define RTC_RESUME_MAGIC	0x07000100
++#define RESUME_MAGIC_LINUX	0x5353544c	/* "SSTL" */
++
++#define CCU_PLL_CPUX		0x000
++#define CCU_CPUX_AXI		0x500
++#define CCU_CPUX_SRC_MASK	GENMASK(26, 24)
++#define CCU_PLL_ENABLE		BIT(31)
++#define CCU_PLL_LOCK		BIT(28)
++
++struct range {
++	u16 start, end;		/* bytes, end exclusive */
++};
++
++struct block {
++	const char *name;
++	phys_addr_t base;
++	u32 size;
++	/* written in this order, words in each range ascending */
++	const struct range *ranges;
++	unsigned int nr_ranges;
++	bool plls;		/* main CCU: PLL handling between the ranges */
++	void __iomem *regs;
++	u32 *saved;
++};
++
++#define RANGES(...)	.ranges = (const struct range[]){ __VA_ARGS__ }, \
++			.nr_ranges = sizeof((const struct range[]){ __VA_ARGS__ }) / sizeof(struct range)
++
++static struct block blocks[] = {
++	{
++		.name = "ccu", .base = 0x03001000, .size = 0x1000, .plls = true,
++		/*
++		 * PLL patterns and bias first, then the PLLs (see restore_plls(): CPUX
++		 * separately, PLL_DDR0/1 belong to SPL), the bus clocks without MBUS, then
++		 * the module clocks and gates without DRAM (0x800, 0x80c; 0x804 gates the
++		 * DMA, VE, CE... onto MBUS and is ours) and the security switch (0xf00 on,
++		 * TF-A's).
++		 */
++		RANGES({ 0x100, 0x500 }, { 0x020, 0x100 }, { 0x504, 0x540 }, { 0x544, 0x600 },
++		       { 0x600, 0x800 }, { 0x804, 0x808 }, { 0x810, 0xf00 }),
++	},
++	{
++		/* the clocks, and the power gates of the PPU (the GPU's at 0x254) */
++		.name = "r_ccu", .base = 0x07010000, .size = 0x258,
++		RANGES({ 0x000, 0x210 }, { 0x250, 0x258 }),
++	},
++	{
++		/* sun9i-a80 NMI controller: control and enable; not the pending bits (0x08) */
++		.name = "nmi", .base = 0x07010320, .size = 0x10,
++		RANGES({ 0x00, 0x08 }),
++	},
++	{
++		/*
++		 * 9 banks of 0x24: data, drive and pull before the function select, then
++		 * the interrupt config and control of each bank (not its status) and the
++		 * I/O voltage selection.
++		 */
++		.name = "pio", .base = 0x0300b000, .size = 0x400,
++		RANGES({ 0x010, 0x024 }, { 0x034, 0x048 }, { 0x058, 0x06c }, { 0x07c, 0x090 },
++		       { 0x0a0, 0x0b4 }, { 0x0c4, 0x0d8 }, { 0x0e8, 0x0fc }, { 0x10c, 0x120 },
++		       { 0x130, 0x144 },
++		       { 0x000, 0x010 }, { 0x024, 0x034 }, { 0x048, 0x058 }, { 0x06c, 0x07c },
++		       { 0x090, 0x0a0 }, { 0x0b4, 0x0c4 }, { 0x0d8, 0x0e8 }, { 0x0fc, 0x10c },
++		       { 0x120, 0x130 },
++		       { 0x200, 0x214 }, { 0x218, 0x234 }, { 0x238, 0x254 }, { 0x258, 0x274 },
++		       { 0x278, 0x294 }, { 0x298, 0x2b4 }, { 0x2b8, 0x2d4 }, { 0x2d8, 0x2f4 },
++		       { 0x2f8, 0x314 }, { 0x318, 0x31c },
++		       { 0x340, 0x348 }, { 0x350, 0x354 }),
++	},
++	{
++		.name = "r_pio", .base = 0x07022000, .size = 0x400,
++		RANGES({ 0x010, 0x024 }, { 0x000, 0x010 }, { 0x200, 0x214 }, { 0x218, 0x21c },
++		       { 0x340, 0x348 }, { 0x350, 0x354 }),
++	},
++	{
++		/* SRAM mapping, EMAC and the like; not the version register */
++		.name = "syscon", .base = 0x03000000, .size = 0x100,
++		RANGES({ 0x000, 0x024 }, { 0x028, 0x100 }),
++	},
++	{
++		/* interrupt enables and auto gating; the security register is TF-A's */
++		.name = "dma", .base = 0x03002000, .size = 0x30,
++		RANGES({ 0x00, 0x08 }, { 0x28, 0x2c }),
++	},
++	{
++		/*
++		 * Timer interrupt enable, timer 0/1 interval before control; watchdog
++		 * interrupt enable, config before mode (which enables it).
++		 */
++		.name = "timer", .base = 0x03009000, .size = 0xc0,
++		RANGES({ 0x00, 0x04 }, { 0x14, 0x18 }, { 0x10, 0x14 }, { 0x24, 0x28 },
++		       { 0x20, 0x24 }, { 0xa0, 0xa4 }, { 0xb4, 0xbc }),
++	},
++	{
++		/*
++		 * Interrupt enables, pair clock config and gating, dead zones, then
++		 * each channel's control and period, the enable register last.
++		 */
++		.name = "pwm", .base = 0x0300a000, .size = 0x200,
++		RANGES({ 0x00, 0x04 }, { 0x10, 0x14 }, { 0x20, 0x80 },
++		       { 0x100, 0x108 }, { 0x120, 0x128 }, { 0x140, 0x148 }, { 0x160, 0x168 },
++		       { 0x180, 0x188 }, { 0x1a0, 0x1a8 }, { 0x80, 0x84 }),
++	},
++};
++
++static void __iomem *rtc;
++
++static unsigned int restore_range(struct block *b, const struct range *r)
++{
++	unsigned int off, changed = 0;
++
++	for (off = r->start; off < r->end; off += 4) {
++		u32 val = b->saved[off / 4];
++
++		if (readl(b->regs + off) == val)
++			continue;
++		writel(val, b->regs + off);
++		changed++;
++	}
++
++	return changed;
++}
++
++/* PLL_CPUX feeds the CPU we run on: park it on the 24 MHz oscillator meanwhile */
++static unsigned int restore_cpux(struct block *b)
++{
++	u32 pll = b->saved[CCU_PLL_CPUX / 4];
++	u32 axi = b->saved[CCU_CPUX_AXI / 4];
++	u32 val;
++
++	if (readl(b->regs + CCU_PLL_CPUX) == pll && readl(b->regs + CCU_CPUX_AXI) == axi)
++		return 0;
++
++	writel(readl(b->regs + CCU_CPUX_AXI) & ~CCU_CPUX_SRC_MASK, b->regs + CCU_CPUX_AXI);
++	udelay(1);
++	writel(pll, b->regs + CCU_PLL_CPUX);
++	if (pll & CCU_PLL_ENABLE)
++		readl_poll_timeout_atomic(b->regs + CCU_PLL_CPUX, val, val & CCU_PLL_LOCK, 1, 10000);
++	writel(axi, b->regs + CCU_CPUX_AXI);
++	udelay(1);
++
++	return 1;
++}
++
++static void wait_plls(struct block *b, const struct range *r)
++{
++	unsigned int off;
++	u32 val;
++
++	for (off = r->start; off < r->end; off += 8)
++		if (b->saved[off / 4] & CCU_PLL_ENABLE)
++			readl_poll_timeout_atomic(b->regs + off, val, val & CCU_PLL_LOCK, 1, 10000);
++}
++
++static int sun50i_h616_standby_suspend(void *data)
++{
++	unsigned int i, off;
++
++	for (i = 0; i < ARRAY_SIZE(blocks); i++)
++		for (off = 0; off < blocks[i].size; off += 4)
++			blocks[i].saved[off / 4] = readl(blocks[i].regs + off);
++
++	return 0;
++}
++
++static void sun50i_h616_standby_resume(void *data)
++{
++	unsigned int i, j, changed;
++
++	if (readl(rtc) != RESUME_MAGIC_LINUX)
++		return;
++	writel(0, rtc);
++
++	for (i = 0; i < ARRAY_SIZE(blocks); i++) {
++		struct block *b = &blocks[i];
++
++		changed = 0;
++		for (j = 0; j < b->nr_ranges; j++) {
++			changed += restore_range(b, &b->ranges[j]);
++			/* the PLL range is the second one */
++			if (b->plls && j == 1) {
++				wait_plls(b, &b->ranges[j]);
++				changed += restore_cpux(b);
++			}
++		}
++		pr_info("super standby: %s: %u registers restored\n", b->name, changed);
++	}
++}
++
++static const struct syscore_ops sun50i_h616_standby_ops = {
++	.suspend = sun50i_h616_standby_suspend,
++	.resume = sun50i_h616_standby_resume,
++};
++
++static struct syscore sun50i_h616_standby_syscore = {
++	.ops = &sun50i_h616_standby_ops,
++};
++
++static int __init sun50i_h616_standby_init(void)
++{
++	unsigned int i;
++
++	if (!of_machine_is_compatible("allwinner,sun50i-h616") &&
++	    !of_machine_is_compatible("allwinner,sun50i-h700"))
++		return 0;
++
++	rtc = ioremap(RTC_RESUME_MAGIC, 4);
++	if (!rtc)
++		return -ENOMEM;
++
++	for (i = 0; i < ARRAY_SIZE(blocks); i++) {
++		blocks[i].regs = ioremap(blocks[i].base, blocks[i].size);
++		blocks[i].saved = kcalloc(blocks[i].size / 4, sizeof(u32), GFP_KERNEL);
++		if (!blocks[i].regs || !blocks[i].saved)
++			return -ENOMEM;
++	}
++
++	register_syscore(&sun50i_h616_standby_syscore);
++	return 0;
++}
++arch_initcall(sun50i_h616_standby_init);

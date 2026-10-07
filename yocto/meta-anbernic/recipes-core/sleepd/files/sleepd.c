@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 /*
  * sleepd: suspend on lid close or power-key press, stay asleep while the lid is closed.
+ * See /usr/sbin/suspend for which sleep: one the lid can end, or super standby.
  * Only reacts to events, never to the state at startup, so a misread lid can't
  * put the handheld to sleep at boot. The actual suspend is /usr/sbin/suspend.
  * Also the unprivileged launcher's way to suspend, reboot or power off: a line
@@ -198,9 +199,12 @@ int main(void)
 		if (!sleep_now)
 			continue;
 		lock_vt(1);
+		/* Just closed: a sleep the lid can end. Still closed after it: super standby. */
+		const char *cmd = lid_closed(lid) ? "/usr/sbin/suspend lid" : "/usr/sbin/suspend";
 		do {
-			if (system("/usr/sbin/suspend") != 0)
+			if (system(cmd) != 0)
 				sleep(1);	/* suspend refused: don't spin */
+			cmd = "/usr/sbin/suspend";
 		} while (lid_closed(lid));
 		lock_vt(0);
 		quiet_until = now() + 1.5;

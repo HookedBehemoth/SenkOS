@@ -1,0 +1,172 @@
+From: SenkOS
+Subject: [PATCH] super standby: let the PMIC cut the SoC's power
+
+When BL31 asks for it (params->poweroff), save the words PHY training overwrites to DRAM
+(params->save_addr), leave SPL the resume entry, DRAM config and that buffer in the RTC,
+and set the AXP717's auto sleep bit; BL31 armed the rest. Waking up is a cold boot, SPL
+brings DRAM back and jumps to the warm entry. If the power is still on 2 s later, the stub
+clears the handshake and sleeps in WFI as before.
+
+Upstream-Status: Pending
+
+---
+diff --git a/Makefile b/Makefile
+index 0aeec2f..05bf6ab 100644
+--- a/Makefile
++++ b/Makefile
+@@ -28,7 +28,7 @@ else
+   $(error suspend-stub: no known DRAM type in $(DEFCONFIG))
+ endif
+ 
+-OBJS := src/start.o src/main.o src/lib.o src/clock.o src/dram_sr.o \
++OBJS := src/start.o src/main.o src/lib.o src/clock.o src/dram_sr.o src/pmic.o \
+ 	src/dram/dram_sun50i_h616.o src/dram/dram_dw_helpers.o src/dram/dram_timing.o
+ 
+ $(SRC_DIR)/$(OUT): stub.elf
+diff --git a/src/main.c b/src/main.c
+index 749ed01..e4770cd 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -21,7 +21,10 @@
+ #define SCR_IRQ_BIT		BIT(1)
+ 
+ /* Memory the PHY training may overwrite, saved like the BSP does */
+-#define SAVE_WORDS		0x50
++#define SAVE_WORDS		(SUNXI_SUSPEND_SAVE_BYTES / 4)
++
++#define AXP717_SLEEP_CFG	0x25
++#define AXP717_SLEEP_CFG_GO	0x6d	/* BL31's 0x2d plus auto sleep */
+ 
+ _Static_assert(offsetof(struct sunxi_suspend_params, resume_entry) == 0x10,
+ 	       "start.S expects resume_entry at offset 0x10");
+@@ -91,6 +94,12 @@ static bool dram_suspend(const struct dram_config *config)
+ 
+ 	memcpy(save_lo, (void *)CFG_SYS_SDRAM_BASE, sizeof(save_lo));
+ 	memcpy(save_hi, (void *)save_hi_addr, sizeof(save_hi));
++	if (stub_params.poweroff) {
++		/* SRAM doesn't survive the power cut; SPL restores these from DRAM */
++		memcpy((void *)(unsigned long)stub_params.save_addr, save_lo, sizeof(save_lo));
++		memcpy((void *)(unsigned long)stub_params.save_addr + sizeof(save_lo), save_hi,
++		       sizeof(save_hi));
++	}
+ 
+ 	return dram_enter_selfrefresh();
+ }
+@@ -111,6 +120,28 @@ static void dram_resume(const struct dram_config *config)
+ 	stage(STAGE_MEM_RESTORED);
+ }
+ 
++/*
++ * Super standby: tell SPL how to come back, then let the PMIC cut VDD-CPU, VDD-SYS and VCC-IO
++ * (BL31 armed it). DRAM stays in self-refresh with its pads held in the RTC domain. Returns
++ * only if the power stays on; the caller then sleeps in WFI as usual.
++ */
++static void super_standby(void)
++{
++	writel((u32)stub_params.resume_entry, SUNXI_RTC_RESUME_ENTRY_REG);
++	writel(stub_params.save_addr, SUNXI_RTC_RESUME_SAVE_REG);
++	writel(stub_params.dram_cfg, SUNXI_RTC_RESUME_CFG_REG);
++	writel(SUNXI_RESUME_MAGIC, SUNXI_RTC_RESUME_MAGIC_REG);
++	stage(STAGE_POWEROFF);
++	dbg_puts("stub: super standby\n");
++
++	if (pmic_write(AXP717_SLEEP_CFG, AXP717_SLEEP_CFG_GO))
++		udelay(2000000);
++
++	writel(0, SUNXI_RTC_RESUME_MAGIC_REG);
++	stage(STAGE_POWEROFF_FAILED);
++	dbg_puts("stub: still powered, sleeping in WFI\n");
++}
++
+ void stub_main(void)
+ {
+ 	struct dram_config config;
+@@ -148,6 +179,8 @@ void stub_main(void)
+ 	}
+ 
+ 	dbg_puts("stub: DRAM in self-refresh\n");
++	if (stub_params.poweroff)
++		super_standby();
+ 	stage(STAGE_CLOCKS_DOWN);
+ 	clocks_down();
+ 
+diff --git a/src/pmic.c b/src/pmic.c
+new file mode 100644
+index 0000000..37ac184
+--- /dev/null
++++ b/src/pmic.c
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * One AXP717 register write over R_I2C, polled, for the super standby trigger. BL31 set the
++ * controller up (TF-A's mi2cv driver) just before; DRAM is in self-refresh by now, so BL31's
++ * code can't run.
++ */
++
++#include <asm/io.h>
++#include "stub.h"
++
++#define TWI(off)		(0x07081400 + (off))
++#define TWI_DATA		0x08
++#define TWI_CNTR		0x0c
++#define TWI_STAT		0x10
++
++#define CNTR_ACK		BIT(2)
++#define CNTR_IFLG		BIT(3)	/* sunxi: write 1 to clear */
++#define CNTR_STP		BIT(4)
++#define CNTR_STA		BIT(5)
++#define CNTR_BUS_EN		BIT(6)
++
++#define STAT_START		0x08
++#define STAT_ADDR_W_ACK		0x18
++#define STAT_DATA_W_ACK		0x28
++
++#define AXP717_ADDR		0x34
++
++static bool twi_step(u32 cntr, u32 status)
++{
++	writel(CNTR_BUS_EN | cntr, TWI(TWI_CNTR));
++	return wait_reg(TWI(TWI_CNTR), CNTR_IFLG, CNTR_IFLG, 10000) &&
++	       readl(TWI(TWI_STAT)) == status;
++}
++
++static bool twi_send(u8 byte, u32 status)
++{
++	writel(byte, TWI(TWI_DATA));
++	return twi_step(CNTR_IFLG, status);
++}
++
++bool pmic_write(u8 reg, u8 val)
++{
++	bool ok = twi_step(CNTR_STA, STAT_START) &&
++		  twi_send(AXP717_ADDR << 1, STAT_ADDR_W_ACK) &&
++		  twi_send(reg, STAT_DATA_W_ACK) &&
++		  twi_send(val, STAT_DATA_W_ACK);
++
++	writel(CNTR_BUS_EN | CNTR_STP | CNTR_IFLG, TWI(TWI_CNTR));
++	wait_reg(TWI(TWI_CNTR), CNTR_STP, 0, 10000);
++	return ok;
++}
+diff --git a/src/stub.h b/src/stub.h
+index d28f28e..192cba2 100644
+--- a/src/stub.h
++++ b/src/stub.h
+@@ -22,6 +22,8 @@
+ #define STAGE_CLOCK_FAILED	0xe1
+ #define STAGE_EXCEPTION		0xee
+ #define STAGE_RESUME		0x70
++#define STAGE_POWEROFF		0x80
++#define STAGE_POWEROFF_FAILED	0x8e
+ 
+ /* RTC general purpose registers used for debugging, readable after reboot */
+ #define STUB_RTC_STAGE_REG	(SUNXI_RTC_BASE + 0x10c)
+@@ -72,6 +74,9 @@ void clocks_down(void);
+ void clocks_up(void);
+ void cpu_clock_restore(void);
+ 
++/* pmic.c */
++bool pmic_write(u8 reg, u8 val);
++
+ /* dram_sr.c */
+ bool dram_read_config(struct dram_config *config);
+ u32 dram_config_word(const struct dram_config *config);

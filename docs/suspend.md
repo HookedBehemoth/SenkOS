@@ -24,30 +24,79 @@ Wake sources: power key (PMIC), lid (Hall GPIO), RTC. Not the charger: `90-wake.
 
 Check: `cat /sys/power/mem_sleep` shows `[deep]`, and `dmesg` has `PM: suspend entry (deep)`.
 
-## Later: Super standby (PMIC-level)
+## Drain
 
-The stock firmware has a deeper mode: the AXP717 cuts every rail except DRAM (regs `0x25`, `0x28`..`0x2a`)
-and the **SoC really powers off**. Wake-up is a cold boot through the BROM; boot0 re-inits DRAM without
-clearing it, checks a RAM sum and jumps back into BL31, which restores the SoC and returns to Linux.
-It draws less than our deep sleep.
+Our deep sleep drew about 4 %/h (60 % in 16.5 h asleep, no wake-ups in between), roughly 130 mA from the
+3300 mAh battery. ROCKNIX reports 2.5-3 %/h with the same stub and 3.5 %/h with s2idle: gating clocks saves
+little, because every SoC rail stays up and leaks. The AXP717 can't measure discharge current (`current_now` is
+the charge-current ADC; on battery it reads a meaningless ~400 mA), so measure with a USB-C meter on a full battery.
 
-What the stock boot0 (eGON.BT0 at 8 KiB, AArch32 Thumb, loaded at `0x20000`) reads on wake:
+## Super standby (stock)
 
-| RTC register (`0x07000000 +`) | Meaning |
+The stock firmware cuts the SoC's power and keeps only DRAM in self-refresh. Decompiled from the stock BL31
+(`monitor.fex`, AArch64, ATF 1.x, runs at `0x48000000`; Ghidra project `/mnt/multimedia/source/re-h700`, programs
+`sp-monitor.bin` and `sp-standby.bin`).
+
+**Mode choice (BL31).** The kernel registers wake sources by SMC (`arisc_set_wakeup_source`: a GIC IRQ bitmap, or
+bits 31:30 = 3 for a wake timer). `standby_type` always has bit 1 (super standby), plus bit 0 (normal standby,
+WFI with the SoC powered) as soon as any wake IRQ is set other than GIC IDs 103/104, or a wake timer. So stock
+only powers off when nothing but the PMIC can wake it. The dtb's `standby_param` (`universal-standby = 1`,
+`vdd-cpua = 0x1`, `vdd-sys = 0x2`, `vcc-io = 0x4000`, `vcc-pll = 0`, `vcc-dram = 0`) lists the rails to cut, as
+AXP717 regulator bit numbers.
+
+**Entry (BL31 `psci_system_suspend`).** After the generic PSCI context save, BL31 copies an embedded standby
+program (BL31 + `0xc260`, `0x9410` bytes, AArch64) to SRAM A1 `0x20000`, the DRAM parameters boot0 handed it
+(BL31 + `0x30`) over its start, the `standby_param` values to `0x20080`, sets the resume entry (`0x200c4` = BL31's
+warm-boot entry `0x48015d54`) and `0x07000104` (the DRAM backup boot0 restores), and jumps to `0x201b8`.
+
+**Standby program, super standby path:**
+1. Sum the DRAM range the kernel gave by SMC (32-bit words), DRAM into self-refresh.
+2. Bus clocks (CCU `0x1510`, R_PRCM `0x000`/`0x010`) to their low-power source, RTC `0x160` bit 31 set, bit 1 clear,
+   PLL LDO key `0xa7` in R_PRCM `0x244`.
+3. RTC registers for boot0: `0x1f8` = `0x10000` (flag), `0x1fc` = resume entry, `0x118`/`0x11c` = sum range,
+   `0x10c` = sum, `0x100` = `0x76543210 | mode`. (Also read by boot0: `0x1f4` bit 0 = DRAM pad hold, which our
+   stub releases on resume too; `0x108` = `0x5AA5A55A` early jump to FEL, `0x5AA55AA5` crashdump → FEL. The
+   standby program writes progress codes to `0x108` as it goes.)
+4. AXP717 (identified by reg `0x0e` == 2): `0x48`-`0x4c` = `0xff` (clear IRQs), `0x25` = `0x2d`,
+   `0x28`/`0x29`/`0x2a` = the rail mask (stock: `0x03`, `0x40`, `0x00` = DCDC1, DCDC2, CLDO3), `0x25` = `0x6d`. Spin.
+
+AXP717 `0x25` (datasheet): bit 0 sleep, bit 2 restore the set voltages on wake (not the defaults), bit 5 wake on
+IRQ pin low, bit 6 auto sleep (cut the rails in maps `0x28`-`0x2a`: DCDC1-4, ALDO1-4 / BLDO1-4, CLDO1-4 /
+CPUSLDO, green mode). Any enabled PMIC IRQ (power key, VBUS) pulls the IRQ pin low; the rails come back in
+startup order and the SoC cold-boots through the BROM.
+
+**Resume.** boot0 sees `0x1f8` bit 16, clears it, inits DRAM without clearing it, checks the sum ("dram crc
+error" hangs), restores the first `0x280` bytes from the `0x104` copy and jumps to `0x1fc` = BL31's warm entry,
+which resumes like a CPU coming out of PSCI suspend and returns to the kernel.
+
+What stays on in stock's super standby: DCDC3 (DRAM), BLDO2 (PLL), CPUSLDO (the RTC/R_PRCM domain), and whatever
+Linux left on. DCDC1, DCDC2 and CLDO3 (all GPIO banks and the SD cards) are off.
+
+## Super standby (ours)
+
+Which sleep (`/usr/sbin/suspend`, called by sleepd): TF-A picks super standby when no pin interrupt is armed
+as a wake source and no SoC RTC alarm is set, like stock. The lid is a SoC GPIO and can't wake a powered-off
+SoC, so:
+- Lid open (power key, the launcher's Sleep): the lid's wakeup is turned off, super standby. The power key wakes.
+- Lid just closed: lid wakeup on and a 30 min alarm on the SoC RTC (`rtc1`; `rtc0` is the pcf8563): a deep sleep
+  the lid can end. If the alarm comes first, sleepd (lid still closed) suspends again without them: super standby.
+
+| Where | What |
 |---|---|
-| `0x1f8` bit 16 | super standby flag; boot0 clears the register |
-| `0x100` (GP0) | `0x7654321x`: magic in the upper 28 bits, low nibble = mode |
-| `0x118`/`0x11c` (GP6/GP7) | start / length of a DRAM range boot0 sums (32-bit words) after DRAM init |
-| `0x10c` (GP3) | expected sum; a mismatch hangs ("dram crc error") |
-| `0x1fc` | resume address, jumped to instead of loading U-Boot |
-| `0x1f4` bit 0 | DRAM pad hold (retention); our suspend stub releases it on resume too |
-| `0x108` (GP2) | not standby: `0x5AA5A55A` = early jump to FEL, `0x5AA55AA5` = crashdump → FEL |
+| TF-A `0002` | decides, arms the AXP717 (IRQs: power key only; maps `0x28`/`0x29` = DCDC1, DCDC2, DCDC4 / CLDO3; `0x25` = `0x2d`), passes `poweroff` and a DRAM buffer to the stub. On the warm entry after a power cut: the other cores' entry points (RVBAR), GIC and security setup again, PMIC IRQs and sleep registers back |
+| stub `stub-0001` | after self-refresh: the words PHY training overwrites to that buffer, RTC handshake, `0x25` = `0x6d` over R_I2C. Still powered 2 s later: handshake cleared, WFI as before |
+| U-Boot `0009` | SPL: RTC magic set → DRAM init in resume mode (no SDRAM init, no size probe), the saved words back, jump to the warm entry. Every cold boot opens the RTC bus gate (R_PRCM `0x20c`) and releases the DRAM pad hold |
+| Linux `0044`-`0051` | `sun50i_h616_standby.c`: saves the CCU (with the MBUS master gates at `0x804`: without them DMA, so audio, stalls), R_CCU and the PPU power gates, the NMI controller (sun9i layout: `0x04` enable, `0x08` pending), pin controllers, system control, DMA, timers/watchdog and PWM at the end of suspend and writes back what differs; the rest in the drivers: IOMMU, thermal sensors, DE33 mixer and plane mapping, DE33 clocks, TCON TOP, TCON dot clock, musb PHY |
 
-Doing it on our stack takes three pieces:
-1. **SPL**: flag check, DRAM init in resume mode (the stub's `dram-resume.patch` has that path), jump to the BL31 warm entry.
-2. **TF-A**: the stub ends with an AXP717 power-down instead of WFI.
-3. **Linux**: every driver has to survive a full SoC power loss (CCU, pinctrl, GIC and so on get reset).
-   Mainline sunxi drivers mostly don't save and restore that state.
+RTC handshake (general purpose registers, `0x07000100`): `0x100` = `SSTB` (stub: resume pending) → `SSTR` (SPL:
+resumed) → `SSTL` (TF-A: Linux, restore) → 0. `0x104` warm entry, `0x114` DRAM config, `0x118` the buffer. SPL clears
+`SSTB` before trying, so a resume that hangs is followed by a cold boot.
 
-Only PMIC events can wake it: the power key and VBUS. The lid Hall sensor is on a SoC GPIO (PE7), so the
-lid can't. Measure deep sleep drain first to see whether it's worth the kernel-wide effort.
+DRAM pad hold, RTC `0x1f4` bit 0 (`VDDOFF_GATING_SOF`): **clear holds the pads, set releases them**, the opposite
+of the H616 manual. Clearing it with DRAM running hangs the SoC; left clear, DRAM init fails on every boot (SPL
+panics, the board resets every ~0.5 s) until something sets it again. It lives in the RTC domain, so it survives
+resets and power-offs; only removing the battery (USB unplugged) resets it. SPL sets it on every cold boot.
+
+Verified 2026-10-07: same session after waking, all cores, Wi-Fi associated again, games with sound, sleep after
+sleep, lid sleep woken by opening the lid or by the RTC alarm. A register dump of a fresh boot and one after
+super standby (launcher idle) differ only in live counters and IOMMU invalidation scratch.

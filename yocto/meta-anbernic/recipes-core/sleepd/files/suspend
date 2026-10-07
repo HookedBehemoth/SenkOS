@@ -1,6 +1,28 @@
 #!/bin/sh
 # Suspend to RAM now, return after wake-up (sleepd runs this on lid close / power key).
 # The watchdog keeps running: TF-A's suspend stub pauses it for the sleep.
+#
+# TF-A picks super standby (the SoC powered off, docs/suspend.md) when nothing but the PMIC
+# has to wake us: then only the power key can, the lid can't (a SoC GPIO). With "lid" (just
+# closed) we sleep with the lid and an RTC alarm armed instead, so opening it wakes us; when
+# the alarm fires first, sleepd, the lid still closed, calls us again without: super standby.
+LID_MINUTES=30
+lid=/sys/devices/platform/gpio-keys-lid/power/wakeup
+for r in /sys/class/rtc/rtc*; do
+	[ "$(cat $r/name 2>/dev/null)" = "sun6i-rtc 7000000.rtc" ] && alarm=$r/wakealarm
+done
+
+[ -n "$alarm" ] && echo 0 > $alarm
+if [ "$1" = lid ]; then
+	echo enabled > $lid
+	[ -n "$alarm" ] && echo +$((LID_MINUTES * 60)) > $alarm
+else
+	echo disabled > $lid
+fi
 echo mem > /sys/power/state
+ret=$?
+[ -n "$alarm" ] && echo 0 > $alarm
+echo enabled > $lid
 # musb may come back detached from the host
 usb-gadget-check </dev/null >/dev/null 2>&1 &
+exit $ret

@@ -5,8 +5,8 @@ SRC_URI:remove = "git://source.denx.de/u-boot/u-boot.git;protocol=https;branch=m
 SRC_URI:prepend = "https://git.u-boot-project.org/u-boot/u-boot/-/archive/v${PV}/u-boot-v${PV}.tar.gz "
 S = "${UNPACKDIR}/u-boot-v${PV}"
 
-SRC_URI += "file://0001-sunxi-FIT-with-external-sector-aligned-data.patch file://0002-armv8-i-cache-on-before-relocation.patch file://0003-sunxi-silent-console-by-default.patch file://0004-board_f-no-pre-relocation-serial-probe-when-silent.patch file://0005-lz4-inline-fixed-size-copies-unaligned-arm64.patch file://0006-fs-squashfs-read-file-data-in-runs-decompress-in-place.patch file://0007-sunxi-axp717-no-boot-on-plug-in.patch file://0008-sunxi-H616-pick-LPDDR3-or-LPDDR4-by-the-boot0-DRAM-straps.patch"
-SRC_URI += "file://fastboot.cfg file://status-led.cfg file://watchdog.cfg file://squashfs.cfg file://silent.cfg file://charge-off.cfg file://dram-straps.cfg file://boot.cmd"
+SRC_URI += "file://0001-sunxi-FIT-with-external-sector-aligned-data.patch file://0002-armv8-i-cache-on-before-relocation.patch file://0003-sunxi-silent-console-by-default.patch file://0004-board_f-no-pre-relocation-serial-probe-when-silent.patch file://0005-lz4-inline-fixed-size-copies-unaligned-arm64.patch file://0006-fs-squashfs-read-file-data-in-runs-decompress-in-place.patch file://0007-sunxi-axp717-no-boot-on-plug-in.patch file://0008-sunxi-H616-pick-LPDDR3-or-LPDDR4-by-the-boot0-DRAM-straps.patch file://0009-sunxi-H616-resume-from-super-standby.patch"
+SRC_URI += "file://fastboot.cfg file://status-led.cfg file://watchdog.cfg file://squashfs.cfg file://silent.cfg file://charge-off.cfg file://dram-straps.cfg file://super-standby.cfg file://boot.cmd"
 
 # boot.cmd -> boot.scr (A/B slot selection), made with the mkimage this build already produces
 # instead of u-boot-mkimage-native (a second U-Boot fetch/build)

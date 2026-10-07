@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:36:34 +0200
+Subject: [PATCH 49/51] usb: musb: sunxi: set the PHY up again on resume
+
+The H616 suspends with the SoC's power cut (TF-A's super standby). Set the PHY up again
+(phy_exit + phy_init, which also redoes the ID/VBUS detection) and the bus mode before
+musb_resume(), a child, restores the controller.
+
+Upstream-Status: Pending
+---
+ drivers/usb/musb/sunxi.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/drivers/usb/musb/sunxi.c b/drivers/usb/musb/sunxi.c
+index a6bd3e968..b9d243105 100644
+--- a/drivers/usb/musb/sunxi.c
++++ b/drivers/usb/musb/sunxi.c
+@@ -855,12 +855,34 @@ static const struct of_device_id sunxi_musb_match[] = {
+ };
+ MODULE_DEVICE_TABLE(of, sunxi_musb_match);
+ 
++/*
++ * The H616 suspends with the SoC's power cut (TF-A's super standby): set the PHY and
++ * the bus mode up again before musb_resume() (a child, so later) restores the controller.
++ */
++static int sunxi_musb_resume(struct device *dev)
++{
++	struct sunxi_glue *glue = dev_get_drvdata(dev);
++	int ret;
++
++	if (!sunxi_musb)
++		return 0;
++
++	writeb(SUNXI_MUSB_VEND0_PIO_MODE, sunxi_musb->mregs + SUNXI_MUSB_VEND0);
++	ret = phy_exit(glue->phy);
++	if (ret)
++		return ret;
++	return phy_init(glue->phy);
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(sunxi_musb_pm_ops, NULL, sunxi_musb_resume);
++
+ static struct platform_driver sunxi_musb_driver = {
+ 	.probe = sunxi_musb_probe,
+ 	.remove = sunxi_musb_remove,
+ 	.driver = {
+ 		.name = "musb-sunxi",
+ 		.of_match_table = sunxi_musb_match,
++		.pm = pm_sleep_ptr(&sunxi_musb_pm_ops),
+ 	},
+ };
+ module_platform_driver(sunxi_musb_driver);

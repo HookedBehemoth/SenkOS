@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:33:10 +0200
+Subject: [PATCH 44/51] iommu: sun50i: program the IOMMU again after a power
+ loss
+
+Without a management core the H616 suspends with the SoC's power cut (TF-A's super
+standby). The IOMMU then comes back disabled while a paging domain is still attached,
+and its masters would go out with IOVAs. Program it again in resume_noirq.
+
+Upstream-Status: Pending
+---
+ drivers/iommu/sun50i-iommu.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/drivers/iommu/sun50i-iommu.c b/drivers/iommu/sun50i-iommu.c
+index cf000119a..a99482ea2 100644
+--- a/drivers/iommu/sun50i-iommu.c
++++ b/drivers/iommu/sun50i-iommu.c
+@@ -1095,10 +1095,33 @@ static const struct of_device_id sun50i_iommu_dt[] = {
+ };
+ MODULE_DEVICE_TABLE(of, sun50i_iommu_dt);
+ 
++/*
++ * Without a management core, the H616 can only suspend with the SoC's power cut (TF-A's
++ * super standby); the IOMMU then comes back disabled while a paging domain is still
++ * attached, and its masters would go out with IOVAs. Program it again.
++ */
++static int sun50i_iommu_resume_noirq(struct device *dev)
++{
++	struct sun50i_iommu *iommu = dev_get_drvdata(dev);
++
++	if (iommu->domain == &sun50i_iommu_identity_domain ||
++	    (iommu_read(iommu, IOMMU_ENABLE_REG) & IOMMU_ENABLE_ENABLE))
++		return 0;
++
++	/* sun50i_iommu_enable() takes the clock again */
++	clk_disable_unprepare(iommu->clk);
++	return sun50i_iommu_enable(iommu);
++}
++
++static const struct dev_pm_ops sun50i_iommu_pm_ops = {
++	NOIRQ_SYSTEM_SLEEP_PM_OPS(NULL, sun50i_iommu_resume_noirq)
++};
++
+ static struct platform_driver sun50i_iommu_driver = {
+ 	.driver		= {
+ 		.name			= "sun50i-iommu",
+ 		.of_match_table 	= sun50i_iommu_dt,
++		.pm			= pm_sleep_ptr(&sun50i_iommu_pm_ops),
+ 		.suppress_bind_attrs	= true,
+ 	}
+ };

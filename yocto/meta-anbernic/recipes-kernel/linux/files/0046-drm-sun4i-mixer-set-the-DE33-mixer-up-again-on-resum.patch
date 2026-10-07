@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:33:37 +0200
+Subject: [PATCH 46/51] drm/sun4i: mixer: set the DE33 mixer up again on resume
+
+0022 keeps the DE33 mixer's reset deasserted across suspend, counting on its registers
+surviving. After super standby (the SoC's power cut) they don't: run sun8i_mixer_init()
+and the DE33 channel mapping again on resume. The atomic resume rewrites the rest.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/sun4i/sun50i_planes.c | 7 +++++++
+ drivers/gpu/drm/sun4i/sun50i_planes.h | 1 +
+ drivers/gpu/drm/sun4i/sun8i_mixer.c   | 6 ++++++
+ 3 files changed, 14 insertions(+)
+
+diff --git a/drivers/gpu/drm/sun4i/sun50i_planes.c b/drivers/gpu/drm/sun4i/sun50i_planes.c
+index a99c01122..8837fe4af 100644
+--- a/drivers/gpu/drm/sun4i/sun50i_planes.c
++++ b/drivers/gpu/drm/sun4i/sun50i_planes.c
+@@ -115,6 +115,13 @@ static void sun50i_planes_init_mapping(struct sun50i_planes *planes)
+ 	}
+ }
+ 
++/* The channel mapping is lost with the SoC's power (super standby) */
++void sun50i_planes_restore(struct device *dev)
++{
++	sun50i_planes_init_mapping(dev_get_drvdata(dev));
++}
++EXPORT_SYMBOL(sun50i_planes_restore);
++
+ static const struct regmap_config sun50i_planes_regmap_config = {
+ 	.name		= "planes",
+ 	.reg_bits	= 32,
+diff --git a/drivers/gpu/drm/sun4i/sun50i_planes.h b/drivers/gpu/drm/sun4i/sun50i_planes.h
+index 446feaeb0..2373f529b 100644
+--- a/drivers/gpu/drm/sun4i/sun50i_planes.h
++++ b/drivers/gpu/drm/sun4i/sun50i_planes.h
+@@ -39,5 +39,6 @@ extern const struct of_device_id sun50i_planes_of_table[];
+ struct drm_plane **
+ sun50i_planes_setup(struct device *dev, struct drm_device *drm,
+ 		    unsigned int mixer);
++void sun50i_planes_restore(struct device *dev);
+ 
+ #endif /* _SUN50I_PLANES_H_ */
+diff --git a/drivers/gpu/drm/sun4i/sun8i_mixer.c b/drivers/gpu/drm/sun4i/sun8i_mixer.c
+index dfd6fa2de..f6d9626a3 100644
+--- a/drivers/gpu/drm/sun4i/sun8i_mixer.c
++++ b/drivers/gpu/drm/sun4i/sun8i_mixer.c
+@@ -415,6 +415,8 @@ static void sun8i_mixer_mode_set(struct sunxi_engine *engine,
+ }
+ 
+ /* H616/DE33 only. The DRM master has disabled planes and TCON IRQs. */
++static void sun8i_mixer_init(struct sun8i_mixer *mixer);
++
+ static int sun50i_mixer_suspend(struct sunxi_engine *engine)
+ {
+ 	struct sun8i_mixer *mixer = engine_to_sun8i_mixer(engine);
+@@ -467,6 +469,10 @@ static int sun50i_mixer_resume(struct sunxi_engine *engine)
+ 	ret = clk_prepare_enable(mixer->mod_clk);
+ 	if (ret)
+ 		goto err_bus;
++	/* Retained after a plain suspend; after super standby the SoC lost power */
++	sun8i_mixer_init(mixer);
++	sun50i_planes_restore(mixer->planes_dev);
++
+ 	ret = regmap_write(mixer->top_regs, SUN50I_MIXER_GLOBAL_CLK,
+ 			   mixer->saved_global_clk);
+ 	if (ret)

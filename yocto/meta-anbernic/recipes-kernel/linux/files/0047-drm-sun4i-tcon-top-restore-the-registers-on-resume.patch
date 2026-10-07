@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:33:57 +0200
+Subject: [PATCH 47/51] drm/sun4i: tcon-top: restore the registers on resume
+
+The TV setup, port select and gate register are written once at bind; they are lost
+with the SoC's power (super standby). Save them in suspend_late, write them back in
+resume_early.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/sun4i/sun8i_tcon_top.c | 6 ++++++
+ drivers/gpu/drm/sun4i/sun8i_tcon_top.h | 2 ++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
+index 07f4fc9a4..fb4939643 100644
+--- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
++++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
+@@ -308,6 +308,9 @@ static int __maybe_unused sun8i_tcon_top_suspend_late(struct device *dev)
+ 	if (!top || !top->system_pm || top->suspended)
+ 		return 0;
+ 
++	top->saved[0] = readl(top->regs + TCON_TOP_TCON_TV_SETUP_REG);
++	top->saved[1] = readl(top->regs + TCON_TOP_PORT_SEL_REG);
++	top->saved[2] = readl(top->regs + TCON_TOP_GATE_SRC_REG);
+ 	clk_disable_unprepare(top->bus);
+ 	top->suspended = true;
+ 	return 0;
+@@ -323,6 +326,9 @@ static int __maybe_unused sun8i_tcon_top_resume_early(struct device *dev)
+ 	ret = clk_prepare_enable(top->bus);
+ 	if (ret)
+ 		return ret;
++	writel(top->saved[0], top->regs + TCON_TOP_TCON_TV_SETUP_REG);
++	writel(top->saved[1], top->regs + TCON_TOP_PORT_SEL_REG);
++	writel(top->saved[2], top->regs + TCON_TOP_GATE_SRC_REG);
+ 	top->suspended = false;
+ 	return 0;
+ }
+diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.h b/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
+index 02d67f68d..5813e55a8 100644
+--- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
++++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
+@@ -30,6 +30,8 @@ struct sun8i_tcon_top {
+ 	struct reset_control		*rst;
+ 	bool				system_pm;
+ 	bool				suspended;
++	/* TV setup, port select and gates, lost with the SoC's power (super standby) */
++	u32				saved[3];
+ 
+ 	/*
+ 	 * spinlock is used to synchronize access to same

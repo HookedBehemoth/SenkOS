@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:33:17 +0200
+Subject: [PATCH 45/51] thermal: sun8i: calibrate and set up the sensors again
+ on resume
+
+The H616 suspends with the SoC's power cut (TF-A's super standby), which loses the
+calibration and the sampling setup; the sensors then read nonsense. Run both again on
+resume (harmless after a plain suspend), and set the drvdata that needs.
+
+Upstream-Status: Pending
+---
+ drivers/thermal/sun8i_thermal.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/drivers/thermal/sun8i_thermal.c b/drivers/thermal/sun8i_thermal.c
+index 226747906..25f2fb902 100644
+--- a/drivers/thermal/sun8i_thermal.c
++++ b/drivers/thermal/sun8i_thermal.c
+@@ -565,6 +565,7 @@ static int sun8i_ths_probe(struct platform_device *pdev)
+ 	tmdev->chip = of_device_get_match_data(&pdev->dev);
+ 	if (!tmdev->chip)
+ 		return -EINVAL;
++	platform_set_drvdata(pdev, tmdev);
+ 
+ 	ret = sun8i_ths_resource_init(tmdev);
+ 	if (ret)
+@@ -723,11 +724,30 @@ static const struct of_device_id of_ths_match[] = {
+ };
+ MODULE_DEVICE_TABLE(of, of_ths_match);
+ 
++/*
++ * The H616 suspends with the SoC's power cut (TF-A's super standby), which loses the
++ * calibration and the sampling setup; without them the sensors read nonsense.
++ */
++static int sun8i_ths_resume(struct device *dev)
++{
++	struct ths_device *tmdev = dev_get_drvdata(dev);
++	int ret;
++
++	ret = sun8i_ths_calibrate(tmdev);
++	if (ret)
++		return ret;
++
++	return tmdev->chip->init(tmdev);
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(sun8i_ths_pm_ops, NULL, sun8i_ths_resume);
++
+ static struct platform_driver ths_driver = {
+ 	.probe = sun8i_ths_probe,
+ 	.driver = {
+ 		.name = "sun8i-thermal",
+ 		.of_match_table = of_ths_match,
++		.pm = pm_sleep_ptr(&sun8i_ths_pm_ops),
+ 	},
+ };
+ module_platform_driver(ths_driver);

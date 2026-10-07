@@ -1,0 +1,273 @@
+From: SenkOS
+Subject: [PATCH] allwinner: h616: super standby
+
+The stock firmware's deepest sleep (docs/suspend.md): with no wake source but the PMIC
+(no pin interrupt left enabled, no RTC alarm), arm the AXP717's auto sleep to cut
+VDD-CPU, VDD-SYS, DCDC4 and VCC-IO with only the power key as wake source, and let the
+suspend stub trigger it after DRAM self-refresh. SPL resumes to the warm entry, where BL31
+redoes its cold boot setup (secondary entry points, GIC, security) and restores the PMIC.
+
+Upstream-Status: Pending
+
+---
+diff --git a/plat/allwinner/common/include/sunxi_private.h b/plat/allwinner/common/include/sunxi_private.h
+index 7e2da00..41db0ae 100644
+--- a/plat/allwinner/common/include/sunxi_private.h
++++ b/plat/allwinner/common/include/sunxi_private.h
+@@ -19,6 +19,8 @@ void sunxi_cpu_on(u_register_t mpidr);
+ void sunxi_cpu_power_off_others(void);
+ void sunxi_cpu_power_off_self(void);
+ void sunxi_power_down(void);
++int sunxi_pmic_sleep_prepare(void);
++void sunxi_pmic_sleep_restore(void);
+ 
+ #if SUNXI_PSCI_USE_NATIVE
+ void sunxi_set_native_psci_ops(const plat_psci_ops_t **psci_ops);
+diff --git a/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h b/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h
+index 9622972..2f5d212 100644
+--- a/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h
++++ b/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h
+@@ -17,7 +17,25 @@
+ #define SUNXI_SUSPEND_PARAMS_OFFSET	0x10
+ 
+ #define SUNXI_SUSPEND_MAGIC		0x50535553	/* "SUSP" */
+-#define SUNXI_SUSPEND_VERSION		1
++#define SUNXI_SUSPEND_VERSION		2
++
++/* Bytes of DRAM, at the start of each half, that PHY training overwrites on resume */
++#define SUNXI_SUSPEND_SAVE_BYTES	0x140
++
++/*
++ * Super standby handshake with SPL, in RTC general purpose registers (the RTC domain keeps
++ * power). The stub writes RESUME_MAGIC and the rest just before the PMIC cuts the SoC's power;
++ * SPL, woken up as on a cold boot, re-initialises DRAM, writes RESUMED_MAGIC and jumps to
++ * the warm boot entry.
++ */
++#define SUNXI_RTC_RESUME_MAGIC_REG	0x07000100
++#define SUNXI_RTC_RESUME_ENTRY_REG	0x07000104
++#define SUNXI_RTC_RESUME_CFG_REG	0x07000114	/* dram_cfg */
++#define SUNXI_RTC_RESUME_SAVE_REG	0x07000118	/* save_addr */
++#define SUNXI_RESUME_MAGIC		0x53535442	/* "SSTB" */
++#define SUNXI_RESUMED_MAGIC		0x53535452	/* "SSTR" */
++/* Left for Linux, which restores what drivers expect unchanged (sun50i_h616_standby.c) */
++#define SUNXI_RESUMED_LINUX_MAGIC	0x5353544c	/* "SSTL" */
+ 
+ /* flags (in) */
+ #define SUNXI_SUSPEND_FLAG_DEBUG_UART	(1 << 0)
+@@ -44,6 +62,8 @@ struct sunxi_suspend_params {
+ 	uint64_t dram_size;	/* out: detected DRAM size in bytes */
+ 	uint32_t dram_cfg;	/* out: cols | rows << 8 | ranks << 16 | full << 24 */
+ 	uint32_t reserved;
++	uint32_t poweroff;	/* in: super standby: have the PMIC cut the SoC's power */
++	uint32_t save_addr;	/* in: DRAM buffer, 2 x SUNXI_SUSPEND_SAVE_BYTES */
+ };
+ #endif /* __ASSEMBLER__ */
+ 
+diff --git a/plat/allwinner/sun50i_h616/sunxi_power.c b/plat/allwinner/sun50i_h616/sunxi_power.c
+index 8ae16bb..28634c4 100644
+--- a/plat/allwinner/sun50i_h616/sunxi_power.c
++++ b/plat/allwinner/sun50i_h616/sunxi_power.c
+@@ -269,6 +269,93 @@ void sunxi_power_down(void)
+ 	}
+ }
+ 
++/* AXP717 sleep: REG25 bit 0 sleep, bit 2 keep the set voltages, bit 5 wake on IRQ pin low,
++ * bit 6 auto sleep (cut the rails in the maps at 0x28-0x2a, one bit per regulator) */
++#define AXP717_IRQ_EN(n)		(0x40 + (n))
++#define AXP717_IRQ_STATE(n)		(0x48 + (n))
++#define AXP717_IRQ1_PEK_EDGES		(BIT(1) | BIT(0))
++#define AXP717_SLEEP_CFG		0x25
++#define AXP717_SLEEP_CFG_ARM		0x2d
++#define AXP717_SLEEP_MAP(n)		(0x28 + (n))
++/* DCDC1 (VDD-CPU), DCDC2 (VDD-SYS), DCDC4 (unused); CLDO3 (VCC-IO). DRAM, PLL and RTC stay. */
++static const uint8_t sleep_map[3] = { BIT(0) | BIT(1) | BIT(3), BIT(6), 0 };
++
++static uint8_t saved_irq_en[5], saved_sleep_cfg, saved_sleep_map[3];
++
++static int axp_save(uint8_t reg, uint8_t *val)
++{
++	int ret = axp_read(reg);
++
++	if (ret < 0) {
++		return ret;
++	}
++	*val = ret;
++	return 0;
++}
++
++/*
++ * Arm the PMIC's auto sleep for super standby: only the power key may wake, and the
++ * rails in sleep_map go off when the suspend stub sets the auto sleep bit.
++ */
++int sunxi_pmic_sleep_prepare(void)
++{
++	unsigned int i;
++	int ret;
++
++	if (pmic != AXP717) {
++		return -ENODEV;
++	}
++
++	ret = pmic_bus_init(SUNXI_SOC_H616, pmic_bus_addr);
++	for (i = 0; ret == 0 && i < ARRAY_SIZE(saved_irq_en); i++) {
++		ret = axp_save(AXP717_IRQ_EN(i), &saved_irq_en[i]);
++	}
++	for (i = 0; ret == 0 && i < ARRAY_SIZE(saved_sleep_map); i++) {
++		ret = axp_save(AXP717_SLEEP_MAP(i), &saved_sleep_map[i]);
++	}
++	if (ret == 0) {
++		ret = axp_save(AXP717_SLEEP_CFG, &saved_sleep_cfg);
++	}
++	if (ret) {
++		return ret;
++	}
++
++	for (i = 0; ret == 0 && i < ARRAY_SIZE(saved_irq_en); i++) {
++		ret = axp_write(AXP717_IRQ_EN(i), i == 1 ? AXP717_IRQ1_PEK_EDGES : 0);
++	}
++	for (i = 0; ret == 0 && i < ARRAY_SIZE(saved_irq_en); i++) {
++		ret = axp_write(AXP717_IRQ_STATE(i), 0xff);
++	}
++	if (ret == 0) {
++		ret = axp_write(AXP717_SLEEP_CFG, AXP717_SLEEP_CFG_ARM);
++	}
++	for (i = 0; ret == 0 && i < ARRAY_SIZE(sleep_map); i++) {
++		ret = axp_write(AXP717_SLEEP_MAP(i), sleep_map[i]);
++	}
++	if (ret) {
++		sunxi_pmic_sleep_restore();
++	}
++
++	return ret;
++}
++
++void sunxi_pmic_sleep_restore(void)
++{
++	unsigned int i;
++
++	if ((pmic != AXP717) || pmic_bus_init(SUNXI_SOC_H616, pmic_bus_addr)) {
++		return;
++	}
++
++	axp_write(AXP717_SLEEP_CFG, saved_sleep_cfg);
++	for (i = 0; i < ARRAY_SIZE(saved_sleep_map); i++) {
++		axp_write(AXP717_SLEEP_MAP(i), saved_sleep_map[i]);
++	}
++	for (i = 0; i < ARRAY_SIZE(saved_irq_en); i++) {
++		axp_write(AXP717_IRQ_EN(i), saved_irq_en[i]);
++	}
++}
++
+ void sunxi_cpu_power_off_self(void)
+ {
+ 	u_register_t mpidr = read_mpidr();
+diff --git a/plat/allwinner/sun50i_h616/sunxi_suspend.c b/plat/allwinner/sun50i_h616/sunxi_suspend.c
+index c51aef2..a13f2fd 100644
+--- a/plat/allwinner/sun50i_h616/sunxi_suspend.c
++++ b/plat/allwinner/sun50i_h616/sunxi_suspend.c
+@@ -13,10 +13,12 @@
+ 
+ #include <arch_helpers.h>
+ #include <common/debug.h>
++#include <drivers/arm/gicv2.h>
+ #include <drivers/console.h>
+ #include <lib/mmio.h>
+ #include <lib/utils_def.h>
+ 
++#include <sunxi_cpucfg.h>
+ #include <sunxi_mmap.h>
+ #include <sunxi_private.h>
+ #include <sunxi_suspend_params.h>
+@@ -25,6 +27,11 @@
+ #define SUNXI_DRAM_MSTR_REG		(SUNXI_DRAM_CTL0_BASE + 0x000)
+ #define SUNXI_CCU_PLL_DDR0_REG		(SUNXI_CCU_BASE + 0x010)
+ 
++#define SUNXI_PIO_IRQ_CTL_REG(bank)	(SUNXI_PIO_BASE + 0x210 + 0x20 * (bank))
++#define SUNXI_PIO_IRQ_BANKS		9
++#define SUNXI_R_PIO_IRQ_CTL_REG		(SUNXI_R_PIO_BASE + 0x210)
++#define SUNXI_RTC_ALARM0_EN_REG		0x07000050
++
+ /* Leave 8 KiB of SRAM A1 for the stub's stack and .bss; stub.lds asserts the fit. */
+ #define SUNXI_SUSPEND_STUB_MAX_SIZE	(SUNXI_SRAM_A1_SIZE - 0x2000)
+ 
+@@ -55,6 +62,25 @@ static bool suspend_available;
+ static const uint8_t *stub_start;
+ static size_t stub_len;
+ static uintptr_t warm_entrypoint;
++static bool super_standby;
++static uint32_t dram_save[2 * SUNXI_SUSPEND_SAVE_BYTES / 4] __aligned(64);
++
++/*
++ * Super standby (the PMIC cuts the SoC's power) only when nothing but the PMIC has to wake
++ * us: Linux masks every pin interrupt that is not a wake source when it suspends, so an
++ * enabled one is the lid; an RTC alarm can't fire either with the SoC off.
++ */
++static bool super_standby_possible(void)
++{
++	for (unsigned int bank = 0U; bank < SUNXI_PIO_IRQ_BANKS; bank++) {
++		if (mmio_read_32(SUNXI_PIO_IRQ_CTL_REG(bank)) != 0U) {
++			return false;
++		}
++	}
++
++	return (mmio_read_32(SUNXI_R_PIO_IRQ_CTL_REG) == 0U) &&
++	       ((mmio_read_32(SUNXI_RTC_ALARM0_EN_REG) & BIT_32(0)) == 0U);
++}
+ 
+ static struct sunxi_suspend_params *sram_params(void)
+ {
+@@ -144,7 +170,11 @@ void __dead2 sunxi_system_suspend_enter(void)
+ #endif
+ 	params->status = SUNXI_SUSPEND_STATUS_NONE;
+ 
+-	NOTICE("PSCI: System suspend\n");
++	super_standby = super_standby_possible() && (sunxi_pmic_sleep_prepare() == 0);
++	params->poweroff = super_standby ? 1U : 0U;
++	params->save_addr = (uint32_t)(uintptr_t)dram_save;
++
++	NOTICE("PSCI: System suspend%s\n", super_standby ? " (super standby)" : "");
+ 	console_flush();
+ 
+ 	sunxi_suspend_jump(SUNXI_SUSPEND_STUB_BASE);
+@@ -154,6 +184,41 @@ void sunxi_system_suspend_finish(void)
+ {
+ 	const struct sunxi_suspend_params *params = sram_params();
+ 
++	if (mmio_read_32(SUNXI_RTC_RESUME_MAGIC_REG) == SUNXI_RESUMED_MAGIC) {
++		mmio_write_32(SUNXI_RTC_RESUME_MAGIC_REG, SUNXI_RESUMED_LINUX_MAGIC);
++		super_standby = false;
++
++		/* The SoC lost power and SPL brought us back: redo BL31's cold boot setup */
++		for (unsigned int cpu = 0U; cpu < PLATFORM_CORE_COUNT; cpu++) {
++			/* where the other cores start (plat_setup_psci_ops()) */
++			if (sunxi_cpucfg_has_per_cluster_regs()) {
++				mmio_write_32(SUNXI_CPUCFG_RVBAR_LO_REG(cpu),
++					      warm_entrypoint & 0xffffffff);
++				mmio_write_32(SUNXI_CPUCFG_RVBAR_HI_REG(cpu),
++					      warm_entrypoint >> 32);
++			} else {
++				mmio_write_32(SUNXI_ALT_RVBAR_LO_REG(cpu),
++					      warm_entrypoint & 0xffffffff);
++				mmio_write_32(SUNXI_ALT_RVBAR_HI_REG(cpu),
++					      warm_entrypoint >> 32);
++			}
++		}
++		gicv2_distif_init();
++		gicv2_pcpu_distif_init();
++		gicv2_cpuif_enable();
++		sunxi_security_setup();
++		sunxi_pmic_sleep_restore();
++
++		NOTICE("PSCI: Resumed from super standby\n");
++		return;
++	}
++
++	if (super_standby) {
++		/* The stub came back on its own: the PMIC did not cut the power, or SR failed */
++		super_standby = false;
++		sunxi_pmic_sleep_restore();
++	}
++
+ 	switch (params->status) {
+ 	case SUNXI_SUSPEND_STATUS_OK:
+ 		NOTICE("PSCI: Resumed from system suspend (wake IRQ %u, DRAM 0x%llx, cfg 0x%x)\n",

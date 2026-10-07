@@ -1,0 +1,182 @@
+From: SenkOS
+Subject: [PATCH] sunxi: H616: resume from super standby
+
+TF-A can suspend with the SoC powered off: DRAM in self-refresh, its pads held in the RTC
+domain, the PMIC cutting VDD-CPU, VDD-SYS and VCC-IO. The wake-up is a cold boot. With the
+resume magic in the RTC, SPL re-initialises DRAM without the SDRAM init and size probe, puts
+back the words PHY training overwrote (TF-A saved them) and jumps to TF-A's warm boot entry.
+
+Every cold boot also releases the DRAM pad hold (bit 0 of RTC 0x1f4; set releases, contrary
+to the H616 manual: clearing it with DRAM running hangs the SoC), which lives in the RTC
+domain: a resume that died with it taken would leave DRAM unusable on every later boot. The
+RTC's bus clock gate is opened first, closed its registers read 0 and ignore writes. The
+resume flag is in .data, SPL's BSS being in the DRAM this code brings up.
+
+Upstream-Status: Pending
+
+---
+diff --git a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
+index 315533f8..85308060 100644
+--- a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
++++ b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
+@@ -178,4 +178,17 @@ static inline int ns_to_t(const struct dram_para *para, int nanoseconds)
+ void mctl_set_timing_params(const struct dram_para *para);
+ void mctl_set_timing_params_lpddr3(const struct dram_para *para);
+ 
++/*
++ * Super standby handshake with TF-A, in RTC general purpose registers (the RTC domain keeps
++ * power). TF-A writes RESUME_MAGIC and the rest before the power cut, SPL RESUMED_MAGIC after.
++ */
++#define RTC_RESUME_MAGIC	0x100
++#define RTC_RESUME_ENTRY	0x104	/* TF-A warm boot entry */
++#define RTC_RESUME_DRAM_CFG	0x114	/* cols | rows << 8 | ranks << 16 | full width << 24 */
++#define RTC_RESUME_SAVE		0x118	/* DRAM copy of the words PHY training overwrites */
++#define RTC_DRAM_PAD_HOLD	0x1f4	/* bit 0 clear: DRAM pads held (the manual says set) */
++#define RESUME_MAGIC		0x53535442	/* "SSTB" */
++#define RESUMED_MAGIC		0x53535452	/* "SSTR" */
++#define RESUME_SAVE_BYTES	0x140	/* per half */
++
+ #endif /* _SUNXI_DRAM_SUN50I_H616_H */
+diff --git a/arch/arm/mach-sunxi/Kconfig b/arch/arm/mach-sunxi/Kconfig
+index 470aa043..2b1c9718 100644
+--- a/arch/arm/mach-sunxi/Kconfig
++++ b/arch/arm/mach-sunxi/Kconfig
+@@ -715,6 +715,14 @@ config SUNXI_DRAM_A523_LPDDR4
+ 	  Allwinner.
+ endchoice
+ 
++config SUNXI_SUPER_STANDBY
++	bool "Resume from super standby"
++	depends on DRAM_SUN50I_H616
++	help
++	  TF-A can suspend with the SoC powered off and only DRAM in self-refresh. Waking up is
++	  a cold boot; SPL then re-initialises DRAM without clearing it and returns to TF-A, as
++	  told by the RTC general purpose registers.
++
+ config SUNXI_DRAM_H616_LPDDR3_STRAPS
+ 	bool "Also support LPDDR3 boards, told apart by the boot0 DRAM straps"
+ 	depends on DRAM_SUN50I_H616 && SUNXI_DRAM_H616_LPDDR4 && AXP717_POWER
+diff --git a/arch/arm/mach-sunxi/dram_sun50i_h616.c b/arch/arm/mach-sunxi/dram_sun50i_h616.c
+index e94fcf82..7e84c944 100644
+--- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
++++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
+@@ -12,6 +12,7 @@
+  * (C) Copyright 2020 Jernej Skrabec <jernej.skrabec@siol.net>
+  *
+  */
++#include <cpu_func.h>
+ #include <init.h>
+ #include <log.h>
+ #include <asm/io.h>
+@@ -25,6 +26,7 @@
+ #include <sunxi_gpio.h>
+ #include <linux/bitops.h>
+ #include <linux/delay.h>
++#include <linux/string.h>
+ 
+ enum {
+ 	MBUS_QOS_LOWEST = 0,
+@@ -63,6 +65,9 @@ static void mbus_configure_port(u8 port,
+ 	mbus_configure_port(port, true, priority, \
+ 			    MBUS_QOS_ ## qos, 0, acs, bwl0, bwl1, bwl2)
+ 
++/* .data: SPL's BSS is in DRAM, which this code is bringing up */
++static bool dram_resuming __section(".data");
++
+ static void mctl_set_master_priority(void)
+ {
+ 	struct sunxi_mctl_com_reg * const mctl_com =
+@@ -1054,6 +1059,10 @@ static bool mctl_phy_init(const struct dram_para *para,
+ 	writel(0, &mctl_ctl->swctl);
+ 	clrbits_le32(&mctl_ctl->dfimisc, 0x20);
+ 
++	/* Resume: release the pad hold before leaving self-refresh */
++	if (dram_resuming)
++		setbits_le32(SUNXI_RTC_BASE + RTC_DRAM_PAD_HOLD, BIT(0));
++
+ 	clrbits_le32(&mctl_ctl->pwrctl, 0x20);
+ 	writel(1, &mctl_ctl->swctl);
+ 	mctl_await_completion(&mctl_ctl->swstat, 1, 1);
+@@ -1288,6 +1297,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
+ 	else
+ 		mctl_set_timing_params(para);
+ 
++	/* Resume: the SDRAM is in self-refresh with its contents, skip its initialisation */
++	if (dram_resuming)
++		clrsetbits_le32(&mctl_ctl->init[0], BIT(31) | BIT(30), BIT(30));
++
+ 	writel(0, &mctl_ctl->pwrctl);
+ 
+ 	setbits_le32(&mctl_ctl->dfiupd[0], BIT(31) | BIT(30));
+@@ -1399,6 +1412,52 @@ static bool dram_straps_lpddr3(void)
+ }
+ #endif
+ 
++#ifdef CONFIG_SUNXI_SUPER_STANDBY
++/*
++ * Resume from super standby (docs/suspend.md): TF-A put DRAM into self-refresh, held the DRAM
++ * pads in the RTC domain and had the PMIC cut the SoC's power. The PMIC brought it back and the
++ * BROM loaded us as on any cold boot; the RTC registers say where to go back to.
++ */
++static void dram_resume(const struct dram_para *para)
++{
++	void *const rtc = (void *)SUNXI_RTC_BASE;
++	void *const prcm = (void *)SUNXI_PRCM_BASE;
++	u32 cfg = readl(rtc + RTC_RESUME_DRAM_CFG);
++	const u32 *save = (const u32 *)(uintptr_t)readl(rtc + RTC_RESUME_SAVE);
++	void (*entry)(void) = (void *)(uintptr_t)readl(rtc + RTC_RESUME_ENTRY);
++	struct dram_config config = {
++		.cols = cfg & 0xff,
++		.rows = (cfg >> 8) & 0xff,
++		.ranks = (cfg >> 16) & 0xff,
++		.bus_full_width = (cfg >> 24) & 1,
++	};
++	unsigned long half;
++
++	/* One shot: should this resume hang, the next boot is a cold one */
++	writel(0, rtc + RTC_RESUME_MAGIC);
++
++	setbits_le32(prcm + CCU_PRCM_RES_CAL_CTRL, BIT(8));
++	clrbits_le32(prcm + CCU_PRCM_OHMS240, 0x3f);
++
++	dram_resuming = true;
++	if (!mctl_core_init(para, &config)) {
++		dram_resuming = false;
++		printf("resume failed, booting\n");
++		return;
++	}
++	mctl_set_master_priority();
++
++	/* PHY training wrote patterns at the start of each half; TF-A saved those words */
++	half = mctl_calc_size(&config) / 2;
++	memcpy((void *)CFG_SYS_SDRAM_BASE, save, RESUME_SAVE_BYTES);
++	memcpy((void *)(CFG_SYS_SDRAM_BASE + half), save + RESUME_SAVE_BYTES / 4, RESUME_SAVE_BYTES);
++
++	writel(RESUMED_MAGIC, rtc + RTC_RESUME_MAGIC);
++	icache_disable();
++	entry();
++}
++#endif
++
+ unsigned long sunxi_dram_init(void)
+ {
+ 	void *const prcm = (void *)SUNXI_PRCM_BASE;
+@@ -1414,6 +1473,18 @@ unsigned long sunxi_dram_init(void)
+ 	}
+ #endif
+ 
++#ifdef CONFIG_SUNXI_SUPER_STANDBY
++	/* The RTC's bus clock gate (R_PRCM): closed, its registers read 0 and ignore writes */
++	setbits_le32(SUNXI_PRCM_BASE + 0x20c, BIT(0));
++	if (readl(SUNXI_RTC_BASE + RTC_RESUME_MAGIC) == RESUME_MAGIC)
++		dram_resume(p);
++	/*
++	 * The pad hold is in the RTC domain: should a resume die with it taken, every later
++	 * boot would find DRAM cut off. Set releases it, whatever the H616 manual says
++	 * (clearing it with DRAM running hangs the SoC).
++	 */
++	setbits_le32(SUNXI_RTC_BASE + RTC_DRAM_PAD_HOLD, BIT(0));
++#endif
+ 	setbits_le32(prcm + CCU_PRCM_RES_CAL_CTRL, BIT(8));
+ 	clrbits_le32(prcm + CCU_PRCM_OHMS240, 0x3f);
+ 

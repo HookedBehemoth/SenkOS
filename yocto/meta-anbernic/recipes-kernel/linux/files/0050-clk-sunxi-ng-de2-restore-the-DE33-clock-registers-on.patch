@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 7 Oct 2026 18:36:53 +0200
+Subject: [PATCH 50/51] clk: sunxi-ng: de2: restore the DE33 clock registers on
+ resume
+
+0022 gates the DE33 clock unit across suspend, counting on its registers surviving. After
+super standby (the SoC's power cut) they don't: save the gates, resets and dividers before
+gating, write them back after.
+
+Upstream-Status: Pending
+---
+ drivers/clk/sunxi-ng/ccu-sun8i-de2.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/clk/sunxi-ng/ccu-sun8i-de2.c b/drivers/clk/sunxi-ng/ccu-sun8i-de2.c
+index 2b37c58ef..e0564e936 100644
+--- a/drivers/clk/sunxi-ng/ccu-sun8i-de2.c
++++ b/drivers/clk/sunxi-ng/ccu-sun8i-de2.c
+@@ -291,6 +291,9 @@ struct sunxi_de2_clk_state {
+ 	struct clk *mod;
+ 	bool system_pm;
+ 	bool suspended;
++	/* gates, resets and dividers, lost with the SoC's power (super standby) */
++	void __iomem *base;
++	u32 saved[4];
+ };
+ 
+ static int __maybe_unused sunxi_de2_clk_suspend_late(struct device *dev)
+@@ -301,6 +304,8 @@ static int __maybe_unused sunxi_de2_clk_suspend_late(struct device *dev)
+ 		return 0;
+ 
+ 	/* Normal DRM suspend has quiesced all consumers. Keep registers retained. */
++	for (unsigned int i = 0; i < ARRAY_SIZE(state->saved); i++)
++		state->saved[i] = readl(state->base + 4 * i);
+ 	clk_disable_unprepare(state->mod);
+ 	clk_disable_unprepare(state->bus);
+ 	state->suspended = true;
+@@ -322,6 +327,8 @@ static int __maybe_unused sunxi_de2_clk_resume_early(struct device *dev)
+ 		clk_disable_unprepare(state->bus);
+ 		return ret;
+ 	}
++	for (unsigned int i = 0; i < ARRAY_SIZE(state->saved); i++)
++		writel(state->saved[i], state->base + 4 * i);
+ 	state->suspended = false;
+ 	return 0;
+ }
+@@ -410,6 +417,7 @@ static int sunxi_de2_clk_probe(struct platform_device *pdev)
+ 
+ 	state->bus = bus_clk;
+ 	state->mod = mod_clk;
++	state->base = reg;
+ 	state->system_pm = of_device_is_compatible(pdev->dev.of_node,
+ 						 "allwinner,sun50i-h616-de33-clk");
+ 	platform_set_drvdata(pdev, state);
