@@ -13,4 +13,5 @@ enum {
   UI_RELOAD,               /* "reload" on the FIFO: downloadd added or removed a port */
   UI_UPDATES,              /* downloadd said something about system updates (updates.h) */
   UI_REFUSED,              /* sysd didn't do what was asked (sysd.h) */
+  UI_POWER_HOLD,           /* the power key held POWER_HOLD_MS: the power options */
 };

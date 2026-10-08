@@ -745,7 +745,6 @@ static void detail(nav *ui, int w, int h) {
   for (size_t i = 0; i < lines.count && ty + line_h < h - ROW; i++, ty += line_h)
     ui_text(SMALL, (int)x, (int)ty, lines.lines[i], FG);
   free(lines.lines);
-  hint(w, h, S("A: choose    B: back"));
 }
 
 static void readme_screen(nav *ui, ui_rect view) {
@@ -899,13 +898,14 @@ int main(int argc, char **argv) {
         str why = catalog_loading ? S("Loading the catalog…") : sb_str(catalog_error);
         ui_text(ROW_TEXT, MARGIN * 2, BAR + MARGIN * 2, ui_text_fit(ROW_TEXT, why, w - MARGIN * 4, NULL),
                 catalog_loading ? DIM : BAD);
-        hint(w, h, catalog_loading ? S("B: quit") : S("A: try again    B: quit"));
+        if (!catalog_loading)
+          hint(w, h, S("A: try again"));
       } else {
         port *chosen = NULL;
         NAV_SCOPE(&ui, nav_int(page)) { chosen = grid(&ui, view); }
         if (chosen != NULL)
           open_port(&ui, chosen);
-        hint(w, h, S("A: open    L1/R1: page    B: quit"));
+        hint(w, h, S("L1/R1: page"));
       }
     } else if (screen == DETAIL) {
       top_bar(w, shown->name, S(""));
@@ -913,7 +913,7 @@ int main(int argc, char **argv) {
     } else {
       top_bar(w, shown->name, S("Readme"));
       readme_screen(&ui, view);
-      hint(w, h, S("Up, down: scroll    Left, right: page    B: back"));
+      hint(w, h, S("Left, right: page"));
     }
     animating = nav_end(&ui, RING, 2);
     gfx_end(target);

@@ -2,7 +2,8 @@
 /*
  * sysd: root's side of the UI, started (and again, should it die) by init (inittab).
  *
- * Suspends on lid close or power-key press and stays asleep while the lid is closed;
+ * Suspends on lid close or a power-key press let go within HOLD_S (held longer, the launcher
+ * shows the power options) and stays asleep while the lid is closed;
  * /usr/sbin/suspend picks which sleep, one the lid can end or super standby. Only reacts to
  * events, never to the state at startup, so a misread lid can't put the handheld to sleep at
  * boot.
@@ -39,6 +40,8 @@
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
 #define LIGHT_SLEEP "/data/OS/config/light-sleep"
+/* The power key held this long is the launcher's (POWER_HOLD_MS) */
+#define HOLD_S 1.0
 #define ARGV(...) ((const char *const[]){__VA_ARGS__, NULL})
 
 enum { MAXDEV = 16, MAXJOB = 8, MAXWORDS = 8 };
@@ -300,7 +303,8 @@ int main(void)
 	/* the devices, the socket, the jobs */
 	struct pollfd pfd[MAXDEV + 1 + MAXJOB];
 	int n = 0, lid = -1;
-	double quiet_until = 0;
+	/* power_down: when the key went down, 0 when up or the press woke us */
+	double quiet_until = 0, power_down = 0;
 	glob_t g;
 
 	openlog("sysd", LOG_PID, LOG_DAEMON);
@@ -386,8 +390,12 @@ int main(void)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
 				if (ev.type == EV_SW && ev.code == SW_LID && ev.value == 1)
 					sleep_now = 1;
-				if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 1 && now() > quiet_until)
-					sleep_now = 1;
+				if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 1)
+					power_down = now() > quiet_until ? now() : 0;
+				if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 0) {
+					sleep_now |= power_down > 0 && now() - power_down < HOLD_S;
+					power_down = 0;
+				}
 			}
 		if (!sleep_now)
 			continue;

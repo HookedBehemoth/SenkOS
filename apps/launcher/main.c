@@ -150,6 +150,9 @@ static const entry system_entries[] = {
     {.label = S("Reboot"), .command = S("reboot"), .action = POWER, .icon = ICON_ROTATE_CW},
     {.label = S("Power off"), .command = S("poweroff"), .action = POWER, .icon = ICON_POWER},
 };
+/* Sleep, Reboot, Power off: the power key held */
+static const entry *const power_entries = system_entries + 3;
+enum { POWER_ENTRIES = 3 };
 /* Power's key at home (power.h): apps' are paths and commands */
 #define HOME_KEY S("home")
 /* What a PC gets over USB, by the usb script (sysd runs it): /run/usb is "on|off MODE" */
@@ -275,6 +278,11 @@ static int tiles_focus = -1, menu_focus = -1;
 /* MODAL_LICENSE: the row read */
 static size_t license_shown;
 static uint64_t osd_until;
+/* The power options, over whatever is shown (an app: paused first); `back`: the focus under */
+static struct {
+  bool shown;
+  nav_id back;
+} power_menu;
 
 
 static void rescan(size_t page) {
@@ -490,6 +498,7 @@ static void pause_front(nav *ui) {
 
 static void resume_front(void) {
   paused = in_settings = false;
+  power_menu.shown = false;
   set_listening(false);
   grab(false);
   win_unmap(&window);
@@ -565,6 +574,31 @@ static void *volume_thread(void *data) {
     if (fscanf(p, "Volume: %f %15s", &volume, muted) >= 1)
       win_wake(UI_VOLUME, muted[0] != '\0' ? 0 : (int)(volume * 100 + 0.5f));
     pclose(p);
+  }
+  close(fd);
+  return NULL;
+}
+
+/* The power key held POWER_HOLD_MS (sysd's HOLD_S: let go sooner, sysd suspends): UI_POWER_HOLD */
+enum { POWER_HOLD_MS = 1000 };
+static void *power_key_thread(void *data) {
+  const int fd = (int)(intptr_t)data;
+  struct input_event e;
+  uint64_t until = 0; /* 0: up */
+  for (;;) {
+    const int wait = until == 0 ? -1 : (int)(until - MIN(until, ms_now()));
+    const int ready = poll(&(struct pollfd){.fd = fd, .events = POLLIN}, 1, wait);
+    if (ready == 0) {
+      win_wake(UI_POWER_HOLD, 0);
+      until = 0;
+      continue;
+    }
+    if (ready < 0 && errno == EINTR)
+      continue;
+    if (ready < 0 || read(fd, &e, sizeof(e)) != sizeof(e))
+      break;
+    if (e.type == EV_KEY && e.code == KEY_POWER && e.value != 2)
+      until = e.value ? ms_now() + POWER_HOLD_MS : 0;
   }
   close(fd);
   return NULL;
@@ -923,8 +957,8 @@ static bool power_page(nav *ui, ui_rect view, bool calibration) {
   return calibrate;
 }
 
-/* Over home: a title, text under it if any (wrapped, up to 8 lines), then the
- * choices */
+/* Over home: a title and text under it, if any (wrapped, up to 8 lines), then
+ * the choices */
 static const entry *dialog_box(nav *ui, int w, int h, str title, str text,
                            const entry *entries, size_t count) {
   ui_fill(0, 0, w, h, SCRIM);
@@ -949,7 +983,7 @@ static const entry *dialog_box(nav *ui, int w, int h, str title, str text,
     while (rest.n > 0 && rest.p[0] == ' ')
       rest = str_at(rest, 1);
   }
-  const float lines = 1 + n;
+  const float lines = (title.n > 0) + n;
   const float list = MIN(ROW * count + MARGIN * 2, h - MARGIN * 8 - line * lines);
   const float dh = MARGIN * 2 + line * lines + list + MARGIN;
   const float x = (w - dw) / 2, y = (h - dh) / 2;
@@ -957,7 +991,7 @@ static const entry *dialog_box(nav *ui, int w, int h, str title, str text,
   ui_rounded(x, y, dw, dh, EDGE, RADIUS, 1);
   ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2), ui_text_fit(ROW_TEXT, title, dw - MARGIN * 4, NULL), FG);
   for (size_t i = 0; i < n; i++)
-    ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2 + line * (1 + i)),
+    ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2 + line * ((title.n > 0) + i)),
               ui_text_fit(ROW_TEXT, wrapped[i], tw, NULL), DIM);
   const ui_rect view = {x + MARGIN, y + MARGIN + line * lines + MARGIN, dw - MARGIN * 2, list};
   return menu(ui, entries, count, view);
@@ -1418,7 +1452,6 @@ static void clock_dialog(int w, int h) {
     if (i == 2)
       fx += gap;
   }
-  ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(fy + fh + MARGIN), S("A: set    B: cancel"), DIM);
 }
 
 /* Instead of home: Storage; a folder's rows, each with the systems it's a
@@ -1435,8 +1468,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     const size_t n = storage_entries(rows);
     NAV_SCOPE(ui, nav_str("storage")) { chosen = menu(ui, rows, n, list); }
     /* Windows doesn't find the share by itself */
-    hint = usb_is(1, S("smb")) ? S("A: choose    B: back    On a PC: \\\\10.55.0.1, user player")
-                               : S("A: choose    B: back");
+    hint = usb_is(1, S("smb")) ? S("On a PC: \\\\10.55.0.1, user player") : S("");
   } else if (modal.kind == MODAL_BROWSE) {
     top_bar(w, browse_dir.n > 0 ? shown(sb_str(browse_dir)) : S("Libraries"), st);
     for (size_t i = 0; i < browse_count; i++) {
@@ -1450,21 +1482,21 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
       rows[i] = (entry){.label = sb_str(labels[i]), .action = BROWSE_OPEN, .icon = ICON_FOLDER, .category = (int)i};
     }
     NAV_SCOPE(ui, nav_str(browse_dir.p)) { chosen = menu(ui, rows, browse_count, list); }
-    hint = browse_count > 0 ? S("A: open    X: systems    B: back") : S("B: back");
+    hint = browse_count > 0 ? S("X: systems") : S("");
   } else if (modal.kind == MODAL_LICENSES) {
     top_bar(w, S("Licenses"), st);
     for (size_t i = 0; i < license_count; i++)
       rows[i] = (entry){.label = licenses[i].label, .action = LICENSE_OPEN, .icon = ICON_FILE_TEXT, .category = (int)i};
     NAV_SCOPE(ui, nav_str("licenses")) { chosen = menu(ui, rows, license_count, list); }
-    hint = license_count > 0 ? S("A: read    B: back") : S("B: back");
+    hint = S("");
   } else if (modal.kind == MODAL_LICENSE) {
     top_bar(w, licenses[license_shown].name, st);
     license_screen(ui, list);
-    hint = S("Up, down: scroll    Left, right: page    B: back");
+    hint = S("Left, right: page");
   } else if (modal.kind == MODAL_README) {
     top_bar(w, sb_str(modal.name), st);
     readme_screen(ui, list);
-    hint = S("Up, down: scroll    Left, right: page    B: back");
+    hint = S("Left, right: page");
   } else if (modal.kind == MODAL_WIFI) {
     top_bar(w, S("Wi-Fi"), st);
     const bool on = wifi_on();
@@ -1484,8 +1516,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     ui_text(ROW_TEXT, MARGIN * 2, (int)view.y + MARGIN, ui_text_fit(ROW_TEXT, wifi_status(), w - MARGIN * 4, NULL), DIM);
     const ui_rect below = {list.x, list.y + line, list.w, list.h - line};
     NAV_SCOPE(ui, nav_str("wifi")) { chosen = menu(ui, rows, n, below); }
-    hint = menu_focus > 0 && wifi_networks[menu_focus - 1].saved ? S("A: connect    X: forget    B: back")
-                                                                 : S("A: choose    B: back");
+    hint = menu_focus > 0 && wifi_networks[menu_focus - 1].saved ? S("X: forget") : S("");
   } else if (modal.kind == MODAL_KEYBOARD) {
     top_bar(w, S("Wi-Fi"), st);
     STRBUF(200) label;
@@ -1494,7 +1525,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     NAV_SCOPE(ui, nav_str("keyboard")) { done = keyboard(ui, list, sb_str(label)); }
     if (done)
       keyboard_submit(ui);
-    hint = S("X: delete    Y: shift    Start: done    B: cancel");
+    hint = S("X: delete    Y: shift    Start: done");
   } else if (modal.kind == MODAL_UPDATES) {
     top_bar(w, S("Updates"), st);
     str said;
@@ -1509,7 +1540,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     const float top = MARGIN + shown_lines * line;
     const ui_rect below = {list.x, list.y + top, list.w, list.h - top};
     NAV_SCOPE(ui, nav_str("updates")) { chosen = menu(ui, rows, n, below); }
-    hint = S("A: choose    B: back");
+    hint = S("");
   } else if (modal.kind == MODAL_SETTINGS || modal.kind == MODAL_TIME || modal.kind == MODAL_DEBUG ||
              modal.kind == MODAL_CLOCK) {
     /* The clock's popup is over Time */
@@ -1519,7 +1550,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     nav_set_inert(ui, modal.kind == MODAL_CLOCK);
     NAV_SCOPE(ui, nav_str(page_scope(kind))) { chosen = menu(ui, rows, n, list); }
     nav_set_inert(ui, false);
-    hint = S("A: choose    B: back");
+    hint = S("");
     if (modal.kind == MODAL_CLOCK) {
       clock_dialog(w, h);
       hint = S("Up, down: change    Left, right: move");
@@ -1527,7 +1558,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
   } else if (modal.kind == MODAL_POWER) {
     top_bar(w, S("Power"), st);
     NAV_SCOPE(ui, nav_str("home power")) { power_page(ui, list, false); }
-    hint = S("Left, right: change    B: back");
+    hint = S("Left, right: change");
   } else if (modal.kind == MODAL_ZONES) {
     top_bar(w, S("Time zone"), st);
     const str *regions;
@@ -1537,7 +1568,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
       rows[i + 1] = (entry){.label = regions[i], .action = ZONE_REGION, .icon = ICON_FOLDER, .category = (int)i,
                             .checked = clock_zone_chosen() && str_eq(regions[i], str_head(clock_zone(), str_find(clock_zone(), '/')))};
     NAV_SCOPE(ui, nav_str("zones")) { chosen = menu(ui, rows, n + 1, list); }
-    hint = S("A: choose    B: back");
+    hint = S("");
   } else if (modal.kind == MODAL_ZONE) {
     top_bar(w, sb_str(zone_region), st);
     const str *zones;
@@ -1552,7 +1583,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
                         .checked = str_eq(zones[i], clock_zone())};
     }
     NAV_SCOPE(ui, nav_str("zone")) { chosen = menu(ui, rows, n, list); }
-    hint = S("A: choose    B: back");
+    hint = S("");
   } else {
     top_bar(w, shown(sb_str(pick_path)), st);
     size_t n = 0;
@@ -1563,7 +1594,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
                           .category = (int)i, .checked = sources_has(sb_str(pick_path), i)};
     }
     NAV_SCOPE(ui, nav_str("systems")) { chosen = menu(ui, rows, n, list); }
-    hint = S("A: add or take out    B: done");
+    hint = S("");
   }
   ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, DIM);
   return chosen;
@@ -1782,6 +1813,14 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   case UI_HASHED: rescan(*page); return true;
   case UI_LAUNCH: launch_path(ui); return true;
   case UI_RELOAD: rescan(*page); return true;
+  case UI_POWER_HOLD:
+    if (front != NULL && !paused)
+      pause_front(ui);
+    if (!power_menu.shown)
+      power_menu.back = ui->focus;
+    power_menu.shown = true;
+    nav_focus(ui, 0);
+    return true;
   case UI_REFUSED: {
     char text[128];
     show_text(sysd_refused(text, sizeof(text)), 3000);
@@ -1853,6 +1892,19 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   }
   if (front != NULL && !paused)
     return true;
+  if (power_menu.shown) {
+    if (button == APPCTL_B) {
+      power_menu.shown = false;
+      nav_focus(ui, power_menu.back);
+    } else if (button == APPCTL_UP || button == APPCTL_DOWN) {
+      const nav_dir dir = button == APPCTL_UP ? NAV_UP : NAV_DOWN;
+      if (!nav_move(ui, dir))
+        nav_wrap(ui, dir);
+    } else if (button == APPCTL_A) {
+      nav_activate(ui);
+    }
+    return true;
+  }
   if (button == APPCTL_B && in_settings) {
     in_settings = false;
     nav_focus(ui, front->menu_focus);
@@ -2124,6 +2176,9 @@ int main(int argc, char **argv) {
   const int volume_keys = input_open(S("gpio-keys-volume"), 0);
   if (volume_keys >= 0)
     spawn("volume", volume_thread, (void *)(intptr_t)volume_keys);
+  const int power_key = input_open(S("axp20x-pek"), 0);
+  if (power_key >= 0)
+    spawn("power key", power_key_thread, (void *)(intptr_t)power_key);
   if (!open_ctl())
     fprintf(stderr, "launcher: no launch FIFO\n");
   static nav ui = {.animate = true, .duration = 150};
@@ -2249,6 +2304,8 @@ int main(int argc, char **argv) {
     const app *picked = NULL;
     bool calibrate = false;
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1};
+    /* Under the power options: they take the input */
+    nav_set_inert(&ui, power_menu.shown);
     if (front != NULL && !paused) {
       const asset splash = starting_image.n > 0 ? assets_get(sb_str(starting_image)) : (asset){.slot = GFX_PLACEHOLDER};
       if (splash.slot != GFX_PLACEHOLDER) {
@@ -2304,7 +2361,7 @@ int main(int argc, char **argv) {
       }
     } else {
       top_bar(w, page_name(page), &st);
-      nav_set_inert(&ui, failure.shown || modal.kind != MODAL_NONE);
+      nav_set_inert(&ui, power_menu.shown || failure.shown || modal.kind != MODAL_NONE);
       NAV_SCOPE(&ui, nav_int(page)) {
         if (page == 0) {
           list_running();
@@ -2314,19 +2371,24 @@ int main(int argc, char **argv) {
         }
       }
       /* Under a failure: it takes the input */
-      nav_set_inert(&ui, failure.shown);
+      nav_set_inert(&ui, power_menu.shown || failure.shown);
       if (modal.kind == MODAL_MENU)
         NAV_SCOPE(&ui, nav_str("start")) {
-          chosen = dialog_box(&ui, w, h, S("Menu"), S(""), system_entries, COUNTOF(system_entries));
+          chosen = dialog_box(&ui, w, h, S(""), S(""), system_entries, COUNTOF(system_entries));
         }
       if (modal.kind == MODAL_PORT)
         NAV_SCOPE(&ui, nav_str("port")) { chosen = port_dialog(&ui, w, h); }
       if (modal.kind == MODAL_CORES && page >= 1)
         NAV_SCOPE(&ui, nav_str("cores")) { chosen = core_dialog(&ui, w, h, &categories[page - 1]); }
-      nav_set_inert(&ui, false);
+      nav_set_inert(&ui, power_menu.shown);
       if (failure.shown)
         NAV_SCOPE(&ui, nav_str("failure")) { chosen = failure_dialog(&ui, w, h); }
     }
+    nav_set_inert(&ui, false);
+    if (power_menu.shown)
+      NAV_SCOPE(&ui, nav_str("power key")) {
+        chosen = dialog_box(&ui, w, h, S(""), S(""), power_entries, POWER_ENTRIES);
+      }
     animating = nav_end(&ui, RING, 2);
     if (paused) {
       front->in_settings = in_settings;
