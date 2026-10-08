@@ -132,10 +132,11 @@ void power_init(void) {
   gpu_count = read_steps("/sys/class/devfreq/*.gpu/available_frequencies", gpu_steps);
   brightness_max = read_long("/sys/class/backlight/*/max_brightness");
   brightness = read_long("/sys/class/backlight/*/brightness");
-  FILE *f = config_file("-brightness", "r");
+  /* The user's level as save-settings kept it (boot.cmd lights the panel brighter) */
+  FILE *f = fopen("/uboot/settings.txt", "r");
   long saved;
   if (f != NULL) {
-    if (fscanf(f, "%ld", &saved) == 1 && brightness_max > 0)
+    if (fscanf(f, "brightness=%ld", &saved) == 1 && brightness_max > 0)
       request("brightness", brightness = CLAMP(saved, 1, brightness_max));
     fclose(f);
   }
@@ -209,15 +210,15 @@ void power_step(int row, int by) {
   case POWER_BRIGHTNESS: {
     if (brightness_max <= 0)
       return;
-    /* Tenths, never dark */
-    const long tenth = (brightness * 10 + brightness_max / 2) / brightness_max;
-    brightness = brightness_max * CLAMP(tenth + by, 1, 10) / 10;
-    request("brightness", brightness);
-    FILE *f = config_file("-brightness", "w");
-    if (f != NULL) {
-      fprintf(f, "%ld\n", brightness);
-      fclose(f);
-    }
+    static uint64_t last;
+    static int run;
+    const uint64_t now = ms_now();
+    run = now - last < 150 ? run + 1 : 0;
+    last = now;
+    const long steps = 100;
+    const long step = (brightness * steps + brightness_max / 2) / brightness_max;
+    brightness = brightness_max * CLAMP(step + by * (1 << MIN(run / 8, 3)), 1, steps) / steps;
+    request("brightness", brightness); /* saved by save-settings, at shutdown and suspend */
     return;
   }
   }

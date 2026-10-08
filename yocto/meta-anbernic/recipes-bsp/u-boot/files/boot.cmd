@@ -34,6 +34,8 @@ if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} settings.txt; then
 	env import -t ${scriptaddr} ${filesize} brightness
 fi
 if test -n "${brightness}"; then
+	# The LED driver doesn't start below 5%: at least 10%, the launcher sets the user's level after
+	if test ${brightness} -lt 250; then setenv brightness 250; fi
 	fdt addr ${fdt_addr_r}
 	fdt resize
 	fdt set /backlight default-brightness-level <${brightness}>
