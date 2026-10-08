@@ -28,22 +28,31 @@ load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 setenv fdtfile sun50i-h700-anbernic-rg35xx-sp.dtb
 if gpio input PE6; then setenv fdtfile sun50i-h700-anbernic-rg35xx-sp-v2-panel.dtb; fi
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
-# The brightness it was left at (save-settings), so the backlight comes up at it (kernel patch 0054)
+fdt addr ${fdt_addr_r}
+fdt resize
+# brightness=<level>, from save-settings
 setenv brightness
-if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} settings.txt; then
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} brightness.txt; then
 	env import -t ${scriptaddr} ${filesize} brightness
 fi
+# splash=<file>, optional
+setenv splash splash.lz4
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} splash.txt; then
+	env import -t ${scriptaddr} ${filesize} splash
+fi
 if test -n "${brightness}"; then
-	# The LED driver doesn't start below 5%: at least 10%, the launcher sets the user's level after
+	# The LED doesn't start below 5%; the launcher sets the real level
 	if test ${brightness} -lt 250; then setenv brightness 250; fi
-	fdt addr ${fdt_addr_r}
-	fdt resize
 	fdt set /backlight default-brightness-level <${brightness}>
 fi
-# The kernel shows its splash (kernel patch 0052) until Weston takes the display over. With
-# /uboot/fbdev present: the kernel console (fbcon) on the LCD instead.
+# Splash for the kernel in reserved memory; /uboot/fbdev: console instead
 setenv client splash
-if test -e ${devtype} ${devnum}:${distro_bootpart} fbdev; then setenv client fbdev; fi
+if test -e ${devtype} ${devnum}:${distro_bootpart} fbdev; then
+	setenv client fbdev
+elif load ${devtype} ${devnum}:${distro_bootpart} ${ramdisk_addr_r} ${splash} && unlz4 ${ramdisk_addr_r} 0x43800000 0x200000; then
+	fdt rsvmem add 0x43800000 0x${filesize}
+	fdt set /chosen splash <0x43800000 0x${filesize}>
+fi
 # ro: slots are squashfs (an ext4 slot still works, init remounts it rw)
 setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 drm_client_lib.active=${client} ab=${bslot}
 booti ${kernel_addr_r} - ${fdt_addr_r}

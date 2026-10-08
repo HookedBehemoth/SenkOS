@@ -1,7 +1,6 @@
 #!/bin/sh
-# The brightness for the next boot, at shutdown (stop-all) and suspend: U-Boot lights the backlight
-# at it (boot.cmd, at least 10%), the launcher at the level itself. FAT, so only written when changed.
-f=/uboot/settings.txt
+# Brightness for the next boot (boot.cmd), only written when changed
+f=/uboot/brightness.txt
 read -r b < /sys/class/backlight/backlight/brightness || exit 0
 [ "$b" -gt 0 ] || exit 0	# never boot to a dark panel
 [ "$(cat $f 2>/dev/null)" = "brightness=$b" ] && exit 0

@@ -132,8 +132,8 @@ void power_init(void) {
   gpu_count = read_steps("/sys/class/devfreq/*.gpu/available_frequencies", gpu_steps);
   brightness_max = read_long("/sys/class/backlight/*/max_brightness");
   brightness = read_long("/sys/class/backlight/*/brightness");
-  /* The user's level as save-settings kept it (boot.cmd lights the panel brighter) */
-  FILE *f = fopen("/uboot/settings.txt", "r");
+  /* boot.cmd clamps it, so set the saved level */
+  FILE *f = fopen("/uboot/brightness.txt", "r");
   long saved;
   if (f != NULL) {
     if (fscanf(f, "brightness=%ld", &saved) == 1 && brightness_max > 0)

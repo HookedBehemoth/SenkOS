@@ -3,24 +3,21 @@ From: SenkOS
 Date: Wed, 7 Oct 2026 21:38:12 +0200
 Subject: [PATCH] drm/clients: add a boot splash client
 
-Shows one built-in image until userspace takes over the display, from a
-work item: lighting a SPI-initialised panel sleeps ~250 ms, and doing
-that from the driver's bind held up every later probe and the root
-mount. A compositor that keeps the mode takes the lit panel over without
-a modeset.
+Shows an image the bootloader left in memory until userspace takes
+over. The modeset runs from a work item, so the panel's init sleeps
+don't hold up probing and the root mount.
 
 Upstream-Status: Pending
 ---
- drivers/gpu/drm/clients/Kconfig               |  21 +-
+ drivers/gpu/drm/clients/Kconfig               |  19 ++-
  drivers/gpu/drm/clients/Makefile              |   1 +
  drivers/gpu/drm/clients/drm_client_internal.h |   6 +
  drivers/gpu/drm/clients/drm_client_setup.c    |   7 +
- drivers/gpu/drm/clients/drm_splash.c          | 211 ++++++++++++++++++
- 5 files changed, 245 insertions(+), 1 deletion(-)
- create mode 100644 drivers/gpu/drm/clients/drm_splash.c
+ drivers/gpu/drm/clients/drm_splash.c          | 207 ++++++++++++++++++++++++++
+ 5 files changed, 239 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/gpu/drm/clients/Kconfig b/drivers/gpu/drm/clients/Kconfig
-index 6096c623d..875bf584d 100644
+index 6096c62..8ec4a5b 100644
 --- a/drivers/gpu/drm/clients/Kconfig
 +++ b/drivers/gpu/drm/clients/Kconfig
 @@ -13,6 +13,7 @@ config DRM_CLIENT_SELECTION
@@ -31,7 +28,7 @@ index 6096c623d..875bf584d 100644
  	select DRM_CLIENT_LIB if DRM_FBDEV_EMULATION
  	help
  	  Drivers that support in-kernel DRM clients have to select this
-@@ -85,10 +86,21 @@ config DRM_CLIENT_LOG
+@@ -85,10 +86,19 @@ config DRM_CLIENT_LOG
  	  If you only need logs, but no terminal, or if you prefer userspace
  	  terminal, say "Y".
  
@@ -40,11 +37,9 @@ index 6096c623d..875bf584d 100644
 +	depends on DRM_CLIENT_SELECTION
 +	select DRM_CLIENT
 +	select DRM_CLIENT_SETUP
-+	select FW_LOADER
 +	help
-+	  Shows splash.bin from the firmware (see drm_splash.c for the format) on
-+	  every display, without a console. The first modeset runs asynchronously,
-+	  so slow panels don't hold up the boot.
++	  Shows the image the bootloader left in memory until userspace
++	  takes over.
 +
  choice
  	prompt "Default DRM Client"
@@ -54,7 +49,7 @@ index 6096c623d..875bf584d 100644
  	default DRM_CLIENT_DEFAULT_FBDEV
  	help
  	  Selects the default drm client.
-@@ -111,6 +123,12 @@ config DRM_CLIENT_DEFAULT_LOG
+@@ -111,6 +121,12 @@ config DRM_CLIENT_DEFAULT_LOG
  	  screen, but doesn't implement a full terminal. For that you will need
  	  a userspace terminal using drm/kms.
  
@@ -67,7 +62,7 @@ index 6096c623d..875bf584d 100644
  endchoice
  
  config DRM_CLIENT_DEFAULT
-@@ -118,6 +136,7 @@ config DRM_CLIENT_DEFAULT
+@@ -118,6 +134,7 @@ config DRM_CLIENT_DEFAULT
         depends on DRM_CLIENT
         default "fbdev" if DRM_CLIENT_DEFAULT_FBDEV
         default "log" if DRM_CLIENT_DEFAULT_LOG
@@ -76,7 +71,7 @@ index 6096c623d..875bf584d 100644
  
  endmenu
 diff --git a/drivers/gpu/drm/clients/Makefile b/drivers/gpu/drm/clients/Makefile
-index c16addbc3..3ab952926 100644
+index c16addb..3ab9529 100644
 --- a/drivers/gpu/drm/clients/Makefile
 +++ b/drivers/gpu/drm/clients/Makefile
 @@ -4,5 +4,6 @@ subdir-ccflags-y += -I$(src)/..
@@ -87,7 +82,7 @@ index c16addbc3..3ab952926 100644
  drm_client_lib-$(CONFIG_DRM_FBDEV_EMULATION) += drm_fbdev_client.o
  obj-$(CONFIG_DRM_CLIENT_LIB) += drm_client_lib.o
 diff --git a/drivers/gpu/drm/clients/drm_client_internal.h b/drivers/gpu/drm/clients/drm_client_internal.h
-index 6dc078bf6..3d66cf065 100644
+index 6dc078b..3d66cf0 100644
 --- a/drivers/gpu/drm/clients/drm_client_internal.h
 +++ b/drivers/gpu/drm/clients/drm_client_internal.h
 @@ -22,4 +22,10 @@ void drm_log_register(struct drm_device *dev);
@@ -102,7 +97,7 @@ index 6dc078bf6..3d66cf065 100644
 +
  #endif
 diff --git a/drivers/gpu/drm/clients/drm_client_setup.c b/drivers/gpu/drm/clients/drm_client_setup.c
-index 515aceac2..ceb4c2c95 100644
+index 515acea..ceb4c2c 100644
 --- a/drivers/gpu/drm/clients/drm_client_setup.c
 +++ b/drivers/gpu/drm/clients/drm_client_setup.c
 @@ -56,6 +56,13 @@ void drm_client_setup(struct drm_device *dev, const struct drm_format_info *form
@@ -121,28 +116,24 @@ index 515aceac2..ceb4c2c95 100644
  }
 diff --git a/drivers/gpu/drm/clients/drm_splash.c b/drivers/gpu/drm/clients/drm_splash.c
 new file mode 100644
-index 000000000..af15bc787
+index 0000000..eda5d58
 --- /dev/null
 +++ b/drivers/gpu/drm/clients/drm_splash.c
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,207 @@
 +// SPDX-License-Identifier: GPL-2.0 or MIT
 +/*
-+ * Boot splash: shows one image from the firmware (built in with CONFIG_EXTRA_FIRMWARE, so
-+ * it works before the root fs is mounted) until userspace takes over the display.
++ * Boot splash until userspace takes over. The bootloader reserves the image and puts
++ * <address size> in /chosen/splash; freed once drawn. Modeset from a work item, so slow
++ * panels don't hold up probing.
 + *
-+ * The modeset runs from a work item: lighting a panel can sleep for hundreds of
-+ * milliseconds (power, reset, init sequence), and done from the driver's bind it would
-+ * hold up every later probe and the root mount. A compositor that keeps the mode takes
-+ * over the lit panel without a modeset.
-+ *
-+ * splash.bin, little endian: u16 width, u16 height, u32 background (XRGB8888), then
-+ * width * height XRGB8888 pixels, drawn centred on the background. No compression: the
-+ * kernel image is compressed as a whole.
++ * Format, little endian: u16 width, u16 height, u32 background, then XRGB8888 pixels.
 + */
 +
-+#include <linux/firmware.h>
++#include <linux/io.h>
 +#include <linux/iosys-map.h>
++#include <linux/mm.h>
 +#include <linux/module.h>
++#include <linux/of.h>
 +#include <linux/workqueue.h>
 +
 +#include <drm/drm_client.h>
@@ -151,10 +142,6 @@ index 000000000..af15bc787
 +#include <drm/drm_print.h>
 +
 +#include "drm_client_internal.h"
-+
-+static char *file = "splash.bin";
-+module_param(file, charp, 0444);
-+MODULE_PARM_DESC(file, "Splash image in the firmware search path, default splash.bin");
 +
 +struct drm_splash_header {
 +	__le16 width, height;
@@ -174,9 +161,8 @@ index 000000000..af15bc787
 +	return container_of(client, struct drm_splash, client);
 +}
 +
-+static void drm_splash_draw(struct drm_client_buffer *buffer, const struct firmware *fw)
++static void drm_splash_draw(struct drm_client_buffer *buffer, const struct drm_splash_header *hdr)
 +{
-+	const struct drm_splash_header *hdr = (const void *)fw->data;
 +	const u32 *src = (const u32 *)(hdr + 1);
 +	struct drm_framebuffer *fb = buffer->fb;
 +	u32 bg = le32_to_cpu(hdr->background);
@@ -239,16 +225,19 @@ index 000000000..af15bc787
 +	const struct drm_splash_header *hdr;
 +	struct drm_client_buffer *buffer;
 +	struct drm_mode_set *mode_set;
-+	const struct firmware *fw;
 +	unsigned int n = 0;
++	unsigned long pfn;
++	u32 reg[2];
 +	int ret;
 +
-+	if (request_firmware(&fw, file, dev->dev))
++	if (of_property_read_u32_array(of_chosen, "splash", reg, 2))
 +		return;
-+	hdr = (const void *)fw->data;
-+	if (fw->size < sizeof(*hdr) ||
-+	    fw->size < sizeof(*hdr) + 4 * le16_to_cpu(hdr->width) * le16_to_cpu(hdr->height)) {
-+		drm_warn(dev, "splash: %s is truncated\n", file);
++	hdr = memremap(reg[0], reg[1], MEMREMAP_WB);
++	if (!hdr)
++		return;
++	if (reg[1] < sizeof(*hdr) ||
++	    reg[1] < sizeof(*hdr) + 4ul * le16_to_cpu(hdr->width) * le16_to_cpu(hdr->height)) {
++		drm_warn(dev, "splash: image truncated\n");
 +		goto out;
 +	}
 +
@@ -268,7 +257,7 @@ index 000000000..af15bc787
 +						       DRM_FORMAT_XRGB8888);
 +		if (IS_ERR(buffer))
 +			continue;
-+		drm_splash_draw(buffer, fw);
++		drm_splash_draw(buffer, hdr);
 +		mode_set->fb = buffer->fb;
 +		splash->buffers[splash->n_buffers++] = buffer;
 +	}
@@ -278,7 +267,9 @@ index 000000000..af15bc787
 +	if (splash->n_buffers && drm_client_modeset_commit(client))
 +		drm_splash_free_buffers(splash);
 +out:
-+	release_firmware(fw);
++	memunmap((void *)hdr);
++	for (pfn = PFN_DOWN(reg[0]); pfn < PFN_DOWN(reg[0] + reg[1]); pfn++)
++		free_reserved_page(pfn_to_page(pfn));
 +}
 +
 +static void drm_splash_client_unregister(struct drm_client_dev *client)
