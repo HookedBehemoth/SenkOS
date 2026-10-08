@@ -87,13 +87,19 @@ SoC, so:
 | Where | What |
 |---|---|
 | TF-A `0002` | decides, arms the AXP717 (IRQs: power key only; maps `0x28`/`0x29` = DCDC1, DCDC2, DCDC4 / CLDO3; `0x25` = `0x2d`), passes `poweroff` and a DRAM buffer to the stub. On the warm entry after a power cut: the other cores' entry points (RVBAR), GIC and security setup again, PMIC IRQs and sleep registers back |
-| stub `stub-0001` | after self-refresh: the words PHY training overwrites to that buffer, RTC handshake, `0x25` = `0x6d` over R_I2C. Still powered 2 s later: handshake cleared, WFI as before |
-| U-Boot `0009` | SPL: RTC magic set → DRAM init in resume mode (no SDRAM init, no size probe), the saved words back, jump to the warm entry. Every cold boot opens the RTC bus gate (R_PRCM `0x20c`) and releases the DRAM pad hold |
+| stub `stub-0001` | the words PHY training overwrites to that buffer and the sum of BL31's 256 KiB, self-refresh, the clocks down as for WFI plus stock's super standby step (AHB and R_PRCM buses to the 16 MHz RC oscillator, RTC `0x160`: the 24 MHz oscillator on the hardware's request only), RTC handshake, `0x25` = `0x6d` over R_I2C. Still powered 2-3 s later (counted in RTC seconds): clocks back, handshake cleared, WFI as before |
+| U-Boot `0009` | SPL: RTC magic set → DRAM init in resume mode (no SDRAM init, no size probe), the saved words back, BL31's sum checked (mismatch: boot instead, like stock's "dram crc error" but without the hang), jump to the warm entry. Every cold boot opens the RTC bus gate (R_PRCM `0x20c`), releases the DRAM pad hold and puts RTC `0x160` and the R_PRCM bus clocks back |
 | Linux `0044`-`0051` | `sun50i_h616_standby.c`: saves the CCU (with the MBUS master gates at `0x804`: without them DMA, so audio, stalls), R_CCU and the PPU power gates, the NMI controller (sun9i layout: `0x04` enable, `0x08` pending), pin controllers, system control, DMA, timers/watchdog and PWM at the end of suspend and writes back what differs; the rest in the drivers: IOMMU, thermal sensors, DE33 mixer and plane mapping, DE33 clocks, TCON TOP, TCON dot clock, musb PHY |
 
 RTC handshake (general purpose registers, `0x07000100`): `0x100` = `SSTB` (stub: resume pending) → `SSTR` (SPL:
-resumed) → `SSTL` (TF-A: Linux, restore) → 0. `0x104` warm entry, `0x114` DRAM config, `0x118` the buffer. SPL clears
-`SSTB` before trying, so a resume that hangs is followed by a cold boot.
+resumed) → `SSTL` (TF-A: Linux, restore) → 0. `0x104` warm entry, `0x114` DRAM config, `0x118` the buffer, `0x11c` the sum. SPL replaces
+`SSTB` with `SSTI` before trying, so a resume that hangs is followed by a cold boot. When it gives up (DRAM
+init failed: `SSTD`; BL31's sum differs: `SSTC`) it has the AXP717 restart (REG27 bit 1: rails off and on,
+its registers reset) rather than boot on: the rails Linux switched off to suspend would still be off, and
+U-Boot would misread the PE6 panel strap (a black screen). At the next boot `anbernic.init` reports any of
+`SSTI`, `SSTR`, `SSTL`, `SSTD`, `SSTC` (kernel log, `/run/sleep-failed`) and clears it; the launcher then
+offers light sleep: `/data/OS/config/light-sleep` (sysd's `sleep light|deep`, Settings → Debug → Deep
+sleep) keeps the lid armed in `suspend`, so TF-A never picks super standby.
 
 DRAM pad hold, RTC `0x1f4` bit 0 (`VDDOFF_GATING_SOF`): **clear holds the pads, set releases them**, the opposite
 of the H616 manual. Clearing it with DRAM running hangs the SoC; left clear, DRAM init fails on every boot (SPL

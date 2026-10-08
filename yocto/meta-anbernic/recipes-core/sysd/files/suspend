@@ -6,6 +6,7 @@
 # has to wake us: then only the power key can, the lid can't (a SoC GPIO). With "lid" (just
 # closed) we sleep with the lid and an RTC alarm armed instead, so opening it wakes us; when
 # the alarm fires first, sysd, the lid still closed, calls us again without: super standby.
+# With /data/OS/config/light-sleep (sysd's "sleep light") the lid stays armed: never super standby.
 LID_MINUTES=30
 lid=/sys/devices/platform/gpio-keys-lid/power/wakeup
 for r in /sys/class/rtc/rtc*; do
@@ -13,7 +14,9 @@ for r in /sys/class/rtc/rtc*; do
 done
 
 [ -n "$alarm" ] && echo 0 > $alarm
-if [ "$1" = lid ]; then
+if [ -e /data/OS/config/light-sleep ]; then
+	echo enabled > $lid
+elif [ "$1" = lid ]; then
 	echo enabled > $lid
 	[ -n "$alarm" ] && echo +$((LID_MINUTES * 60)) > $alarm
 else

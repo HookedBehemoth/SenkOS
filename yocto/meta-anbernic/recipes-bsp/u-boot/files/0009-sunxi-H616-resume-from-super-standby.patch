@@ -4,22 +4,30 @@ Subject: [PATCH] sunxi: H616: resume from super standby
 TF-A can suspend with the SoC powered off: DRAM in self-refresh, its pads held in the RTC
 domain, the PMIC cutting VDD-CPU, VDD-SYS and VCC-IO. The wake-up is a cold boot. With the
 resume magic in the RTC, SPL re-initialises DRAM without the SDRAM init and size probe, puts
-back the words PHY training overwrote (TF-A saved them) and jumps to TF-A's warm boot entry.
+back the words PHY training overwrote (TF-A saved them) and jumps to TF-A's warm boot entry,
+if BL31's memory still sums to what TF-A left in the RTC (the stock boot0's "dram crc").
+When DRAM init or that check fails, the AXP717 restarts (rails off and on, its registers
+reset): booting on would find the rails Linux switched off to suspend still off, and the
+PE6 panel strap misread. The RTC register then says why for the OS to report: "SSTD" (DRAM
+init), "SSTC" (the sum), or "SSTI", left from the start, for a resume that hung.
 
 Every cold boot also releases the DRAM pad hold (bit 0 of RTC 0x1f4; set releases, contrary
 to the H616 manual: clearing it with DRAM running hangs the SoC), which lives in the RTC
 domain: a resume that died with it taken would leave DRAM unusable on every later boot. The
 RTC's bus clock gate is opened first, closed its registers read 0 and ignore writes. The
-resume flag is in .data, SPL's BSS being in the DRAM this code brings up.
+resume flag is in .data, SPL's BSS being in the DRAM this code brings up. Super standby also
+leaves the 24 MHz oscillator to the hardware's request (RTC 0x160) and the R_PRCM buses on
+the internal RC oscillator; every cold boot puts them back.
 
 Upstream-Status: Pending
 
 ---
+
 diff --git a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
-index 315533f8..85308060 100644
+index 315533f..d93d77a 100644
 --- a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
 +++ b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
-@@ -178,4 +178,17 @@ static inline int ns_to_t(const struct dram_para *para, int nanoseconds)
+@@ -178,4 +178,24 @@ static inline int ns_to_t(const struct dram_para *para, int nanoseconds)
  void mctl_set_timing_params(const struct dram_para *para);
  void mctl_set_timing_params_lpddr3(const struct dram_para *para);
  
@@ -31,14 +39,21 @@ index 315533f8..85308060 100644
 +#define RTC_RESUME_ENTRY	0x104	/* TF-A warm boot entry */
 +#define RTC_RESUME_DRAM_CFG	0x114	/* cols | rows << 8 | ranks << 16 | full width << 24 */
 +#define RTC_RESUME_SAVE		0x118	/* DRAM copy of the words PHY training overwrites */
++#define RTC_RESUME_SUM		0x11c	/* 32-bit word sum of RESUME_SUM_BYTES at the start of DRAM */
++#define RTC_DCXO_CTRL		0x160	/* bit 31: the 24 MHz oscillator on request only, bit 1: on */
 +#define RTC_DRAM_PAD_HOLD	0x1f4	/* bit 0 clear: DRAM pads held (the manual says set) */
 +#define RESUME_MAGIC		0x53535442	/* "SSTB" */
 +#define RESUMED_MAGIC		0x53535452	/* "SSTR" */
++/* Left for the next boot (the OS reports them) should the resume not get as far as TF-A */
++#define RESUME_TRYING		0x53535449	/* "SSTI": a hang */
++#define RESUME_FAIL_INIT	0x53535444	/* "SSTD": DRAM init failed */
++#define RESUME_FAIL_SUM		0x53535443	/* "SSTC": BL31's sum differs */
 +#define RESUME_SAVE_BYTES	0x140	/* per half */
++#define RESUME_SUM_BYTES	0x40000	/* TF-A's BL31 */
 +
  #endif /* _SUNXI_DRAM_SUN50I_H616_H */
 diff --git a/arch/arm/mach-sunxi/Kconfig b/arch/arm/mach-sunxi/Kconfig
-index 470aa043..2b1c9718 100644
+index 470aa04..0c1bdec 100644
 --- a/arch/arm/mach-sunxi/Kconfig
 +++ b/arch/arm/mach-sunxi/Kconfig
 @@ -715,6 +715,14 @@ config SUNXI_DRAM_A523_LPDDR4
@@ -47,7 +62,7 @@ index 470aa043..2b1c9718 100644
  
 +config SUNXI_SUPER_STANDBY
 +	bool "Resume from super standby"
-+	depends on DRAM_SUN50I_H616
++	depends on DRAM_SUN50I_H616 && AXP717_POWER
 +	help
 +	  TF-A can suspend with the SoC powered off and only DRAM in self-refresh. Waking up is
 +	  a cold boot; SPL then re-initialises DRAM without clearing it and returns to TF-A, as
@@ -57,18 +72,26 @@ index 470aa043..2b1c9718 100644
  	bool "Also support LPDDR3 boards, told apart by the boot0 DRAM straps"
  	depends on DRAM_SUN50I_H616 && SUNXI_DRAM_H616_LPDDR4 && AXP717_POWER
 diff --git a/arch/arm/mach-sunxi/dram_sun50i_h616.c b/arch/arm/mach-sunxi/dram_sun50i_h616.c
-index e94fcf82..7e84c944 100644
+index e94fcf8..b15193e 100644
 --- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
 +++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,8 @@
   * (C) Copyright 2020 Jernej Skrabec <jernej.skrabec@siol.net>
   *
   */
 +#include <cpu_func.h>
++#include <hang.h>
  #include <init.h>
  #include <log.h>
  #include <asm/io.h>
-@@ -25,6 +26,7 @@
+@@ -19,12 +21,14 @@
+ #include <asm/arch/dram.h>
+ #include <asm/arch/dram_dw_helpers.h>
+ #include <asm/arch/cpu.h>
++#include <asm/arch/pmic_bus.h>
+ #include <asm/arch/prcm.h>
+ #include <asm/gpio.h>
+ #include <axp_pmic.h>
  #include <sunxi_gpio.h>
  #include <linux/bitops.h>
  #include <linux/delay.h>
@@ -76,7 +99,7 @@ index e94fcf82..7e84c944 100644
  
  enum {
  	MBUS_QOS_LOWEST = 0,
-@@ -63,6 +65,9 @@ static void mbus_configure_port(u8 port,
+@@ -63,6 +67,9 @@ static void mbus_configure_port(u8 port,
  	mbus_configure_port(port, true, priority, \
  			    MBUS_QOS_ ## qos, 0, acs, bwl0, bwl1, bwl2)
  
@@ -86,7 +109,7 @@ index e94fcf82..7e84c944 100644
  static void mctl_set_master_priority(void)
  {
  	struct sunxi_mctl_com_reg * const mctl_com =
-@@ -1054,6 +1059,10 @@ static bool mctl_phy_init(const struct dram_para *para,
+@@ -1054,6 +1061,10 @@ static bool mctl_phy_init(const struct dram_para *para,
  	writel(0, &mctl_ctl->swctl);
  	clrbits_le32(&mctl_ctl->dfimisc, 0x20);
  
@@ -97,7 +120,7 @@ index e94fcf82..7e84c944 100644
  	clrbits_le32(&mctl_ctl->pwrctl, 0x20);
  	writel(1, &mctl_ctl->swctl);
  	mctl_await_completion(&mctl_ctl->swstat, 1, 1);
-@@ -1288,6 +1297,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
+@@ -1288,6 +1299,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
  	else
  		mctl_set_timing_params(para);
  
@@ -108,11 +131,25 @@ index e94fcf82..7e84c944 100644
  	writel(0, &mctl_ctl->pwrctl);
  
  	setbits_le32(&mctl_ctl->dfiupd[0], BIT(31) | BIT(30));
-@@ -1399,6 +1412,52 @@ static bool dram_straps_lpddr3(void)
+@@ -1399,6 +1414,71 @@ static bool dram_straps_lpddr3(void)
  }
  #endif
  
 +#ifdef CONFIG_SUNXI_SUPER_STANDBY
++/*
++ * A resume that can't go on: the rails Linux switched off to suspend are still off, a boot from
++ * here would find the board half powered (the PE6 panel strap reads low). The AXP717 restarts
++ * instead (REG27 bit 1: rails off and on, its registers back to their defaults): a real cold boot.
++ */
++static void __noreturn resume_abandon(const char *why, u32 cookie)
++{
++	printf("resume: %s, restarting\n", why);
++	writel(cookie, SUNXI_RTC_BASE + RTC_RESUME_MAGIC);
++	pmic_bus_init();
++	pmic_bus_setbits(0x27, BIT(1));
++	hang();
++}
++
 +/*
 + * Resume from super standby (docs/suspend.md): TF-A put DRAM into self-refresh, held the DRAM
 + * pads in the RTC domain and had the PMIC cut the SoC's power. The PMIC brought it back and the
@@ -132,25 +169,30 @@ index e94fcf82..7e84c944 100644
 +		.bus_full_width = (cfg >> 24) & 1,
 +	};
 +	unsigned long half;
++	u32 sum = 0;
++	const u32 *p;
 +
 +	/* One shot: should this resume hang, the next boot is a cold one */
-+	writel(0, rtc + RTC_RESUME_MAGIC);
++	writel(RESUME_TRYING, rtc + RTC_RESUME_MAGIC);
 +
 +	setbits_le32(prcm + CCU_PRCM_RES_CAL_CTRL, BIT(8));
 +	clrbits_le32(prcm + CCU_PRCM_OHMS240, 0x3f);
 +
 +	dram_resuming = true;
-+	if (!mctl_core_init(para, &config)) {
-+		dram_resuming = false;
-+		printf("resume failed, booting\n");
-+		return;
-+	}
++	if (!mctl_core_init(para, &config))
++		resume_abandon("DRAM init failed", RESUME_FAIL_INIT);
 +	mctl_set_master_priority();
 +
 +	/* PHY training wrote patterns at the start of each half; TF-A saved those words */
 +	half = mctl_calc_size(&config) / 2;
 +	memcpy((void *)CFG_SYS_SDRAM_BASE, save, RESUME_SAVE_BYTES);
 +	memcpy((void *)(CFG_SYS_SDRAM_BASE + half), save + RESUME_SAVE_BYTES / 4, RESUME_SAVE_BYTES);
++
++	/* What we return to must be what TF-A left: else a cold boot, not a crash */
++	for (p = (const u32 *)CFG_SYS_SDRAM_BASE; p < (const u32 *)(CFG_SYS_SDRAM_BASE + RESUME_SUM_BYTES); p++)
++		sum += *p;
++	if (sum != readl(rtc + RTC_RESUME_SUM))
++		resume_abandon("DRAM sum mismatch", RESUME_FAIL_SUM);
 +
 +	writel(RESUMED_MAGIC, rtc + RTC_RESUME_MAGIC);
 +	icache_disable();
@@ -161,13 +203,18 @@ index e94fcf82..7e84c944 100644
  unsigned long sunxi_dram_init(void)
  {
  	void *const prcm = (void *)SUNXI_PRCM_BASE;
-@@ -1414,6 +1473,18 @@ unsigned long sunxi_dram_init(void)
+@@ -1414,6 +1494,23 @@ unsigned long sunxi_dram_init(void)
  	}
  #endif
  
 +#ifdef CONFIG_SUNXI_SUPER_STANDBY
 +	/* The RTC's bus clock gate (R_PRCM): closed, its registers read 0 and ignore writes */
 +	setbits_le32(SUNXI_PRCM_BASE + 0x20c, BIT(0));
++	/* Super standby leaves the 24 MHz oscillator to the hardware's request and the R_PRCM
++	 * buses on the internal RC oscillator: back to the cold boot values */
++	clrsetbits_le32(SUNXI_RTC_BASE + RTC_DCXO_CTRL, BIT(31), BIT(1));
++	clrbits_le32(SUNXI_PRCM_BASE + 0x000, 0x3 << 24);
++	clrbits_le32(SUNXI_PRCM_BASE + 0x010, 0x3 << 24);
 +	if (readl(SUNXI_RTC_BASE + RTC_RESUME_MAGIC) == RESUME_MAGIC)
 +		dram_resume(p);
 +	/*

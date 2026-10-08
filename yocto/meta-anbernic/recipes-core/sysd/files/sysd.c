@@ -38,6 +38,7 @@
 #define DROPBEAR "/etc/init.d/dropbear"
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
+#define LIGHT_SLEEP "/data/OS/config/light-sleep"
 #define ARGV(...) ((const char *const[]){__VA_ARGS__, NULL})
 
 enum { MAXDEV = 16, MAXJOB = 8, MAXWORDS = 8 };
@@ -67,6 +68,9 @@ static const struct cmd {
 	{"ssh off", NULL, {ARGV(DROPBEAR, "stop"), ARGV("touch", SSH_OFF)}},
 	{"ssh all", NULL, {ARGV("touch", SSH_ALL), ARGV(DROPBEAR, "restart")}},
 	{"ssh usb", NULL, {ARGV("rm", "-f", SSH_ALL), ARGV(DROPBEAR, "restart")}},
+	/* `suspend` never powers the SoC off while LIGHT_SLEEP is there */
+	{"sleep light", NULL, {ARGV("touch", LIGHT_SLEEP)}},
+	{"sleep deep", NULL, {ARGV("rm", "-f", LIGHT_SLEEP)}},
 };
 
 /* What runs for a client, which waits for the reply */

@@ -8,6 +8,23 @@
 # dmesg.sh (S38) wrote the boot's kernel log anew, as root; /var/log is the card's (weston.init)
 chown player:player /var/log/dmesg
 
+# A super standby resume that didn't make it back (docs/suspend.md): U-Boot's SPL left why in the
+# RTC and restarted. The launcher asks whether to sleep lighter from now on.
+case $(devmem 0x07000100) in
+0x53535443) why="DRAM contents changed (SSTC)" ;;
+0x53535444) why="DRAM init failed (SSTD)" ;;
+0x53535449) why="hung in SPL (SSTI)" ;;
+0x53535452) why="hung in TF-A (SSTR)" ;;
+0x5353544C) why="hung in Linux (SSTL)" ;;
+*) why= ;;
+esac
+if [ -n "$why" ]; then
+	devmem 0x07000100 32 0
+	echo "anbernic: super standby resume failed: $why" > /dev/kmsg
+	echo "$why" > /run/sleep-failed
+	chown shell /run/sleep-failed
+fi
+
 # U-Boot armed the watchdog, sunxi_wdt disarmed it at probe; keep one running from here.
 # `ab suspend`-style callers must stop this first (SIGTERM = magic close).
 watchdog -T 16 -t 4 /dev/watchdog

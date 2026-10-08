@@ -2,14 +2,18 @@ From: SenkOS
 Subject: [PATCH] super standby: let the PMIC cut the SoC's power
 
 When BL31 asks for it (params->poweroff), save the words PHY training overwrites to DRAM
-(params->save_addr), leave SPL the resume entry, DRAM config and that buffer in the RTC,
-and set the AXP717's auto sleep bit; BL31 armed the rest. Waking up is a cold boot, SPL
-brings DRAM back and jumps to the warm entry. If the power is still on 2 s later, the stub
-clears the handshake and sleeps in WFI as before.
+(params->save_addr) and sum BL31's 256 KiB, leave SPL the resume entry, DRAM config, that
+buffer and the sum in the RTC, and set the AXP717's auto sleep bit; BL31 armed the rest.
+Before that, as the stock standby program does: AHB and the R_PRCM buses to the internal
+RC oscillator, the 24 MHz oscillator to the hardware's clock request, so it stops with the
+SoC. Waking up is a cold boot, SPL brings DRAM back and jumps to the warm entry. If the
+power is still on 2-3 s later (RTC seconds: the arch timer may have stopped with the
+oscillator), the stub puts the clocks back, clears the handshake and sleeps in WFI as before.
 
 Upstream-Status: Pending
 
 ---
+
 diff --git a/Makefile b/Makefile
 index 0aeec2f..05bf6ab 100644
 --- a/Makefile
@@ -23,11 +27,67 @@ index 0aeec2f..05bf6ab 100644
  	src/dram/dram_sun50i_h616.o src/dram/dram_dw_helpers.o src/dram/dram_timing.o
  
  $(SRC_DIR)/$(OUT): stub.elf
+diff --git a/src/clock.c b/src/clock.c
+index e65f76a..35b64dc 100644
+--- a/src/clock.c
++++ b/src/clock.c
+@@ -47,6 +47,51 @@ void clocks_down(void)
+ 	       PRCM_PLL_LDO_REG);
+ }
+ 
++/*
++ * Super standby, as the stock standby program does on top: AHB and the R_PRCM buses to the
++ * internal 16 MHz RC oscillator, the 24 MHz one left to the hardware's clock request, so it
++ * stops with VDD-SYS. Only R_I2C is used after this, for the PMIC.
++ */
++#define RTC_DCXO_CTRL_REG	(SUNXI_RTC_BASE + 0x160)
++#define DCXO_CLK_REQ_EN		BIT(31)
++#define DCXO_EN			BIT(1)
++#define RC16M_EN		BIT(0)
++#define CLK_SRC_RC16M		(0x2 << 24)
++#define CCU_PSI_AHB_CFG		0x510
++#define PRCM_CPUS_CFG_REG	(SUNXI_PRCM_BASE + 0x000)
++#define PRCM_APBS2_CFG_REG	(SUNXI_PRCM_BASE + 0x010)
++
++static struct {
++	u32 ahb;
++	u32 cpus;
++	u32 apbs2;
++	u32 dcxo;
++} saved_off;
++
++void clocks_off(void)
++{
++	saved_off.ahb = readl(CCU(CCU_PSI_AHB_CFG));
++	saved_off.cpus = readl(PRCM_CPUS_CFG_REG);
++	saved_off.apbs2 = readl(PRCM_APBS2_CFG_REG);
++	saved_off.dcxo = readl(RTC_DCXO_CTRL_REG);
++
++	setbits_le32(RTC_DCXO_CTRL_REG, RC16M_EN);
++	clrsetbits_le32(CCU(CCU_PSI_AHB_CFG), CLK_SRC_MASK, CLK_SRC_RC16M);
++	clrsetbits_le32(PRCM_CPUS_CFG_REG, CLK_SRC_MASK, CLK_SRC_RC16M);
++	clrsetbits_le32(PRCM_APBS2_CFG_REG, CLK_SRC_MASK, CLK_SRC_RC16M);
++	clrsetbits_le32(RTC_DCXO_CTRL_REG, DCXO_EN, DCXO_CLK_REQ_EN);
++}
++
++/* The power stayed on: the 24 MHz oscillator first, then what runs from it */
++void clocks_off_undo(void)
++{
++	writel(saved_off.dcxo, RTC_DCXO_CTRL_REG);
++	udelay(2000);
++	writel(saved_off.apbs2, PRCM_APBS2_CFG_REG);
++	writel(saved_off.cpus, PRCM_CPUS_CFG_REG);
++	writel(saved_off.ahb, CCU(CCU_PSI_AHB_CFG));
++}
++
+ /* Everything back except the CPU clock, which stays on OSC24M during DRAM init */
+ void clocks_up(void)
+ {
 diff --git a/src/main.c b/src/main.c
-index 749ed01..e4770cd 100644
+index 749ed01..29fa3b9 100644
 --- a/src/main.c
 +++ b/src/main.c
-@@ -21,7 +21,10 @@
+@@ -21,7 +21,12 @@
  #define SCR_IRQ_BIT		BIT(1)
  
  /* Memory the PHY training may overwrite, saved like the BSP does */
@@ -36,10 +96,20 @@ index 749ed01..e4770cd 100644
 +
 +#define AXP717_SLEEP_CFG	0x25
 +#define AXP717_SLEEP_CFG_GO	0x6d	/* BL31's 0x2d plus auto sleep */
++
++#define RTC_HMS_REG		(SUNXI_RTC_BASE + 0x14)	/* time of day, from the 32 kHz clock */
  
  _Static_assert(offsetof(struct sunxi_suspend_params, resume_entry) == 0x10,
  	       "start.S expects resume_entry at offset 0x10");
-@@ -91,6 +94,12 @@ static bool dram_suspend(const struct dram_config *config)
+@@ -84,6 +89,7 @@ static __attribute__((noreturn)) void resume_failed(void)
+ static u32 save_lo[SAVE_WORDS];
+ static u32 save_hi[SAVE_WORDS];
+ static unsigned long save_hi_addr;
++static u32 dram_sum;
+ 
+ static bool dram_suspend(const struct dram_config *config)
+ {
+@@ -91,6 +97,16 @@ static bool dram_suspend(const struct dram_config *config)
  
  	memcpy(save_lo, (void *)CFG_SYS_SDRAM_BASE, sizeof(save_lo));
  	memcpy(save_hi, (void *)save_hi_addr, sizeof(save_hi));
@@ -48,48 +118,64 @@ index 749ed01..e4770cd 100644
 +		memcpy((void *)(unsigned long)stub_params.save_addr, save_lo, sizeof(save_lo));
 +		memcpy((void *)(unsigned long)stub_params.save_addr + sizeof(save_lo), save_hi,
 +		       sizeof(save_hi));
++		/* SPL checks it before returning to BL31, like the stock boot0's "dram crc" */
++		for (u32 *p = (u32 *)CFG_SYS_SDRAM_BASE;
++		     p < (u32 *)(CFG_SYS_SDRAM_BASE + SUNXI_SUSPEND_SUM_BYTES); p++)
++			dram_sum += *p;
 +	}
  
  	return dram_enter_selfrefresh();
  }
-@@ -111,6 +120,28 @@ static void dram_resume(const struct dram_config *config)
+@@ -111,6 +127,40 @@ static void dram_resume(const struct dram_config *config)
  	stage(STAGE_MEM_RESTORED);
  }
  
 +/*
 + * Super standby: tell SPL how to come back, then let the PMIC cut VDD-CPU, VDD-SYS and VCC-IO
 + * (BL31 armed it). DRAM stays in self-refresh with its pads held in the RTC domain. Returns
-+ * only if the power stays on; the caller then sleeps in WFI as usual.
++ * only if the power stays on; the caller then sleeps in WFI as usual. Runs with the clocks
++ * down: no UART.
 + */
 +static void super_standby(void)
 +{
++	bool sent;
++
 +	writel((u32)stub_params.resume_entry, SUNXI_RTC_RESUME_ENTRY_REG);
 +	writel(stub_params.save_addr, SUNXI_RTC_RESUME_SAVE_REG);
 +	writel(stub_params.dram_cfg, SUNXI_RTC_RESUME_CFG_REG);
++	writel(dram_sum, SUNXI_RTC_RESUME_SUM_REG);
 +	writel(SUNXI_RESUME_MAGIC, SUNXI_RTC_RESUME_MAGIC_REG);
 +	stage(STAGE_POWEROFF);
-+	dbg_puts("stub: super standby\n");
 +
-+	if (pmic_write(AXP717_SLEEP_CFG, AXP717_SLEEP_CFG_GO))
-+		udelay(2000000);
++	clocks_off();
++	sent = pmic_write(AXP717_SLEEP_CFG, AXP717_SLEEP_CFG_GO);
++	/* The arch timer may stop with the 24 MHz oscillator: count RTC seconds */
++	for (u32 t = readl(RTC_HMS_REG), n = sent ? 3 : 0; n; ) {
++		u32 now = readl(RTC_HMS_REG);
++
++		if (now != t) {
++			t = now;
++			n--;
++		}
++	}
++	clocks_off_undo();
 +
 +	writel(0, SUNXI_RTC_RESUME_MAGIC_REG);
 +	stage(STAGE_POWEROFF_FAILED);
-+	dbg_puts("stub: still powered, sleeping in WFI\n");
 +}
 +
  void stub_main(void)
  {
  	struct dram_config config;
-@@ -148,6 +179,8 @@ void stub_main(void)
- 	}
- 
+@@ -150,6 +200,8 @@ void stub_main(void)
  	dbg_puts("stub: DRAM in self-refresh\n");
-+	if (stub_params.poweroff)
-+		super_standby();
  	stage(STAGE_CLOCKS_DOWN);
  	clocks_down();
++	if (stub_params.poweroff)
++		super_standby();
  
+ 	stage(STAGE_WFI);
+ 	wait_for_wakeup();
 diff --git a/src/pmic.c b/src/pmic.c
 new file mode 100644
 index 0000000..37ac184
@@ -148,7 +234,7 @@ index 0000000..37ac184
 +	return ok;
 +}
 diff --git a/src/stub.h b/src/stub.h
-index d28f28e..192cba2 100644
+index d28f28e..31e5aae 100644
 --- a/src/stub.h
 +++ b/src/stub.h
 @@ -22,6 +22,8 @@
@@ -160,13 +246,15 @@ index d28f28e..192cba2 100644
  
  /* RTC general purpose registers used for debugging, readable after reboot */
  #define STUB_RTC_STAGE_REG	(SUNXI_RTC_BASE + 0x10c)
-@@ -72,6 +74,9 @@ void clocks_down(void);
+@@ -71,6 +73,11 @@ void wdog_restore(void);
+ void clocks_down(void);
  void clocks_up(void);
  void cpu_clock_restore(void);
- 
++void clocks_off(void);
++void clocks_off_undo(void);
++
 +/* pmic.c */
 +bool pmic_write(u8 reg, u8 val);
-+
+ 
  /* dram_sr.c */
  bool dram_read_config(struct dram_config *config);
- u32 dram_config_word(const struct dram_config *config);

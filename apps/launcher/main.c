@@ -110,7 +110,8 @@ static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
        WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
-       SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE };
+       SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE,
+       SLEEP_LIGHT, DEEP_SLEEP };
 typedef struct {
   str label;
   str command;
@@ -198,8 +199,10 @@ static size_t storage_entries(entry *out) {
                        .checked = usb_is(1, mode_words[i]), .depth = 1};
   return n;
 }
-static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = ICON_CHECK},
-                                        {.label = S("Ignore for this app"), .action = IGNORE, .icon = ICON_EYE_OFF}};
+static const entry fail_launch_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = ICON_CHECK},
+                                            {.label = S("Ignore for this app"), .action = IGNORE, .icon = ICON_EYE_OFF}};
+static const entry fail_sleep_entries[] = {{.label = S("Use light sleep"), .action = SLEEP_LIGHT, .icon = ICON_MOON},
+                                           {.label = S("Keep deep sleep"), .action = DISMISS, .icon = ICON_CHECK}};
 /* The core picker's rows: one per core, PICK_CORE (CORES_MAX: apps.h) */
 
 /* Running (only while something is), then the categories */
@@ -243,10 +246,13 @@ static nav_id home_focus;
 /* Under the pause menu: how the last action went */
 static STRBUF(128) notice;
 static gfx_image backdrop;
-/* An app ended badly: a dialog over home until dismissed. `key` names the
- * app in the ignore list; `back` is the focus under the dialog. */
+/* An app ended badly, or a deep sleep didn't resume: a dialog over home until
+ * dismissed. `key` names the app in the ignore list; `back` is the focus under
+ * the dialog. */
+enum { FAIL_LAUNCH, FAIL_SLEEP };
 static struct {
   bool shown;
+  int kind;
   STRBUF(96) title;
   STRBUF(640) why;
   STRBUF(1300) key;
@@ -957,20 +963,24 @@ static const entry *dialog_box(nav *ui, int w, int h, str title, str text,
   return menu(ui, entries, count, view);
 }
 
-/* After an app ended badly: what and how, then OK / Ignore. No key: nothing
- * to ignore (no emulator for a game). */
+/* What and how, then: an app's OK / Ignore (no key: nothing to ignore, no
+ * emulator for a game); a sleep's light / deep */
 static const entry *failure_dialog(nav *ui, int w, int h) {
-  return dialog_box(ui, w, h, sb_str(failure.title), sb_str(failure.why), failure_entries,
-                    failure.key.n > 0 ? COUNTOF(failure_entries) : 1);
+  if (failure.kind == FAIL_SLEEP)
+    return dialog_box(ui, w, h, sb_str(failure.title), sb_str(failure.why), fail_sleep_entries,
+                      COUNTOF(fail_sleep_entries));
+  return dialog_box(ui, w, h, sb_str(failure.title), sb_str(failure.why), fail_launch_entries,
+                    failure.key.n > 0 ? COUNTOF(fail_launch_entries) : 1);
 }
 
-static void show_failure(nav *ui, str title, str why, str key) {
+static void show_failure(nav *ui, int kind, str title, str why, str key) {
   if (!failure.shown)
     failure.back = ui->focus;
   failure.shown = true;
   sb_set(failure.title, title);
   sb_set(failure.why, why);
   sb_set(failure.key, key);
+  failure.kind = kind;
   nav_focus(ui, 0);
 }
 
@@ -1256,6 +1266,10 @@ static size_t update_rows(entry *rows, str *said) {
  * alone unless SSH_ALL is; sysd's "ssh on|off|all|usb" */
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
+/* Sleep never powers the SoC off while this is there; sysd's "sleep light|deep" */
+#define LIGHT_SLEEP "/data/OS/config/light-sleep"
+/* The last deep sleep didn't resume (why, for the log: anbernic.init); emptied once asked */
+#define SLEEP_FAILED "/run/sleep-failed"
 
 /* Settings, Time and Debug: what each row does */
 enum { PAGE_MAX = 8 };
@@ -1282,6 +1296,8 @@ static size_t page_rows(int kind, entry *rows) {
     if (on)
       rows[n++] = (entry){.label = S("On every network, not just USB"), .action = SSH_EVERYWHERE,
                           .icon = ICON_TRIANGLE_ALERT, .checked = access(SSH_ALL, F_OK) == 0, .depth = 1};
+    rows[n++] = (entry){.label = S("Deep sleep  \u00b7  saves battery"), .action = DEEP_SLEEP, .icon = ICON_MOON,
+                        .checked = access(LIGHT_SLEEP, F_OK) != 0};
   } else {
     rows[n++] = (entry){.label = S("Storage"), .action = STORAGE, .icon = ICON_HARD_DRIVE};
     rows[n++] = (entry){.label = S("Wi-Fi"), .action = WIFI, .icon = ICON_WIFI};
@@ -1621,10 +1637,10 @@ static void app_exited(nav *ui, running *r, size_t *page) {
   if (str_eq(why, S("exited with status 3")) && port_instructions(ini.p, &why)) {
     /* portrun: files it Needs aren't there. Always said, never ignored. */
     sb_set(title, sb_str(label), S(" needs files"));
-    show_failure(ui, sb_str(title), why, S(""));
+    show_failure(ui, FAIL_LAUNCH, sb_str(title), why, S(""));
   } else if (!ok && !ignored(sb_str(key))) {
     sb_set(title, sb_str(label), S(" stopped"));
-    show_failure(ui, sb_str(title), why, sb_str(key));
+    show_failure(ui, FAIL_LAUNCH, sb_str(title), why, sb_str(key));
   }
   if (*page == 0 && run_count() == 0)
     turn_page(page, 1);
@@ -2174,8 +2190,21 @@ int main(int argc, char **argv) {
       /* Up: a slot on trial (an update) works, Wi-Fi may come on. Once sysd is there:
        * the first frame comes before rcS has started it. */
       static bool told_up;
-      if (!told_up && (told_up = sysd(S("up"))))
+      if (!told_up && (told_up = sysd(S("up")))) {
         power_apply();
+        const str why = str_read(fopen(SLEEP_FAILED, "r"));
+        if (why.n > 0) {
+          show_failure(&ui, FAIL_SLEEP, S("Couldn't wake up"),
+                       S("The handheld had to restart, so anything unsaved was lost. Light sleep avoids this "
+                         "but uses more battery."),
+                       S(""));
+          FILE *f = fopen(SLEEP_FAILED, "w");
+          if (f != NULL)
+            fclose(f);
+          dirty = true;
+        }
+        free((char *)why.p);
+      }
       const status was = st;
       read_status(&st);
       status_at = now;
@@ -2358,14 +2387,8 @@ int main(int argc, char **argv) {
       nav_focus(&ui, modal.back);
       break;
     }
-    case POWER:
-      sysd(chosen->command);
-      /* Sleep, Reboot, Power off: the quick menu is done */
-      if (modal.kind == MODAL_MENU) {
-        modal.kind = MODAL_NONE;
-        nav_focus(&ui, modal.back);
-      }
-      break;
+    /* The quick menu stays: closed, its last frame would show until the wake-up */
+    case POWER: sysd(chosen->command); break;
     case STORAGE:
       modal.kind = MODAL_STORAGE;
       nav_focus(&ui, 0);
@@ -2404,6 +2427,7 @@ int main(int argc, char **argv) {
     case DEBUG: open_page(&ui, MODAL_DEBUG, 0); break;
     case SSH: sysd(access(SSH_OFF, F_OK) != 0 ? S("ssh off") : S("ssh on")); break;
     case SSH_EVERYWHERE: sysd(access(SSH_ALL, F_OK) == 0 ? S("ssh usb") : S("ssh all")); break;
+    case DEEP_SLEEP: sysd(access(LIGHT_SLEEP, F_OK) == 0 ? S("sleep deep") : S("sleep light")); break;
     case WIFI:
       modal.kind = MODAL_WIFI;
       wifi_poll();
@@ -2464,6 +2488,10 @@ int main(int argc, char **argv) {
     /* Games join or leave once the status is next read */
     case TOGGLE_SYSTEM: sources_toggle(sb_str(pick_path), (size_t)chosen->category); break;
     case IGNORE: ignore(sb_str(failure.key)); /* fall through */
+    case SLEEP_LIGHT:
+      if (chosen->action == SLEEP_LIGHT)
+        sysd(S("sleep light"));
+      /* fall through */
     case DISMISS:
       failure.shown = false;
       nav_focus(&ui, failure.back);
@@ -2476,7 +2504,7 @@ int main(int argc, char **argv) {
       STRBUF(96) why;
       const category *c = &categories[page - 1];
       sb_set(why, str_eq(c->folder, S("videos")) ? S("No player for ") : S("No emulator for "), c->name);
-      show_failure(&ui, sb_str(picked->name), sb_str(why), S(""));
+      show_failure(&ui, FAIL_LAUNCH, sb_str(picked->name), sb_str(why), S(""));
     } else if (picked != NULL) {
       start(&ui, sb_str(picked->name), sb_str(picked->icon), sb_str(picked->exec),
             sb_str(picked->arg), sb_str(picked->dir));

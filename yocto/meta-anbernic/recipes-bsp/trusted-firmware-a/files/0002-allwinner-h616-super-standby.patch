@@ -27,7 +27,7 @@ diff --git a/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h b/plat/al
 index 9622972..2f5d212 100644
 --- a/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h
 +++ b/plat/allwinner/sun50i_h616/include/sunxi_suspend_params.h
-@@ -17,7 +17,25 @@
+@@ -17,7 +17,28 @@
  #define SUNXI_SUSPEND_PARAMS_OFFSET	0x10
  
  #define SUNXI_SUSPEND_MAGIC		0x50535553	/* "SUSP" */
@@ -36,6 +36,8 @@ index 9622972..2f5d212 100644
 +
 +/* Bytes of DRAM, at the start of each half, that PHY training overwrites on resume */
 +#define SUNXI_SUSPEND_SAVE_BYTES	0x140
++/* Bytes at the start of DRAM (BL31) the stub sums for SPL to check */
++#define SUNXI_SUSPEND_SUM_BYTES	0x40000
 +
 +/*
 + * Super standby handshake with SPL, in RTC general purpose registers (the RTC domain keeps
@@ -47,6 +49,7 @@ index 9622972..2f5d212 100644
 +#define SUNXI_RTC_RESUME_ENTRY_REG	0x07000104
 +#define SUNXI_RTC_RESUME_CFG_REG	0x07000114	/* dram_cfg */
 +#define SUNXI_RTC_RESUME_SAVE_REG	0x07000118	/* save_addr */
++#define SUNXI_RTC_RESUME_SUM_REG	0x0700011c	/* the sum */
 +#define SUNXI_RESUME_MAGIC		0x53535442	/* "SSTB" */
 +#define SUNXI_RESUMED_MAGIC		0x53535452	/* "SSTR" */
 +/* Left for Linux, which restores what drivers expect unchanged (sun50i_h616_standby.c) */
@@ -54,7 +57,7 @@ index 9622972..2f5d212 100644
  
  /* flags (in) */
  #define SUNXI_SUSPEND_FLAG_DEBUG_UART	(1 << 0)
-@@ -44,6 +62,8 @@ struct sunxi_suspend_params {
+@@ -44,6 +65,8 @@ struct sunxi_suspend_params {
  	uint64_t dram_size;	/* out: detected DRAM size in bytes */
  	uint32_t dram_cfg;	/* out: cols | rows << 8 | ranks << 16 | full << 24 */
  	uint32_t reserved;
