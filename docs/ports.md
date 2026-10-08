@@ -169,7 +169,7 @@ Mounting them without root:
 | | How | Cost |
 |---|---|---|
 | squashfuse (recommended) | portrun mounts the layer inside the port's user namespace; FUSE allows that, kernel squashfs doesn't | `CONFIG_FUSE_FS` + squashfuse (~100 KB); decompression in userspace; to measure |
-| a root mount service | like sleepd: loop-mounts layers read-only, `nosuid,nodev`, only files whose hash a signed catalog names, from a root-owned directory | `BLK_DEV_LOOP` + `SQUASHFS_ZLIB`; a signing key; root parses the image |
+| a root mount service | like sysd: loop-mounts layers read-only, `nosuid,nodev`, only files whose hash a signed catalog names, from a root-owned directory | `BLK_DEV_LOOP` + `SQUASHFS_ZLIB`; a signing key; root parses the image |
 | unpack | `unsquashfs` once into a directory | 2.5–3.5× the space (Mono: 249 MB → 870 MB) |
 
 Layers we need:
@@ -268,7 +268,7 @@ what a CFW must provide for the scripts. Against this plan:
 | Debian 11 compat libs in the OS | `compat` layer (also Debian 10 and Ubuntu 20.04 sonames: ICU 63/66, Boost 1.67) |
 | GLES2, gl4es bundled, Panfrost preferred, KMS optional | Mesa Panfrost on Wayland; `gl4es` layer |
 | ALSA required, Pulse strongly recommended, PipeWire nice | PipeWire with both |
-| exFAT for drag and drop | `/data` stays ext4: UMS, MTP and SMB give a PC access |
+| exFAT for drag and drop | `/data` stays ext4: MTP and SMB give a PC access |
 | armhf compat, box86/box64 bundled | multilib; box86 is armhf, so it works with multilib |
 | Python 3 with lzma (harbourmaster) | not needed: our installer |
 | `$DEVICE_*`, `$DISPLAY_*`, `$CFW_NAME`, `$ESUDO`, `$GPTOKEYB`, `$directory`, `$TASKSET` | `${WIDTH}`/`${HEIGHT}` and catalog filtering; the rest has no meaning here |

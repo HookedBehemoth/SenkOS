@@ -1,6 +1,5 @@
 #!/bin/sh
-# The clock and the time zone: the launcher's Settings (sleepd runs `clock ...` on "clock ..." in
-# /run/power). Kept in /data/OS/time, root's (others read it): localtime, the zone (a link into
+# The clock and the time zone: the launcher's Settings (sysd runs `clock ...` on "clock ..."). Kept in /data/OS/time, root's (others read it): localtime, the zone (a link into
 # /usr/share/zoneinfo, which /etc/localtime links to); `chosen` when the zone was picked (else a
 # network guesses it); `manual` when the time is set by hand (else NTP sets it).
 #   clock net bound|renew   a DHCP lease (udhcpc.d/90ntp): NTP; a new one (bound, a network

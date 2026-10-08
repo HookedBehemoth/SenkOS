@@ -1,5 +1,5 @@
 /*
- * Wi-Fi settings: on or off (sleepd runs `wifi on|off`, which says which in
+ * Wi-Fi settings: on or off (sysd runs `wifi on|off`, which says which in
  * /run/wifi), and the networks, through wpa_supplicant's control socket
  * (/run/wpa_supplicant/wlan0, group player): what it found, what it knows,
  * what it's on. It saves the networks itself, where only root reads them.

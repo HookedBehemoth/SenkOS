@@ -24,7 +24,6 @@ if [ "$1" = session ]; then
 	exec weston --backend=drm --shell=kiosk --modules=frames.so --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1
 fi
-# Again (`restart`) after `ums` stopped it: seatd still runs.
 ui() {
 	export HOME=/data
 	export XDG_CONFIG_HOME=/data/OS/config COREHOST_SAVE=/data/OS/saves COREHOST_SYSTEM=/data/OS/assets/emulator
@@ -51,7 +50,7 @@ ui() {
 	chmod 0660 /dev/input/event* /dev/snd/*
 	(
 		echo 0 > $c/ui/cgroup.procs
-		[ -S /run/seatd.sock ] || seatd -g seat </dev/null >/dev/null 2>&1 &
+		seatd -g seat </dev/null >/dev/null 2>&1 &
 		while [ ! -S /run/seatd.sock ]; do usleep 5000; done
 		su -p -s /bin/sh player -c "$0 session" &
 		while :; do
@@ -59,10 +58,7 @@ ui() {
 			sleep 1
 		done
 	) </dev/null >/var/log/launcher.log 2>&1 &
-	# `ums` stops this loop before the launcher
-	echo $! > /run/launcher.loop
 }
-[ "$1" = restart ] && { c=/sys/fs/cgroup/session; ui; exit 0; }
 [ "$1" = start ] || exit 0
 
 # Mesa in one sequential read: faulting it in from squashfs during Weston's GL init is slower
@@ -100,7 +96,7 @@ mount --bind $l/0 /var/volatile/log
 # .X11-unix: Weston exits without it, and populate-volatile (S37) comes too late
 mkdir -p -m 1777 /var/volatile/tmp /var/volatile/tmp/.X11-unix
 
-# The codec boots with its DAC muted; the volume is WirePlumber's (it restores it when it starts)
+# The codec boots with its DAC muted
 amixer -q -c 0 sset DAC unmute &
 
 /etc/init.d/data-init start

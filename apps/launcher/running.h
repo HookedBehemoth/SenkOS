@@ -9,8 +9,8 @@
  * is adopted when the launcher starts again.
  *
  * On the handheld weston.init starts the launcher as root, and it becomes shell at once
- * (run_drop_root): /run/power, Wi-Fi's control socket and the apps' cgroup are shell's, so the
- * apps, the player's, can't reach them. It keeps CAP_SETUID and CAP_SETGID to start each app as
+ * (run_drop_root): sysd answers shell (and root) alone, Wi-Fi's control socket and the apps'
+ * cgroup are shell's, so the apps, the player's, can't reach them. It keeps CAP_SETUID and CAP_SETGID to start each app as
  * the player and CAP_KILL to pause and stop them; the app drops them all before it runs. The apps
  * get the environment the launcher was started with; the launcher its own runtime dir, settings
  * and caches (shell's home, /data/OS/launcher), and Weston's socket by its path.

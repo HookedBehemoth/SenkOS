@@ -21,7 +21,7 @@ IMAGE_INSTALL = " \
     kernel-image \
     kernel-devicetree \
     anbernic-base \
-    sleepd \
+    sysd \
     downloadd store \
     wpa-supplicant wpa-supplicant-cli kernel-module-rtw88-8821cs linux-firmware-rtl8821 wireless-regdb-static \
     ca-certificates \
@@ -97,7 +97,7 @@ ROOTFS_BOOTSTRAP_INSTALL = ""
 ROOTFS_POSTPROCESS_COMMAND:append = " dropbear_key_on_data"
 dropbear_key_on_data () {
 	sed -i 's#^DROPBEAR_RSAKEY_DIR=.*#DROPBEAR_RSAKEY_DIR=/data/OS/dropbear#' ${IMAGE_ROOTFS}/etc/default/dropbear
-	# The launcher's Debug (sleepd's "ssh ..."): SSH off, or on every network rather than the USB
+	# The launcher's Debug (sysd's "ssh ..."): SSH off, or on every network rather than the USB
 	# cable's alone (anbernic.init gives it 10.55.0.1 before rc5 starts dropbear). Ifs, not &&: the
 	# init script sources this under set -e, and a false last command would end it.
 	cat >> ${IMAGE_ROOTFS}/etc/default/dropbear <<-EOF

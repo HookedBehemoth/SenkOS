@@ -12,4 +12,5 @@ enum {
   UI_LAUNCH,               /* `launcher launch PATH` asked for an app (ctl_path) */
   UI_RELOAD,               /* "reload" on the FIFO: downloadd added or removed a port */
   UI_UPDATES,              /* downloadd said something about system updates (updates.h) */
+  UI_REFUSED,              /* sysd didn't do what was asked (sysd.h) */
 };

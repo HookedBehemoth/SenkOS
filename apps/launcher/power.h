@@ -5,7 +5,7 @@
  *
  * An app's clocks come from the kernel's tables, set whenever it comes on
  * screen: the CPU's a cap (Auto: the highest), the GPU's pinned (Auto: its
- * governor's choice). At home everything goes back to Auto. sleepd writes them (/run/power), the launcher runs unprivileged. Kept
+ * governor's choice). At home everything goes back to Auto. sysd writes them, the launcher runs unprivileged. Kept
  * a line an app in $XDG_CONFIG_HOME/launcher-power: "CPU_KHZ GPU_HZ FPS KEY", 0 for Auto.
  *
  * Calibration finds the lowest clocks that still hold the app's frame rate
@@ -26,7 +26,7 @@ enum { POWER_CALIBRATE, POWER_CPU, POWER_GPU, POWER_BRIGHTNESS, POWER_ROWS };
 
 /* The tables, and the saved brightness set */
 void power_init(void);
-/* The saved brightness and the clocks in use, again: at start sleepd may not be there yet */
+/* The saved brightness and the clocks in use, again: at start sysd may not be there yet */
 void power_apply(void);
 /* `key`'s clocks (an app's: its ROM, folder or command) set; "": home, Auto */
 void power_use(str key);

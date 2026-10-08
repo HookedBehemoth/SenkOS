@@ -17,7 +17,7 @@ BL31 refuses to suspend if the parameters don't match at runtime. The stub also 
 |---|---|
 | TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4) |
 | Kernel | PM fixes for the power-key wake event, MMC, the TF2 slot power, the USB PHY clock, the display pipeline and LCD pads, the codec, and a suspend OPP (patches 0018-0024, 0027) |
-| `sleepd` | lid close, power key or `suspend` written to `/run/power` (the launcher's Sleep; `reboot`, `poweroff` too; and the Power page's `cpu KHZ`, `gpu HZ`, `brightness N`) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it. Reacts only to events, so a misread lid at boot can't suspend. Locks the VT (`VT_LOCKSWITCH`) meanwhile: with no framebuffer (fbdev emulation off) the kernel would switch to a text console for every sleep, seatd would take the display from Weston and give it back, and a few sleeps in a row left Weston without frames |
+| `sysd` | lid close, power key or the launcher's `suspend` request (Sleep) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it, and a `suspend` request within 1.5 s of waking. Reacts only to events, so a misread lid at boot can't suspend. Locks the VT (`VT_LOCKSWITCH`) meanwhile: with no framebuffer (fbdev emulation off) the kernel would switch to a text console for every sleep, and seatd would take the display from Weston and give it back |
 | `anbernic.init` | rebinds the USB gadget when musb comes back detached |
 
 Wake sources: power key (PMIC), lid (Hall GPIO), RTC. Not the charger: `90-wake.rules` turns off the `axp20x-usb` supply's wakeup, which would wake on every plug-in.
@@ -30,6 +30,9 @@ Our deep sleep drew about 4 %/h (60 % in 16.5 h asleep, no wake-ups in between),
 3300 mAh battery. ROCKNIX reports 2.5-3 %/h with the same stub and 3.5 %/h with s2idle: gating clocks saves
 little, because every SoC rail stays up and leaks. The AXP717 can't measure discharge current (`current_now` is
 the charge-current ADC; on battery it reads a meaningless ~400 mA), so measure with a USB-C meter on a full battery.
+
+Super standby (below): about 0.5 %/h by the fuel gauge (9 % in 17 h, 2026-10-08), roughly 17 mA. Not yet measured
+with a meter.
 
 ## Super standby (stock)
 
@@ -74,12 +77,12 @@ Linux left on. DCDC1, DCDC2 and CLDO3 (all GPIO banks and the SD cards) are off.
 
 ## Super standby (ours)
 
-Which sleep (`/usr/sbin/suspend`, called by sleepd): TF-A picks super standby when no pin interrupt is armed
+Which sleep (`/usr/sbin/suspend`, called by sysd): TF-A picks super standby when no pin interrupt is armed
 as a wake source and no SoC RTC alarm is set, like stock. The lid is a SoC GPIO and can't wake a powered-off
 SoC, so:
 - Lid open (power key, the launcher's Sleep): the lid's wakeup is turned off, super standby. The power key wakes.
 - Lid just closed: lid wakeup on and a 30 min alarm on the SoC RTC (`rtc1`; `rtc0` is the pcf8563): a deep sleep
-  the lid can end. If the alarm comes first, sleepd (lid still closed) suspends again without them: super standby.
+  the lid can end. If the alarm comes first, sysd (lid still closed) suspends again without them: super standby.
 
 | Where | What |
 |---|---|

@@ -23,7 +23,6 @@ enum {
   ICON_IMAGE,
   ICON_LIBRARY,
   ICON_LOCK,
-  ICON_MEMORY_STICK,
   ICON_MICROCHIP,
   ICON_MOON,
   ICON_NETWORK,
@@ -38,7 +37,6 @@ enum {
   ICON_SHOPPING_BAG,
   ICON_SMARTPHONE,
   ICON_SPEAKER,
-  ICON_SQUARE,
   ICON_SUN,
   ICON_TRASH_2,
   ICON_TRIANGLE_ALERT,
@@ -301,24 +299,6 @@ static const float icon_lock[] = {
     2.0f, ICON_CUBIC, 14.761f, 2.0f, 17.0f, 4.239f, 17.0f, 7.0f,
     ICON_LINE, 17.0f, 11.0f, ICON_END,
 };
-static const float icon_memory_stick[] = {
-    ICON_MOVE, 6.0f, 19.0f, ICON_LINE, 6.0f, 16.0f, ICON_MOVE, 10.0f,
-    19.0f, ICON_LINE, 10.0f, 16.0f, ICON_MOVE, 14.0f, 19.0f, ICON_LINE,
-    14.0f, 16.0f, ICON_MOVE, 18.0f, 19.0f, ICON_LINE, 18.0f, 16.0f,
-    ICON_MOVE, 8.0f, 11.0f, ICON_LINE, 8.0f, 9.0f, ICON_MOVE, 16.0f,
-    11.0f, ICON_LINE, 16.0f, 9.0f, ICON_MOVE, 12.0f, 11.0f, ICON_LINE,
-    12.0f, 9.0f, ICON_MOVE, 2.0f, 15.0f, ICON_LINE, 22.0f, 15.0f,
-    ICON_MOVE, 2.0f, 7.0f, ICON_CUBIC, 2.0f, 5.895f, 2.895f, 5.0f,
-    4.0f, 5.0f, ICON_LINE, 20.0f, 5.0f, ICON_CUBIC, 21.105f, 5.0f,
-    22.0f, 5.895f, 22.0f, 7.0f, ICON_LINE, 22.0f, 8.100f, ICON_CUBIC,
-    21.149f, 8.351f, 20.565f, 9.132f, 20.565f, 10.018f, ICON_CUBIC, 20.565f,
-    10.905f, 21.149f, 11.686f, 22.0f, 11.937f, ICON_LINE, 22.0f, 17.0f,
-    ICON_CUBIC, 22.0f, 18.105f, 21.105f, 19.0f, 20.0f, 19.0f, ICON_LINE,
-    4.0f, 19.0f, ICON_CUBIC, 2.895f, 19.0f, 2.0f, 18.105f, 2.0f,
-    17.0f, ICON_LINE, 2.0f, 11.900f, ICON_CUBIC, 2.851f, 11.649f, 3.435f,
-    10.868f, 3.435f, 9.982f, ICON_CUBIC, 3.435f, 9.095f, 2.851f, 8.314f,
-    2.0f, 8.063f, ICON_CLOSE, ICON_END,
-};
 static const float icon_microchip[] = {
     ICON_MOVE, 18.0f, 12.0f, ICON_LINE, 20.0f, 12.0f, ICON_MOVE, 18.0f,
     16.0f, ICON_LINE, 20.0f, 16.0f, ICON_MOVE, 18.0f, 20.0f, ICON_LINE,
@@ -480,14 +460,6 @@ static const float icon_speaker[] = {
     ICON_CUBIC, 21.052f, 16.676f, 22.0f, 14.387f, 22.0f, 12.0f, ICON_CUBIC,
     22.0f, 9.613f, 21.052f, 7.324f, 19.364f, 5.636f, ICON_END,
 };
-static const float icon_square[] = {
-    ICON_MOVE, 5.0f, 3.0f, ICON_LINE, 19.0f, 3.0f, ICON_CUBIC, 20.105f,
-    3.0f, 21.0f, 3.895f, 21.0f, 5.0f, ICON_LINE, 21.0f, 19.0f,
-    ICON_CUBIC, 21.0f, 20.105f, 20.105f, 21.0f, 19.0f, 21.0f, ICON_LINE,
-    5.0f, 21.0f, ICON_CUBIC, 3.895f, 21.0f, 3.0f, 20.105f, 3.0f,
-    19.0f, ICON_LINE, 3.0f, 5.0f, ICON_CUBIC, 3.0f, 3.895f, 3.895f,
-    3.0f, 5.0f, 3.0f, ICON_CLOSE, ICON_END,
-};
 static const float icon_sun[] = {
     ICON_MOVE, 8.0f, 12.0f, ICON_CUBIC, 8.0f, 9.791f, 9.791f, 8.0f,
     12.0f, 8.0f, ICON_CUBIC, 14.209f, 8.0f, 16.0f, 9.791f, 16.0f,
@@ -610,7 +582,6 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_image,
     icon_library,
     icon_lock,
-    icon_memory_stick,
     icon_microchip,
     icon_moon,
     icon_network,
@@ -625,7 +596,6 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_shopping_bag,
     icon_smartphone,
     icon_speaker,
-    icon_square,
     icon_sun,
     icon_trash_2,
     icon_triangle_alert,

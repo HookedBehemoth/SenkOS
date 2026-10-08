@@ -11,10 +11,10 @@
  * (wifi.h), a password typed on the on-screen keyboard (keyboard.h). Time (clock.h): the zone,
  * guessed or picked; NTP, or the date and time by hand. Updates: a newer system
  * from the server, downloaded into the other slot by downloadd (updates.h); once up, the
- * launcher tells sleepd ("up"), which commits a slot on trial and turns Wi-Fi on if it was. "reload" on the FIFO (downloadd,
+ * launcher tells sysd ("up"), which commits a slot on trial and turns Wi-Fi on if it was. "reload" on the FIFO (downloadd,
  * a port came or went) reads the page again. Storage: Libraries adds folders on the other card to systems
  * (their games join the system's page while the card is in), and what a PC
- * gets over USB (`usb`: MTP, UMS or SMB). Licenses: what the image holds,
+ * gets over USB (`usb`: MTP or SMB). Licenses: what the image holds,
  * and each one's texts to scroll through (licenses.h).
  * What it launched owns the screen (Weston kiosk shell); the gamepad is read
  * straight from evdev, so input is ignored meanwhile, but for Menu: released
@@ -69,6 +69,7 @@
 #include "power.h"
 #include "romdb.h"
 #include "running.h"
+#include "sysd.h"
 #include "ui.h"
 #include "updates.h"
 #include "wake.h"
@@ -104,7 +105,7 @@ static const gfx_color ACTIVE = {0x6a, 0x9c, 0xff, 0xff};
 /* An option this game has its own of */
 static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
 
-/* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sleepd */
+/* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sysd */
 /* HEADER: a section's title, not a row to choose */
 enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
@@ -139,37 +140,19 @@ static const entry pause_entries[] = {
 };
 /* appctl's names, measured once (main) */
 static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES + 1];
-/* sleepd does them: the launcher runs unprivileged */
+/* sysd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
     {.label = S("Store"), .command = S("store"), .action = RUN_COMMAND, .icon = ICON_SHOPPING_BAG},
     {.label = S("Settings"), .action = SYSTEM_SETTINGS, .icon = ICON_COG},
     {.label = S("Power"), .action = HOME_POWER, .icon = ICON_ZAP},
-    {.label = S("Sleep"), .command = S("suspend\n"), .action = POWER, .icon = ICON_MOON},
-    {.label = S("Reboot"), .command = S("reboot\n"), .action = POWER, .icon = ICON_ROTATE_CW},
-    {.label = S("Power off"), .command = S("poweroff\n"), .action = POWER, .icon = ICON_POWER},
+    {.label = S("Sleep"), .command = S("suspend"), .action = POWER, .icon = ICON_MOON},
+    {.label = S("Reboot"), .command = S("reboot"), .action = POWER, .icon = ICON_ROTATE_CW},
+    {.label = S("Power off"), .command = S("poweroff"), .action = POWER, .icon = ICON_POWER},
 };
 /* Power's key at home (power.h): apps' are paths and commands */
 #define HOME_KEY S("home")
-/* A request to sleepd (/run/power); the menu stays, and shows what came of it. False when
- * sleepd isn't there (yet). */
-static bool power(str request) {
-  const int fd = open("/run/power", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-  if (fd < 0)
-    return false;
-  const bool sent = write(fd, request.p, request.n) == (ssize_t)request.n;
-  if (!sent)
-    fprintf(stderr, "launcher: /run/power: %s\n", strerror(errno));
-  close(fd);
-  return sent;
-}
-
-/* What a PC gets over USB, by the usb script (sleepd runs it): /run/usb is
- * "on|off MODE [sd] [data]", the cards UMS takes once a PC is there. /run/ums
- * lists what it has meanwhile (the ums script). */
+/* What a PC gets over USB, by the usb script (sysd runs it): /run/usb is "on|off MODE" */
 static STRBUF(64) usb_state;
-static bool ums_on;
-
-static bool ums_active(void) { return access("/run/ums", F_OK) == 0; }
 
 /* Whether it changed */
 static bool read_usb(void) {
@@ -186,44 +169,33 @@ static bool read_usb(void) {
   return changed;
 }
 
-/* Word `i` of /run/usb is `word`, or any word after it for i < 0 */
+/* Word `i` of /run/usb is `word` */
 static bool usb_is(int i, str word) {
   str rest = sb_str(usb_state);
   for (int k = 0; rest.n > 0; k++) {
     const str w = str_cut(&rest, ' ');
-    if ((i < 0 ? k >= 2 : k == i) && str_eq(w, word))
+    if (k == i && str_eq(w, word))
       return true;
   }
   return false;
 }
 
-/* Libraries, then the USB settings as a tree: on, under it (while on) the modes, under UMS the
- * cards and Stop while a PC has them */
-enum { STORAGE_MAX = 9 };
+/* Libraries, then the USB settings as a tree: on, under it (while on) the modes */
+enum { STORAGE_MAX = 4 };
 static size_t storage_entries(entry *out) {
-  static const str modes[] = {S("MTP"), S("UMS"), S("SMB")};
-  static const str mode_cmds[] = {S("usb mtp\n"), S("usb ums\n"), S("usb smb\n")};
-  static const str mode_words[] = {S("mtp"), S("ums"), S("smb")};
-  static const int mode_icons[] = {ICON_SMARTPHONE, ICON_HARD_DRIVE, ICON_NETWORK};
+  static const str modes[] = {S("MTP"), S("SMB")};
+  static const str mode_cmds[] = {S("usb mtp"), S("usb smb")};
+  static const str mode_words[] = {S("mtp"), S("smb")};
+  static const int mode_icons[] = {ICON_SMARTPHONE, ICON_NETWORK};
   const bool on = usb_is(0, S("on"));
   size_t n = 0;
   out[n++] = (entry){.label = S("Libraries"), .action = BROWSE, .icon = ICON_LIBRARY};
-  out[n++] = (entry){.label = S("USB connection"), .command = on ? S("usb off\n") : S("usb on\n"), .action = POWER,
+  out[n++] = (entry){.label = S("USB connection"), .command = on ? S("usb off") : S("usb on"), .action = POWER,
                      .icon = ICON_USB, .checked = on};
   /* Collapsed while off */
-  for (size_t i = 0; on && i < COUNTOF(modes); i++) {
+  for (size_t i = 0; on && i < COUNTOF(modes); i++)
     out[n++] = (entry){.label = modes[i], .command = mode_cmds[i], .action = POWER, .icon = mode_icons[i],
                        .checked = usb_is(1, mode_words[i]), .depth = 1};
-    if (i != 1 || !usb_is(1, S("ums")))
-      continue;
-    out[n++] = (entry){.label = S("SD card"), .command = S("usb sd\n"), .action = POWER, .icon = ICON_MEMORY_STICK,
-                       .checked = usb_is(-1, S("sd")), .depth = 2};
-    out[n++] = (entry){.label = S("Main card"), .command = S("usb data\n"), .action = POWER,
-                       .icon = ICON_MEMORY_STICK, .checked = usb_is(-1, S("data")), .depth = 2};
-    if (ums_on)
-      out[n++] = (entry){.label = S("Stop"), .command = S("ums stop\n"), .action = POWER, .icon = ICON_SQUARE,
-                         .depth = 2};
-  }
   return n;
 }
 static const entry failure_entries[] = {{.label = S("OK"), .action = DISMISS, .icon = ICON_CHECK},
@@ -554,7 +526,7 @@ static void step_option(running *r, int i, int by) {
 /* The volume keys (read here, whatever has the focus): the default sink's
  * volume through PipeWire, which WirePlumber keeps and restores at boot, then
  * the OSD with the level read back. Presses queued meanwhile all count; a held
- * key's repeats one step a round, so nothing lags behind on release. */
+ * key's repeats one step a round. */
 static void *volume_thread(void *data) {
   const int fd = (int)(intptr_t)data;
   struct input_event e;
@@ -1257,7 +1229,7 @@ static size_t update_rows(entry *rows, str *said) {
     sb_add(text, S("Couldn't check: "), without_url(sb_str(u.notes)));
   *said = sb_str(text);
   if (u.job == UPDATE_READY) {
-    rows[n++] = (entry){.label = S("Restart to finish the update"), .command = S("reboot\n"), .action = POWER,
+    rows[n++] = (entry){.label = S("Restart to finish the update"), .command = S("reboot"), .action = POWER,
                         .icon = ICON_ROTATE_CW};
     return n;
   }
@@ -1281,7 +1253,7 @@ static size_t update_rows(entry *rows, str *said) {
 }
 
 /* SSH (dropbear: root, no password) is off while this is there, and on the USB cable's network
- * alone unless SSH_ALL is; sleepd's "ssh on|off|all|usb" */
+ * alone unless SSH_ALL is; sysd's "ssh on|off|all|usb" */
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
 
@@ -1379,7 +1351,7 @@ static void clock_step(int by) {
   f[2] = MIN(f[2], now_days);
 }
 
-/* To sleepd, as seconds: the fields are this zone's time */
+/* To sysd, as seconds: the fields are this zone's time */
 static void clock_set(void) {
   const int *f = clock_edit.field;
   struct tm t = {.tm_year = f[0] - 1900, .tm_mon = f[1] - 1, .tm_mday = f[2], .tm_hour = f[3], .tm_min = f[4],
@@ -1387,9 +1359,9 @@ static void clock_set(void) {
   const time_t when = mktime(&t);
   STRBUF(48) request;
   request.n = 0;
-  sb_fmt(request, "clock set %lld\n", (long long)when);
+  sb_fmt(request, "clock set %lld", (long long)when);
   if (when != (time_t)-1)
-    power(sb_str(request));
+    sysd(sb_str(request));
 }
 
 /* Over Settings: the date's fields, then the time's, the one changing ringed */
@@ -1481,7 +1453,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     top_bar(w, S("Wi-Fi"), st);
     const bool on = wifi_on();
     size_t n = 0;
-    rows[n++] = (entry){.label = S("Wi-Fi"), .command = on ? S("wifi off\n") : S("wifi on\n"), .action = POWER,
+    rows[n++] = (entry){.label = S("Wi-Fi"), .command = on ? S("wifi off") : S("wifi on"), .action = POWER,
                         .icon = on ? ICON_WIFI : ICON_WIFI_OFF, .checked = on};
     for (size_t i = 0; i < wifi_count; i++) {
       const wifi_network *net = &wifi_networks[i];
@@ -1794,6 +1766,11 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   case UI_HASHED: rescan(*page); return true;
   case UI_LAUNCH: launch_path(ui); return true;
   case UI_RELOAD: rescan(*page); return true;
+  case UI_REFUSED: {
+    char text[128];
+    show_text(sysd_refused(text, sizeof(text)), 3000);
+    return true;
+  }
   case UI_EXITED: {
     running *r = run_find(value);
     if (r != NULL)
@@ -2143,12 +2120,6 @@ int main(int argc, char **argv) {
   read_status(&st);
   uint64_t status_at = ms_now();
   read_usb();
-  /* Started again for the main card's USB storage: on the way back */
-  if ((ums_on = ums_active())) {
-    modal.kind = MODAL_STORAGE;
-    entry rows[STORAGE_MAX];
-    nav_focus(&ui, menu_row(nav_str("storage"), storage_entries(rows) - 1));
-  }
   /* The clock shows minutes: a frame when one passes, not every second */
   time_t shown_minute = 0;
   bool animating = true;
@@ -2200,21 +2171,19 @@ int main(int argc, char **argv) {
     /* Events (input, an icon loaded, an app gone) count as changes */
     bool dirty = animating;
     if (now - status_at >= 1000) {
-      /* Up: a slot on trial (an update) works, Wi-Fi may come on. Once sleepd is there:
+      /* Up: a slot on trial (an update) works, Wi-Fi may come on. Once sysd is there:
        * the first frame comes before rcS has started it. */
       static bool told_up;
-      if (!told_up && (told_up = power(S("up\n"))))
+      if (!told_up && (told_up = sysd(S("up"))))
         power_apply();
       const status was = st;
       read_status(&st);
       status_at = now;
-      const bool ums_was = ums_on;
-      ums_on = ums_active();
       dirty |= was.battery != st.battery || was.charging != st.charging ||
-               was.wifi != st.wifi || time(NULL) / 60 != shown_minute || ums_on != ums_was;
+               was.wifi != st.wifi || time(NULL) / 60 != shown_minute;
       dirty |= read_usb();
       dirty |= clock_refresh();
-      /* Time's rows: the zone, NTP and the clock as `clock` left them; Debug's SSH as sleepd did */
+      /* Time's rows: the zone, NTP and the clock as `clock` left them; Debug's SSH as sysd did */
       dirty |= modal.kind == MODAL_TIME || modal.kind == MODAL_DEBUG;
       if (modal.kind == MODAL_WIFI) {
         wifi_poll();
@@ -2390,7 +2359,7 @@ int main(int argc, char **argv) {
       break;
     }
     case POWER:
-      power(chosen->command);
+      sysd(chosen->command);
       /* Sleep, Reboot, Power off: the quick menu is done */
       if (modal.kind == MODAL_MENU) {
         modal.kind = MODAL_NONE;
@@ -2422,19 +2391,19 @@ int main(int argc, char **argv) {
       const str *zones;
       STRBUF(96) request = {0};
       if (chosen->action == ZONE_AUTO)
-        sb_set(request, S("clock zone auto\n"));
+        sb_set(request, S("clock zone auto"));
       else if ((size_t)chosen->category < clock_zones(sb_str(zone_region), &zones))
-        sb_set(request, S("clock zone "), zones[chosen->category], S("\n"));
-      power(sb_str(request));
+        sb_set(request, S("clock zone "), zones[chosen->category]);
+      sysd(sb_str(request));
       open_page(&ui, MODAL_TIME, ZONES);
       break;
     }
-    case NTP: power(clock_ntp() ? S("clock ntp off\n") : S("clock ntp on\n")); break;
+    case NTP: sysd(clock_ntp() ? S("clock ntp off") : S("clock ntp on")); break;
     case CLOCK: clock_open(); break;
     case TIME: open_page(&ui, MODAL_TIME, 0); break;
     case DEBUG: open_page(&ui, MODAL_DEBUG, 0); break;
-    case SSH: power(access(SSH_OFF, F_OK) != 0 ? S("ssh off\n") : S("ssh on\n")); break;
-    case SSH_EVERYWHERE: power(access(SSH_ALL, F_OK) == 0 ? S("ssh usb\n") : S("ssh all\n")); break;
+    case SSH: sysd(access(SSH_OFF, F_OK) != 0 ? S("ssh off") : S("ssh on")); break;
+    case SSH_EVERYWHERE: sysd(access(SSH_ALL, F_OK) == 0 ? S("ssh usb") : S("ssh all")); break;
     case WIFI:
       modal.kind = MODAL_WIFI;
       wifi_poll();

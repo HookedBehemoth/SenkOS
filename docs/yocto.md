@@ -35,7 +35,7 @@ recipes-bsp/                       U-Boot (A/B boot.scr, watchdog, squashfs, off
 recipes-kernel/linux/              Linux 7.2 + patches, savedefconfig, built-in firmware
 recipes-core/images/               anbernic-image
 recipes-core/anbernic-base/        init glue: USB gadget, A/B slots + /data, logs, watchdog, Weston, SD automount
-recipes-core/sleepd/               suspend on lid / power key
+recipes-core/sysd/                 root's side of the UI: suspend, the launcher's requests
 recipes-graphics/                  launcher, Weston trims + kiosk-shell OSD layer, volume keys module, SDL2/vulkan-tools tweaks
 recipes-emulators/, recipes-games/ libretro cores (in the image), mGBA, SuperTuxKart (deployed to /data)
 ```

@@ -8,6 +8,7 @@
 
 #include "apps.h"
 #include "running.h"
+#include "sysd.h"
 #include "util.h"
 
 enum { STEPS_MAX = 16, FPS_MIN = 30, FPS_MAX = 60, FPS_STEP = 5 };
@@ -54,19 +55,13 @@ static long read_long(const char *pattern) {
   return v;
 }
 
-/* To sleepd: a line a request */
+/* To sysd: "WHAT VALUE" */
 static void request(const char *what, long value) {
-  const int fd = open("/run/power", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-  if (fd < 0)
-    return;
   char line[64];
-  const int n = snprintf(line, sizeof(line), "%s %ld\n", what, value);
-  if (write(fd, line, (size_t)n) != n)
-    fprintf(stderr, "launcher: /run/power: %s\n", what);
-  close(fd);
+  sysd((str){line, (size_t)snprintf(line, sizeof(line), "%s %ld", what, value)});
 }
 
-/* Index + 1 into the steps; 0: the CPU's highest, the GPU free (sleepd) */
+/* Index + 1 into the steps; 0: the CPU's highest, the GPU free (sysd) */
 static void set_clocks(int cpu, int gpu) {
   if (cpu_count > 0)
     request("cpu", cpu_steps[cpu > 0 ? cpu - 1 : cpu_count - 1]);

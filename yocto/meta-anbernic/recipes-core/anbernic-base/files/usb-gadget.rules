@@ -1,4 +1,2 @@
-# Cable plugged or unplugged: see whether the gadget attaches (usb-gadget-check), and UMS once
-# a PC is there if that's the setting (`usb`)
+# Cable plugged or unplugged: see whether the gadget attaches (usb-gadget-check)
 ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="axp20x-usb", RUN+="/bin/sh -c '/usr/sbin/usb-gadget-check </dev/null >/dev/null 2>&1 &'"
-ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="axp20x-usb", RUN+="/bin/sh -c '/usr/sbin/usb plug </dev/null >/dev/null 2>&1 &'"

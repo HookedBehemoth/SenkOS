@@ -1,10 +1,10 @@
 #!/bin/sh
 # Wi-Fi: the RTL8821CS on SDIO, its driver (rtw88) a module loaded when Wi-Fi is turned on.
-# The launcher's Wi-Fi settings: sleepd runs `wifi on|off` on "wifi on|off" in /run/power, and
+# The launcher's Wi-Fi settings: sysd runs `wifi on|off` on "wifi on|off", and
 # the networks go through wpa_supplicant's control socket, /run/wpa_supplicant/wlan0 (group
 # shell: the launcher's, not the apps'). Saved in /data/OS/wifi, root's alone (0700): wpa_supplicant.conf, the networks (its
 # SAVE_CONFIG writes them), and `enabled`. In effect in /run/wifi (what the launcher shows): on|off.
-#   wifi                 once the launcher is up (sleepd): on if it was
+#   wifi                 once the launcher is up (sysd): on if it was
 #   wifi on|off
 #   wifi wlan0 CONNECTED|DISCONNECTED     wpa_cli's events: DHCP (udhcpc.d/90ntp sets the clock)
 d=/data/OS/wifi

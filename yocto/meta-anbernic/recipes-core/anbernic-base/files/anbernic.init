@@ -1,7 +1,7 @@
 #!/bin/sh
 # Watchdog, USB gadget: NCM ethernet (10.55.0.1, DHCP for the host) + ACM serial (getty on
-# ttyGS0, host sees /dev/ttyACM*). Mass storage and MTP are set up too, for `ums` and `usb` to
-# put in place of the serial port: musb doesn't have the endpoints for more than two functions.
+# ttyGS0, host sees /dev/ttyACM*). MTP is set up too, for `usb` to put in place of the serial
+# port: musb doesn't have the endpoints for more than two functions.
 # Then what's set for a PC (`usb`). /uboot and /data are mounted by /etc/init.d/weston (rcS S01).
 [ "$1" = start ] || exit 0
 
@@ -27,9 +27,7 @@ if [ ! -d $g ]; then
 	echo 0x1d6b > $g/idVendor	# Linux Foundation
 	echo 0x0104 > $g/idProduct	# Multifunction Composite Gadget
 	mkdir $g/strings/0x409 $g/configs/c.1 $g/functions/ncm.usb0 $g/functions/acm.usb0 \
-		$g/functions/mass_storage.0 $g/functions/mass_storage.0/lun.1 $g/functions/ffs.mtp
-	echo 1 > $g/functions/mass_storage.0/lun.0/removable
-	echo 1 > $g/functions/mass_storage.0/lun.1/removable
+		$g/functions/ffs.mtp
 	echo SenkOS > $g/strings/0x409/manufacturer
 	echo RG35XX-SP > $g/strings/0x409/product
 	# fixed MACs: host keeps the same interface/connection across reboots
@@ -51,15 +49,6 @@ fi
 ifc=$(cat $g/functions/ncm.usb0/ifname)
 ip addr add 10.55.0.1/24 dev $ifc
 ip link set $ifc up
-udhcpd -S /etc/udhcpd.conf
 
 usb-gadget-check </dev/null >/dev/null 2>&1 &
 usb </dev/null >/dev/null 2>&1 &
-
-# lid close / power key -> suspend; /run/power: the launcher's (shell's, not the apps') requests
-mkfifo -m 0620 /run/power && chgrp shell /run/power
-[ -x /usr/sbin/sleepd ] && sleepd > /dev/console 2>&1 &
-
-# downloadd: ports and system updates for the store and the launcher. Wi-Fi comes on once the
-# launcher is up (sleepd's "up").
-downloadd </dev/null >/var/log/downloadd.log 2>&1 &

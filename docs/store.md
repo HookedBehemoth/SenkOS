@@ -81,7 +81,7 @@ A client hears every job's state when it connects, and the answer to every check
   player brought stay), with `.store` saying its `Version`. Then "reload" on the launcher's FIFO.
 - The system: the newest build past `/etc/build`, decompressed straight into the other slot (`ab write`), checked
   against its SHA-256, then armed (`ab arm`). Rebooting tries it ([dev-workflow.md](dev-workflow.md), A/B slots); once the
-  launcher is up, it tells sleepd ("up"), which commits it (`ab commit`). A slot that never gets there falls back.
+  launcher is up, it tells sysd ("up"), which commits it (`ab commit`). A slot that never gets there falls back.
 
 **store** ([apps/store](../apps/store/main.c)): the catalog as tiles (All, Installed, a page per genre: L1/R1), a
 port's page (screenshot, description, size, layers, what it needs; Install, Update, Cancel, Readme, Remove) and its
