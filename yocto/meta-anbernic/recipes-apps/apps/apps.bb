@@ -15,12 +15,12 @@ inherit meson pkgconfig deploy
 
 # No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev).
 # common/ui: Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
-# launcher: Weston's capture protocol, ALSA, zlib. mediaplayer: GStreamer.
+# launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys). mediaplayer: GStreamer.
 # downloadd: curl, zstd, OpenSSL's SHA-256. store: curl.
 # corehost: Vulkan, EGL (virtual/libgles2 for headers only, the functions come
 # from eglGetProcAddress), ALSA, zlib.
 DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
-    libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib curl zstd openssl \
+    libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib pulseaudio curl zstd openssl \
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime

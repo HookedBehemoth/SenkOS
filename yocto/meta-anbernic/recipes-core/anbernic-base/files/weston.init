@@ -30,10 +30,11 @@ ui() {
 	. /etc/profile.d/wayland.sh
 	. /etc/profile.d/panvk.sh
 	. /etc/profile.d/zz-data.sh
-	# The player's runtime dir (shell reads Weston's socket there), shell's own, the launcher's FIFO
-	mkdir -p $XDG_RUNTIME_DIR
-	chown player:player $XDG_RUNTIME_DIR
-	chmod 0750 $XDG_RUNTIME_DIR
+	# The player's runtime dir (shell reads Weston's socket there, and the Pulse one: pipewire-pulse
+	# makes pulse/ 0700 unless it's there), shell's own, the launcher's FIFO
+	mkdir -p $XDG_RUNTIME_DIR/pulse
+	chown player:player $XDG_RUNTIME_DIR $XDG_RUNTIME_DIR/pulse
+	chmod 0750 $XDG_RUNTIME_DIR $XDG_RUNTIME_DIR/pulse
 	s=/run/user/$(id -u shell)
 	mkdir -p -m 0700 $s
 	chown shell:shell $s

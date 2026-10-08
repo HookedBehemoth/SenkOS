@@ -63,6 +63,7 @@
 #include "clock.h"
 #include "gfx.h"
 #include "keyboard.h"
+#include "keys.h"
 #include "licenses.h"
 #include "nav.h"
 #include "pad.h"
@@ -536,72 +537,6 @@ static void step_option(running *r, int i, int by) {
     return;
   atomic_store(&o->value, (uint8_t)((atomic_load(&o->value) % n + n + by) % n));
   run_request(r, APPCTL_OPTIONS, 0);
-}
-
-/* The volume keys (read here, whatever has the focus): the default sink's
- * volume through PipeWire, which WirePlumber keeps and restores at boot, then
- * the OSD with the level read back. Presses queued meanwhile all count; a held
- * key's repeats one step a round. */
-static void *volume_thread(void *data) {
-  const int fd = (int)(intptr_t)data;
-  struct input_event e;
-  while (read(fd, &e, sizeof(e)) == sizeof(e)) {
-    int steps = 0, held = 0;
-    do {
-      if (e.type != EV_KEY || (e.code != KEY_VOLUMEUP && e.code != KEY_VOLUMEDOWN))
-        continue;
-      const int by = e.code == KEY_VOLUMEUP ? 1 : -1;
-      if (e.value == 1)
-        steps += by;
-      else if (e.value == 2)
-        held = by;
-    } while (poll(&(struct pollfd){.fd = fd, .events = POLLIN}, 1, 0) > 0 &&
-             read(fd, &e, sizeof(e)) == sizeof(e));
-    if (steps == 0)
-      steps = held;
-    if (steps == 0)
-      continue;
-    STRBUF(256) cmd;
-    sb_set(cmd, S("{ "), steps > 0 ? S("wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 && ") : S(""),
-           S("wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ "));
-    sb_fmt(cmd, "%.4f", 0.0625 * abs(steps));
-    sb_add(cmd, steps > 0 ? S("+") : S("-"), S(" && wpctl get-volume @DEFAULT_AUDIO_SINK@; } 2>/dev/null"));
-    FILE *p = popen(cmd.p, "r");
-    if (p == NULL)
-      continue;
-    float volume;
-    char muted[16] = "";
-    if (fscanf(p, "Volume: %f %15s", &volume, muted) >= 1)
-      win_wake(UI_VOLUME, muted[0] != '\0' ? 0 : (int)(volume * 100 + 0.5f));
-    pclose(p);
-  }
-  close(fd);
-  return NULL;
-}
-
-/* The power key held POWER_HOLD_MS (sysd's HOLD_S: let go sooner, sysd suspends): UI_POWER_HOLD */
-enum { POWER_HOLD_MS = 1000 };
-static void *power_key_thread(void *data) {
-  const int fd = (int)(intptr_t)data;
-  struct input_event e;
-  uint64_t until = 0; /* 0: up */
-  for (;;) {
-    const int wait = until == 0 ? -1 : (int)(until - MIN(until, ms_now()));
-    const int ready = poll(&(struct pollfd){.fd = fd, .events = POLLIN}, 1, wait);
-    if (ready == 0) {
-      win_wake(UI_POWER_HOLD, 0);
-      until = 0;
-      continue;
-    }
-    if (ready < 0 && errno == EINTR)
-      continue;
-    if (ready < 0 || read(fd, &e, sizeof(e)) != sizeof(e))
-      break;
-    if (e.type == EV_KEY && e.code == KEY_POWER && e.value != 2)
-      until = e.value ? ms_now() + POWER_HOLD_MS : 0;
-  }
-  close(fd);
-  return NULL;
 }
 
 static int read_line(const char *path, char *out, size_t size) {

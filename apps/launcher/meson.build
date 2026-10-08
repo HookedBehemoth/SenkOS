@@ -8,11 +8,12 @@ capture_protocol = [
     command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@']),
 ]
 
-executable('launcher', 'main.c', 'apps.c', 'capture.c', 'licenses.c', 'power.c', 'romdb.c', 'running.c', 'sysd.c', 'clock.c', 'keyboard.c', 'updates.c', 'wifi.c', capture_protocol,
+executable('launcher', 'main.c', 'apps.c', 'capture.c', 'licenses.c', 'power.c', 'romdb.c', 'running.c', 'sysd.c', 'clock.c', 'keyboard.c', 'keys.c', 'updates.c', 'wifi.c', capture_protocol,
   dependencies: [
     common_dep,
     ui_dep,
     dependency('wayland-client'),
     dependency('zlib'),
+    dependency('libpulse'),
   ],
   install: true)
