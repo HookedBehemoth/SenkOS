@@ -42,8 +42,6 @@ if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} splash.txt; then
 	env import -t ${scriptaddr} ${filesize} splash
 fi
 if test -n "${brightness}"; then
-	# The LED doesn't start below 5%; the launcher sets the real level
-	if test ${brightness} -lt 250; then setenv brightness 250; fi
 	fdt set /backlight default-brightness-level <${brightness}>
 fi
 # Splash for the kernel in reserved memory; /uboot/fbdev: console instead

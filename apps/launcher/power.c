@@ -132,14 +132,6 @@ void power_init(void) {
   gpu_count = read_steps("/sys/class/devfreq/*.gpu/available_frequencies", gpu_steps);
   brightness_max = read_long("/sys/class/backlight/*/max_brightness");
   brightness = read_long("/sys/class/backlight/*/brightness");
-  /* boot.cmd clamps it, so set the saved level */
-  FILE *f = fopen("/uboot/brightness.txt", "r");
-  long saved;
-  if (f != NULL) {
-    if (fscanf(f, "brightness=%ld", &saved) == 1 && brightness_max > 0)
-      request("brightness", brightness = CLAMP(saved, 1, brightness_max));
-    fclose(f);
-  }
   set_clocks(0, 0);
 }
 

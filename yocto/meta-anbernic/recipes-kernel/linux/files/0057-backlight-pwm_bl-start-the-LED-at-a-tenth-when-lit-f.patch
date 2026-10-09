@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Fri, 9 Oct 2026 18:34:31 +0200
+Subject: [PATCH] backlight: pwm_bl: start the LED at a tenth when lit from off
+
+The RG35XX SP's LED driver stays dark when it is started below about 5%,
+but keeps running down to 1% once lit. Coming back from suspend or a
+blank at a low level left the panel dark. Lit from off below a tenth of
+the maximum, run at a tenth for 50 ms first, then at the level asked for.
+
+Upstream-Status: Pending
+---
+ drivers/video/backlight/pwm_bl.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/video/backlight/pwm_bl.c b/drivers/video/backlight/pwm_bl.c
+index d15bd6254..d47c0a80b 100644
+--- a/drivers/video/backlight/pwm_bl.c
++++ b/drivers/video/backlight/pwm_bl.c
+@@ -99,8 +99,18 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
+ 
+ 	if (brightness > 0) {
+ 		pwm_get_state(pb->pwm, &state);
+-		state.duty_cycle = compute_duty_cycle(pb, brightness, &state);
+ 		state.enabled = true;
++		/*
++		 * Some LED drivers stay dark when started at a low level, and
++		 * keep running at it once lit: from off, start at a tenth first.
++		 */
++		if (!pb->enabled && brightness < bl->props.max_brightness / 10) {
++			state.duty_cycle = compute_duty_cycle(pb, bl->props.max_brightness / 10, &state);
++			pwm_apply_might_sleep(pb->pwm, &state);
++			pwm_backlight_power_on(pb);
++			msleep(50);
++		}
++		state.duty_cycle = compute_duty_cycle(pb, brightness, &state);
+ 		pwm_apply_might_sleep(pb->pwm, &state);
+ 
+ 		pwm_backlight_power_on(pb);

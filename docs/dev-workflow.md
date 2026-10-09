@@ -56,7 +56,9 @@ scripts check their own arguments.
 
 The brightness survives reboots in `/uboot/brightness.txt`, written by `save-settings` at shutdown and before suspend
 (only when changed). U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054 makes
-pwm-backlight honour it without a levels table), so the panel lights at that level.
+pwm-backlight honour it without a levels table), so the panel lights at that level. The LED driver stays dark started
+below about 5% but keeps going down to 1% once lit, so kernel patch 0057 lights it at 10% for 50 ms first whenever
+it comes on from off below that: at boot, on resume, after a blank.
 
 Things that count as a failed try:
 - A hang in U-Boot or the early kernel: the U-Boot-armed SoC watchdog (16 s) resets the board.
