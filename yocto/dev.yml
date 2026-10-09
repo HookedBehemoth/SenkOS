@@ -1,0 +1,15 @@
+# Developer build: rg35xx-sp.yml plus a kernel with profiling and debugging (perf, ftrace,
+# k/uprobes, debugfs) and gdb, gdbserver, strace, perf and trace-cmd in the image. Never
+# published: a TMPDIR of its own (tmp-dev; sstate and downloads shared), so its images never replace
+# the release build's in tmp/deploy, where tools/publish and tools/ota look by default.
+#     ./kas build dev.yml
+#     tools/ota $B/build/tmp-dev/deploy/images/rg35xx-sp/senkos-image-rg35xx-sp.rootfs.squashfs-lz4
+header:
+  version: 18
+  includes:
+    - rg35xx-sp.yml
+
+local_conf_header:
+  senkos-dev: |
+    SENKOS_DEV = "1"
+    TMPDIR = "${TOPDIR}/tmp-dev"

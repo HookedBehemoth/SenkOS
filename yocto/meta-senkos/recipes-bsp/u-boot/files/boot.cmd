@@ -52,6 +52,7 @@ elif load ${devtype} ${devnum}:${distro_bootpart} ${ramdisk_addr_r} ${splash} &&
 	fdt rsvmem add 0x43800000 0x${filesize}
 	fdt set /chosen splash <0x43800000 0x${filesize}>
 fi
-# ro: slots are squashfs (an ext4 slot still works, init remounts it rw)
-setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 drm_client_lib.active=${client} ab=${bslot}
+# ro: slots are squashfs (an ext4 slot still works, init remounts it rw). abi.cp15_barrier=2: the
+# CPU runs ARMv6's CP15 barriers (32-bit programs built for ARMv6, like Raspberry Pi builds) itself
+setenv bootargs root=PARTUUID=${rootuuid} rootwait ro panic=10 console=tty0 drm_client_lib.active=${client} ab=${bslot} sysctl.abi.cp15_barrier=2
 booti ${kernel_addr_r} - ${fdt_addr_r}

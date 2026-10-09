@@ -82,6 +82,8 @@ IMAGE_INSTALL += "${PORTS_PLATFORM} \
     ${@' '.join('lib32-' + p for p in d.getVar('PORTS_PLATFORM').split())} \
     lib32-pipewire-alsa lib32-pipewire-modules-client-device lib32-pipewire-modules-adapter lib32-pipewire-modules-metadata \
     lib32-pipewire-modules-session-manager lib32-pipewire-spa-plugins-audioconvert"
+# Developer builds (SENKOS_DEV, dev.yml): debuggers and tracers
+IMAGE_INSTALL += "${@'gdb gdbserver strace perf trace-cmd' if d.getVar('SENKOS_DEV') == '1' else ''}"
 IMAGE_LINGUAS = ""
 # Weston is started by senkos-base (as player, via seatd; kiosk shell)
 BAD_RECOMMENDATIONS += "weston-init"
