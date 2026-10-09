@@ -4,7 +4,7 @@ One flash of the full card image, then everything goes over the USB-C (OTG) cabl
 
 ## The link
 
-`anbernic-base` sets up a configfs USB gadget at boot (`/etc/init.d/anbernic`):
+`senkos-base` sets up a configfs USB gadget at boot (`/etc/init.d/senkos`):
 
 | Function | Device side | Host side |
 |---|---|---|
@@ -26,7 +26,7 @@ p3 squashfs 512M slot b: same
 p4 ext4  rest    /data, read-write; made by the first boot (`ab mount`), survives slot updates
 ```
 
-`boot.scr` ([boot.cmd](../yocto/meta-anbernic/recipes-bsp/u-boot/files/boot.cmd)) isn't part of a slot, so an OTA doesn't update it:
+`boot.scr` ([boot.cmd](../yocto/meta-senkos/recipes-bsp/u-boot/files/boot.cmd)) isn't part of a slot, so an OTA doesn't update it:
 `tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/rg35xx-sp/boot.scr`.
 It reads `ab.txt`:
 - `slot=a|b` is the last known good slot.
@@ -47,7 +47,7 @@ launcher's first frame (3 s at most). A udevd runs for Weston's start
 meanwhile, so libinput still gets the input devices from the coldplug. Once rcS is done, init starts sysd and
 the USB network's udhcpd (inittab `respawn`: again should they die).
 
-sysd ([sysd.c](../yocto/meta-anbernic/recipes-core/sysd/files/sysd.c)) is root's side of the UI: lid, power key
+sysd ([sysd.c](../yocto/meta-senkos/recipes-core/sysd/files/sysd.c)) is root's side of the UI: lid, power key
 and suspend, and what the unprivileged launcher asks for over `/run/sysd.sock` (`SOCK_SEQPACKET`, a request a
 connection, shell or root only by `SO_PEERCRED`). Its reply comes once the request is done: `ok` or `err WHY`. The
 launcher shows a refusal on the OSD. Requests map to commands in a table (`cmds`), run without a shell; the
@@ -71,7 +71,7 @@ tools/ota path/to/rootfs.squashfs-lz4
 tools/ssh ab status
 ```
 
-Device side: [ab](../yocto/meta-anbernic/recipes-core/anbernic-base/files/ab) with `status|mount|flash|commit|boot`.
+Device side: [ab](../yocto/meta-senkos/recipes-core/senkos-base/files/ab) with `status|mount|flash|commit|boot`.
 
 ## Wi-Fi
 
@@ -79,7 +79,7 @@ The RTL8821CS (SDIO) is driven by `rtw88_8821cs`, a module (cfg80211 and mac8021
 turned on: the rest of the kernel stays built in. Its firmware is `linux-firmware-rtl8821`'s, the regulatory database
 `wireless-regdb-static`'s.
 
-[wifi](../yocto/meta-anbernic/recipes-core/anbernic-base/files/wifi) (sysd runs `wifi on|off` for the launcher's
+[wifi](../yocto/meta-senkos/recipes-core/senkos-base/files/wifi) (sysd runs `wifi on|off` for the launcher's
 Wi-Fi screen, and `wifi` once the launcher is up, so it stays out of the boot) loads it, starts `wpa_supplicant` on `wlan0` and `wpa_cli -a wifi`,
 whose CONNECTED runs `udhcpc` on it; a lease runs `clock net` (`udhcpc.d/90ntp`, see Time below).
 What's set lives in `/data/OS/wifi`, root's alone (0700): `wpa_supplicant.conf` (the networks, written by its
@@ -94,7 +94,7 @@ The status bar's symbol is `SIGNAL_POLL`'s RSSI; there's none while Wi-Fi is off
 
 ## Time
 
-[clock](../yocto/meta-anbernic/recipes-core/anbernic-base/files/clock) (sysd runs `clock ...` for the launcher's
+[clock](../yocto/meta-senkos/recipes-core/senkos-base/files/clock) (sysd runs `clock ...` for the launcher's
 Settings) keeps `/data/OS/time` (root's, readable): `localtime`, a link into `/usr/share/zoneinfo` (tzdata) that
 `/etc/localtime` links to (none: UTC); `chosen` when the zone was picked; `manual` when NTP is off. Every DHCP lease
 sets the clock by NTP (`ntpd -q`, then the RTC) unless `manual`; a new one (a network joined, not a renewal) also
@@ -112,15 +112,15 @@ tools/ssh 'clock zone Europe/Berlin; clock zone auto; clock ntp off; clock set $
 `tools/ota`. wic can't know the card size, so the image has no p4. At boot, `ab mount` does this:
 - If p4 is missing, it appends one that spans the rest of the card (`sfdisk`).
 - It formats p4 only while `/uboot/data-new` marks the partition as just created by it.
-- It mounts p4 at `/data`, and when it just made it, copies the image's `/usr/share/anbernic/data` there (`anbernic-data`: the repo's [data/](../data) and the empty folders).
+- It mounts p4 at `/data`, and when it just made it, copies the image's `/usr/share/senkos/data` there (`senkos-data`: the repo's [data/](../data) and the empty folders).
 
 Ours on `/data` are `OS`, `apps`, `roms`, `music` and `videos`; the OS's own files are all in `OS/`. HOME is `/data`: what the launcher and apps keep for themselves stays in `.local/state` and `.cache`, but settings are in `OS/config` (`XDG_CONFIG_HOME`).
 
 | Path | Used by |
 |---|---|
 | `apps/{ports,applications,benchmarks}/` | the launcher's pages of the same names: `*.desktop` entries (or bare executables) |
-| `apps/emulators/` | emulators and players, `.desktop` files over the image's (`/usr/share/anbernic/emulators`): one of the same file name replaces the image's or hides it (`Hidden=true`). `MimeType` says which systems' games it runs (each system's `MimeType`), `%f` in `Exec` is the game |
-| `apps/systems/` | game systems, `.system` files over the image's (`/usr/share/anbernic/systems`), replaced or hidden by file name like emulators: `[System]` `Name`, `Folder` (its page's, e.g. `roms/msx`), `Aliases` (folder names elsewhere, for Libraries), `Patterns` (`*.rom;*.mx2;`), `MimeType` (what its emulators take), `Pack`, `Order`. A new system is a `.system` here plus an emulator in `apps/emulators` |
+| `apps/emulators/` | emulators and players, `.desktop` files over the image's (`/usr/share/senkos/emulators`): one of the same file name replaces the image's or hides it (`Hidden=true`). `MimeType` says which systems' games it runs (each system's `MimeType`), `%f` in `Exec` is the game |
+| `apps/systems/` | game systems, `.system` files over the image's (`/usr/share/senkos/systems`), replaced or hidden by file name like emulators: `[System]` `Name`, `Folder` (its page's, e.g. `roms/msx`), `Aliases` (folder names elsewhere, for Libraries), `Patterns` (`*.rom;*.mx2;`), `MimeType` (what its emulators take), `Pack`, `Order`. A new system is a `.system` here plus an emulator in `apps/emulators` |
 | `roms/<system>/` | the launcher's system pages |
 | `videos/` | the launcher's Videos page (`.mp4 .mkv .webm .mov .m4v .avi .ts`), played by `mediaplayer` |
 | `OS/assets/thumbnails/<system>.pack` | game packs: titles, metadata and box art by ROM CRC32 (`tools/boxart-pack`) |
@@ -192,10 +192,10 @@ To iterate faster, build out of tree with host clang, then swap the Image into t
 
 ```
 K=/mnt/multimedia/anbernic-yocto/kernel-dev    # src/ = patched source, out/ = build, bin/bc = Yocto's bc (host has none)
-cp yocto/meta-anbernic/recipes-kernel/linux/files/defconfig $K/out/.config
+cat yocto/meta-anbernic/recipes-kernel/linux/files/defconfig yocto/meta-senkos/dynamic-layers/anbernic/recipes-kernel/linux/files/splash.cfg > $K/out/.config
 (cd $K/src && PATH=$K/bin:$PATH make O=$K/out ARCH=arm64 LLVM=1 olddefconfig Image -j16)   # incremental
 cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-lz4> && cp ../out/arch/arm64/boot/Image root/boot/Image-7.2.0 && mksquashfs root t.sqfs -comp lz4 -Xhc -noappend'
 tools/ota $K/test/t.sqfs
 ```
 
-When it works: `make savedefconfig` and copy `out/defconfig` back into the recipe (bitbake runs `olddefconfig`, so a minimal defconfig is enough).
+When it works: `make savedefconfig` and copy `out/defconfig` back into the recipe, minus the `splash.cfg` lines (meta-senkos adds them) (bitbake runs `olddefconfig`, so a minimal defconfig is enough).

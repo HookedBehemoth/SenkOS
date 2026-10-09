@@ -2,12 +2,16 @@ header:
   version: 18
 
 machine: rg35xx-sp
-distro: anbernic
-target: anbernic-image
+distro: senkos
+target: senkos-image
 
 repos:
+  # BSP: the H700 and Anbernic's boards
   meta-anbernic:
     path: meta-anbernic
+  # Distro: SenkOS
+  meta-senkos:
+    path: meta-senkos
   bitbake:
     url: https://git.openembedded.org/bitbake
     branch: "2.18"
@@ -35,7 +39,7 @@ repos:
       meta-arm-toolchain:
 
 local_conf_header:
-  anbernic: |
+  senkos: |
     INHERIT += "rm_work"
     # build dirs live on /mnt/multimedia (see ./kas); rm_work still keeps them small
     BB_DISKMON_DIRS = "STOPTASKS,${TMPDIR},2G,100K STOPTASKS,${DL_DIR},2G,100K HALT,${TMPDIR},500M,10K"

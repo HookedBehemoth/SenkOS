@@ -1,6 +1,6 @@
 /*
  * downloadd: ports from the store and system updates, one at a time, for the
- * store and the launcher's Updates (root, started by anbernic.init).
+ * store and the launcher's Updates (root, started by senkos.init).
  *
  * Clients talk lines over /run/downloadd.sock (root:player 0660):
  *

@@ -18,7 +18,7 @@ BL31 refuses to suspend if the parameters don't match at runtime. The stub also 
 | TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4) |
 | Kernel | PM fixes for the power-key wake event, MMC, the TF2 slot power, the USB PHY clock, the display pipeline and LCD pads, the codec, and a suspend OPP (patches 0018-0024, 0027) |
 | `sysd` | lid close, the power key let go within 1 s (held longer, the launcher shows Sleep / Reboot / Power off) or the launcher's `suspend` request (Sleep) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it, and a `suspend` request within 1.5 s of waking. Reacts only to events, so a misread lid at boot can't suspend. Locks the VT (`VT_LOCKSWITCH`) meanwhile: with no framebuffer (fbdev emulation off) the kernel would switch to a text console for every sleep, and seatd would take the display from Weston and give it back |
-| `anbernic.init` | rebinds the USB gadget when musb comes back detached |
+| `senkos.init` | rebinds the USB gadget when musb comes back detached |
 
 Wake sources: power key (PMIC), lid (Hall GPIO), RTC. Not the charger: `90-wake.rules` turns off the `axp20x-usb` supply's wakeup, which would wake on every plug-in.
 
@@ -96,7 +96,7 @@ resumed) → `SSTL` (TF-A: Linux, restore) → 0. `0x104` warm entry, `0x114` DR
 `SSTB` with `SSTI` before trying, so a resume that hangs is followed by a cold boot. When it gives up (DRAM
 init failed: `SSTD`; BL31's sum differs: `SSTC`) it has the AXP717 restart (REG27 bit 1: rails off and on,
 its registers reset) rather than boot on: the rails Linux switched off to suspend would still be off, and
-U-Boot would misread the PE6 panel strap (a black screen). At the next boot `anbernic.init` reports any of
+U-Boot would misread the PE6 panel strap (a black screen). At the next boot `senkos.init` reports any of
 `SSTI`, `SSTR`, `SSTL`, `SSTD`, `SSTC` (kernel log, `/run/sleep-failed`) and clears it; the launcher then
 offers light sleep: `/data/OS/config/light-sleep` (sysd's `sleep light|deep`, Settings → Debug → Deep
 sleep) keeps the lid armed in `suspend`, so TF-A never picks super standby.

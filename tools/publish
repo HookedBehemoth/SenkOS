@@ -159,9 +159,9 @@ def ports(dirs):
 def os_release(args):
     bucket, password = need('OS_BUCKET'), need('OS_PASSWORD')
     deploy = Path(args.deploy)
-    slot = (deploy / 'anbernic-image-rg35xx-sp.rootfs.squashfs-lz4').resolve()
-    card = (deploy / 'anbernic-image-rg35xx-sp.rootfs.wic.zst').resolve()
-    bmap = (deploy / 'anbernic-image-rg35xx-sp.rootfs.wic.bmap').resolve()
+    slot = (deploy / 'senkos-image-rg35xx-sp.rootfs.squashfs-lz4').resolve()
+    card = (deploy / 'senkos-image-rg35xx-sp.rootfs.wic.zst').resolve()
+    bmap = (deploy / 'senkos-image-rg35xx-sp.rootfs.wic.bmap').resolve()
     build = subprocess.run(['unsquashfs', '-cat', str(slot), 'etc/build'], capture_output=True, text=True,
                            check=True).stdout.strip()
     if len(build) != 14 or not build.isdigit():
@@ -170,12 +170,12 @@ def os_release(args):
         z = Path(tmp) / 'slot.squashfs.zst'
         subprocess.run(['zstd', '-q', '-19', '-T0', str(slot), '-o', str(z)], check=True)
         upload(bucket, password, z, f'{build}/slot.squashfs.zst')
-        upload(bucket, password, card, f'{build}/anbernic-image.wic.zst')
-        upload(bucket, password, bmap, f'{build}/anbernic-image.wic.bmap')
+        upload(bucket, password, card, f'{build}/senkos-image.wic.zst')
+        upload(bucket, password, bmap, f'{build}/senkos-image.wic.bmap')
         admin(f'/admin/releases/{build}', {
             'channel': args.channel, 'notes': args.notes,
             'slot': f'{build}/slot.squashfs.zst', 'slot_sha256': sha256(z), 'slot_size': z.stat().st_size,
-            'image': f'{build}/anbernic-image.wic.zst', 'image_sha256': sha256(card),
+            'image': f'{build}/senkos-image.wic.zst', 'image_sha256': sha256(card),
             'image_size': card.stat().st_size, 'created': int(time.time()),
         })
         print(f'{build}: slot {z.stat().st_size / 1e6:.0f} MB, card {card.stat().st_size / 1e6:.0f} MB')

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PNG -> boot splash, drawn centred. The top-left pixel is the background.
 
-  tools/mksplash.py splash.png yocto/meta-anbernic/recipes-bsp/u-boot/files/splash.lz4
+  tools/mksplash.py splash.png yocto/meta-senkos/recipes-bsp/u-boot/files/splash.lz4
 """
 import struct
 import subprocess

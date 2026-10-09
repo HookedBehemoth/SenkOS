@@ -13,7 +13,7 @@ shows of a port (thumbnail, screenshots, readme) is the server's own, in its `ME
 | Bunny storage zone | Pull zone (public) | Holds |
 |---|---|---|
 | `portmaster-decl` | `https://portmaster-decl.b-cdn.net` | `ports/<id>/<hash>-<id>.tar.zst`; `layers/<hash>-<file>` |
-| `hare-os-images` | `https://hare-os-images.b-cdn.net` | `<build>/slot.squashfs.zst`, `<build>/anbernic-image.wic.zst`, `.wic.bmap` |
+| `hare-os-images` | `https://hare-os-images.b-cdn.net` | `<build>/slot.squashfs.zst`, `<build>/senkos-image.wic.zst`, `.wic.bmap` |
 
 Files are named by their content's hash: a new version is a new name, so no cache ever serves an old copy.
 
@@ -68,7 +68,7 @@ tools/publish os -m "Wi-Fi, the store"                                          
 
 `/etc/store` (root's; `/data/OS/overlay/etc/store` for another) names the server: `[Store] Server=`, `Channel=`.
 
-**downloadd** ([apps/downloadd](../apps/downloadd/main.c), root, from `anbernic.init`) does every download, one at
+**downloadd** ([apps/downloadd](../apps/downloadd/main.c), root, from `senkos.init`) does every download, one at
 a time, each in a process of its own: a port's as `player` (so what it unpacks can't reach past the player's files),
 the system's as root. It listens on `/run/downloadd.sock` (root:player 0660), lines in both directions:
 `install ID`, `remove ID`, `cancel ID`, `check`, `update`; `job ID STATE DONE TOTAL [MESSAGE]` (queued,

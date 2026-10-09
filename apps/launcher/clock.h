@@ -1,5 +1,5 @@
 /*
- * Time settings, as `clock` (anbernic-base, root's: sysd runs it on "clock ...")
+ * Time settings, as `clock` (senkos-base, root's: sysd runs it on "clock ...")
  * keeps them in /data/OS/time: the zone (localtime, a link into /usr/share/zoneinfo, which
  * /etc/localtime links to), `chosen` when it was picked rather than guessed, `manual` when the
  * time is set by hand rather than by NTP. The zones to pick from: tzdata's zone.tab, a region

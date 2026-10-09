@@ -1,6 +1,6 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-COMPATIBLE_MACHINE:rg35xx-sp = "rg35xx-sp"
+COMPATIBLE_MACHINE:h700 = "h700"
 
 # PSCI SYSTEM_SUSPEND ("deep" sleep) for the H616/H700 (patch from ROCKNIX): BL31 runs an
 # SRAM stub that puts DRAM into self-refresh, WFIs for the wake IRQ, and re-initialises DRAM.
@@ -9,7 +9,7 @@ COMPATIBLE_MACHINE:rg35xx-sp = "rg35xx-sp"
 # Super standby on top (0002 + the stub patch): the PMIC cuts the SoC's power, SPL resumes;
 # see docs/suspend.md.
 STUB_REV = "712653d11230b2450061ddb8e25f31e072da7a48"
-SRC_URI:append:rg35xx-sp = " \
+SRC_URI:append:h700 = " \
     file://0001-allwinner-h616-psci-system-suspend.patch \
     file://0002-allwinner-h616-super-standby.patch \
     file://stub-0001-super-standby.patch;patchdir=${UNPACKDIR}/h700-suspend-stub-${STUB_REV} \
@@ -24,13 +24,13 @@ SRC_URI[uboot.sha256sum] = "33b09b59bdf1f175c0c9b69dfebcfaa3eeba5313aabbad4791ef
 STUB_DIR = "${UNPACKDIR}/h700-suspend-stub-${STUB_REV}"
 STUB_UBOOT = "${UNPACKDIR}/u-boot-v2026.01"
 
-do_compile:prepend:rg35xx-sp() {
+do_compile:prepend:h700() {
     mkdir -p ${B}/suspend-stub
     # plain make: EXTRA_OEMAKE (CC/LD/PLAT/...) is for TF-A, the stub sets its own freestanding flags
     make -C ${B}/suspend-stub -f ${STUB_DIR}/Makefile SRC_DIR=${STUB_DIR} \
         UBOOT_DIR=${STUB_UBOOT} ATF_DIR=${S} DEFCONFIG=${STUB_UBOOT}/configs/${UBOOT_MACHINE} \
         OUT=suspend_stub_lpddr4.bin CROSS_COMPILE=${TARGET_PREFIX}
 }
-EXTRA_OEMAKE:append:rg35xx-sp = " SUNXI_SYSTEM_SUSPEND=1 SUNXI_SUSPEND_STUB=${STUB_DIR}/suspend_stub_lpddr4.bin"
+EXTRA_OEMAKE:append:h700 = " SUNXI_SYSTEM_SUSPEND=1 SUNXI_SUSPEND_STUB=${STUB_DIR}/suspend_stub_lpddr4.bin"
 # Errors only: each NOTICE line costs ~4 ms at 115200 baud on every boot
-EXTRA_OEMAKE:append:rg35xx-sp = " LOG_LEVEL=10"
+EXTRA_OEMAKE:append:h700 = " LOG_LEVEL=10"

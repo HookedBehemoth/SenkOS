@@ -1,0 +1,11 @@
+# SPL+U-Boot at 8 KiB (where the H700 BROM looks for eGON.BT0), then:
+#   p1 FAT  boot.scr + ab.txt (A/B slot state), mounted at /uboot in Linux
+#   p2 slot a, p3 slot b: the image's squashfs-lz4 (read-only rootfs, kernel + dtb in /boot)
+# Both slots start out identical; `ab flash` rewrites the inactive one.
+#   p4 /data (ext4, rw): not in the image, the first boot makes it from the rest of the card (`ab mount`)
+part u-boot --source rawcopy --sourceparams="file=${SPL_BINARY}" --no-table --align 8
+part --source bootimg_partition --fstype=vfat --label boot --active --align 4096 --fixed-size 64M
+part --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${IMAGE_NAME}.squashfs-lz4" --align 4096 --fixed-size 512M
+part --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${IMAGE_NAME}.squashfs-lz4" --align 4096 --fixed-size 512M
+
+bootloader --ptable msdos --diskid 0x52473335

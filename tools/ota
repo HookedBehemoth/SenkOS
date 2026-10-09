@@ -2,10 +2,10 @@
 # Flash a rootfs into the handheld's inactive A/B slot over USB, reboot into it and commit it
 # once ssh works. A slot that isn't committed within 120 s of booting (or doesn't boot) is
 # retried 3 times, then U-Boot falls back to the old one by itself.
-# usage: tools/ota [rootfs.squashfs-lz4]      (default: latest anbernic-image build)
+# usage: tools/ota [rootfs.squashfs-lz4]      (default: latest senkos-image build)
 set -e
 cd "$(dirname "$0")"
-img=${1:-/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp/anbernic-image-rg35xx-sp.rootfs.squashfs-lz4}
+img=${1:-/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp/senkos-image-rg35xx-sp.rootfs.squashfs-lz4}
 from=$(./ssh 'sed -n "s/.* ab=\([ab]\).*/\1/p" /proc/cmdline')
 echo "booted slot: $from, flashing $(readlink -f "$img")"
 ./ssh -C 'ab flash' < "$img"

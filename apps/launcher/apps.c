@@ -15,8 +15,8 @@
 
 /* The image's systems, emulators and players; apps/systems and
  * apps/emulators on the card over them */
-#define SYSTEMS "/usr/share/anbernic/systems"
-#define EMULATORS "/usr/share/anbernic/emulators"
+#define SYSTEMS "/usr/share/senkos/systems"
+#define EMULATORS "/usr/share/senkos/emulators"
 
 /* The systems (apps_init), then the app folders */
 enum { CATEGORIES_MAX = 64 };

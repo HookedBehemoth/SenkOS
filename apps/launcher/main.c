@@ -1237,7 +1237,7 @@ static size_t update_rows(entry *rows, str *said) {
 #define SSH_ALL "/data/OS/dropbear/everywhere"
 /* Sleep never powers the SoC off while this is there; sysd's "sleep light|deep" */
 #define LIGHT_SLEEP "/data/OS/config/light-sleep"
-/* The last deep sleep didn't resume (why, for the log: anbernic.init); emptied once asked */
+/* The last deep sleep didn't resume (why, for the log: senkos.init); emptied once asked */
 #define SLEEP_FAILED "/run/sleep-failed"
 
 /* Settings, Time and Debug: what each row does */

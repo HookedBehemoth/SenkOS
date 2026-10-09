@@ -1,6 +1,6 @@
 /*
- * The image's licenses, prepared by the image build (anbernic_licenses in
- * anbernic-image.bb) into one file, used as is (u16, little-endian):
+ * The image's licenses, prepared by the image build (senkos_licenses in
+ * senkos-image.bb) into one file, used as is (u16, little-endian):
  *
  *     program count, license count, run count, string count
  *     programs: name, license count, run count (each one's licenses and runs
@@ -21,7 +21,7 @@
 #include "str.h"
 
 #ifndef LICENSES
-#define LICENSES "/usr/share/anbernic/licenses"
+#define LICENSES "/usr/share/senkos/licenses"
 #endif
 #define LICENSES_MAX 256
 

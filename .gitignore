@@ -8,4 +8,6 @@ meta-openembedded/
 openembedded-core/
 testdata/
 .env
-
+*.jpg
+*.png
+*.lz4

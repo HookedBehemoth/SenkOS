@@ -1,14 +1,15 @@
-SUMMARY = "Mainline Linux with ROCKNIX H700 patches for the Anbernic RG35XX-SP"
+SUMMARY = "Mainline Linux with ROCKNIX H700 patches for Anbernic H700 boards"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 
 inherit kernel
 
-COMPATIBLE_MACHINE = "rg35xx-sp"
+COMPATIBLE_MACHINE = "h700"
 
 # 0001-0029: ROCKNIX's H700 board patches (their number is the second one in the name),
 # minus their out-of-tree joypad driver: the buttons are mainline gpio-keys.
-# 0030-0032, 0037, 0041-0055: ours (0044-0051: super standby, docs/suspend.md; 0052: boot splash).
+# 0030-0032, 0037, 0041-0055: ours (0044-0051: super standby, docs/suspend.md). 0009 (battery name)
+# and 0052 (boot splash) are the distro's, in meta-senkos.
 # 0033-0036: Cedrus H616 + VP9 from LibreELEC; 0038-0040: its P010 output for 10-bit VP9 and
 # HEVC (without them the engine writes 10-bit streams as 8-bit NV12).
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
@@ -22,7 +23,6 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0006-0040-Revert-usb-musb-Fix-hardware-lockup-on-first-Rx.patch \
     file://0007-0110-v2_20250226_kikuchan98_drm_panel_add_generic_mi.patch \
     file://0008-0111-rg35xx-2024-use-panel-mipi-dpi-spi-driver.patch \
-    file://0009-0124-battery-name.patch \
     file://0010-0126-20241018_macroalpha82_rg35xx_add_additional_har.patch \
     file://0011-0127-enable-mmc1-for-RG35XX-2024.patch \
     file://0012-0151-phy-fix-OTG-host-mode.patch \
@@ -65,7 +65,6 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0049-usb-musb-sunxi-set-the-PHY-up-again-on-resume.patch \
     file://0050-clk-sunxi-ng-de2-restore-the-DE33-clock-registers-on.patch \
     file://0051-soc-sunxi-restore-the-SoC-state-after-an-H616-super-.patch \
-    file://0052-drm-clients-add-a-boot-splash-client.patch \
     file://0053-mmc-sunxi-power-modules-with-a-pwrseq-up-from-the-re.patch \
     file://0054-backlight-pwm_bl-honour-default-brightness-level-wit.patch \
     file://0055-ASoC-sun4i-codec-keep-the-H616-module-clock-while-th.patch \
