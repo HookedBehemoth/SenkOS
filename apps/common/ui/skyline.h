@@ -2,8 +2,7 @@
  * Skyline binary packing, after
  * http://clb.demon.fi/projects/even-more-rectangle-bin-packing
  *
- * Four bytes a texel, because the only thing packed here is glyph distance
- * fields: three channels of MSDF and the true distance.
+ * A byte a texel: what is packed here is glyph and icon coverage.
  */
 #pragma once
 
@@ -11,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SKYLINE_BPP 4
+#define SKYLINE_BPP 1
 
 typedef struct {
   uint16_t x, y, w, h;

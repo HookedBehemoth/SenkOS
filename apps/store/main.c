@@ -888,7 +888,7 @@ int main(int argc, char **argv) {
     int w, h;
     if (!gfx_begin(target, &w, &h))
       continue;
-    ui_fill(0, 0, w, h, BG);
+    gfx_clear(BG);
     nav_begin(&ui, &ctx, ms_now());
     const ui_rect view = {0, BAR + 1, w, h - BAR - 1 - ROW};
     if (screen == GRID) {

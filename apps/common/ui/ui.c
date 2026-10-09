@@ -127,18 +127,11 @@ bool ui_atlas_add(const uint8_t *coverage, int w, int h, int pitch, skyline_regi
   while (!skyline_alloc(&atlas, w, h, out)) {
     if (atlas.size >= 4096 || !skyline_enlarge(&atlas, atlas.size * 2))
       return false;
+    /* Quads pushed earlier this frame have UVs for the old size: one more frame */
+    win_wake(UI_LOADED, 0);
   }
-  /* Coverage, premultiplied white: the colour comes from the quad */
-  uint8_t *rgba = malloc((size_t)w * h * 4);
-  if (rgba == NULL)
-    return false;
-  for (int y = 0; y < h; y++)
-    for (int x = 0; x < w; x++) {
-      uint8_t *p = rgba + ((size_t)y * w + x) * 4;
-      p[0] = p[1] = p[2] = p[3] = coverage[y * pitch + x];
-    }
-  skyline_blit(&atlas, *out, rgba, (size_t)w * 4);
-  free(rgba);
+  /* Coverage; the colour comes from the quad */
+  skyline_blit(&atlas, *out, coverage, (size_t)pitch);
   return true;
 }
 
@@ -178,7 +171,7 @@ static bool upload(void) {
   if (!atlas.dirty && texture.image != VK_NULL_HANDLE)
     return true;
   gfx_image fresh;
-  if (!gfx_upload(&fresh, atlas.data, atlas.size, atlas.size))
+  if (!gfx_upload_coverage(&fresh, atlas.data, atlas.size, atlas.size))
     return false;
   gfx_release(&texture);
   texture = fresh;
@@ -246,6 +239,7 @@ static int run(int px, int x, int y, str utf8, const gfx_color *color) {
       color = NULL;
   }
   const int baseline = y + (int)((f->face->size->metrics.ascender + 32) >> 6);
+  const float inv = 1.0f / atlas.size;
   hb_position_t pen = 0;
   for (unsigned i = 0; i < count; i++) {
     const glyph *g = color != NULL ? glyph_for(f, info[i].codepoint) : NULL;
@@ -255,9 +249,9 @@ static int run(int px, int x, int y, str utf8, const gfx_color *color) {
           .x = x + (int)((pen + pos[i].x_offset + 32) >> 6) + g->left,
           .y = baseline - (int)((pos[i].y_offset + 32) >> 6) - g->top,
           .w = r.w, .h = r.h,
-          .u0 = r.x, .v0 = r.y, .u1 = r.x + r.w, .v1 = r.y + r.h,
+          .u0 = r.x * inv, .v0 = r.y * inv, .u1 = (r.x + r.w) * inv, .v1 = (r.y + r.h) * inv,
           .color = gfx_rgba(*color),
-          .tex = GFX_TEXT | GFX_TEXEL,
+          .tex = GFX_TEXT,
       });
     }
     pen += pos[i].x_advance;
@@ -271,9 +265,10 @@ int ui_text_width(int px, str utf8) { return run(px, 0, 0, utf8, NULL); }
 void ui_atlas_draw(skyline_region r, int x, int y, gfx_color color) {
   if (!upload())
     return;
+  const float inv = 1.0f / atlas.size;
   gfx_push((gfx_quad){.x = x, .y = y, .w = r.w, .h = r.h,
-                      .u0 = r.x, .v0 = r.y, .u1 = r.x + r.w, .v1 = r.y + r.h,
-                      .color = gfx_rgba(color), .tex = GFX_TEXT | GFX_TEXEL});
+                      .u0 = r.x * inv, .v0 = r.y * inv, .u1 = (r.x + r.w) * inv, .v1 = (r.y + r.h) * inv,
+                      .color = gfx_rgba(color), .tex = GFX_TEXT});
 }
 
 int ui_text(int px, int x, int y, str utf8, gfx_color color) {

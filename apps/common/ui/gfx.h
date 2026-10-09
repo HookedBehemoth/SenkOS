@@ -19,8 +19,6 @@
 
 /* Slots with a fixed meaning; the rest are the assets'. */
 enum { GFX_WHITE, GFX_PLACEHOLDER, GFX_TEXT, GFX_BACKDROP, GFX_FIRST_FREE };
-/* In gfx_quad.tex: uv in texels, not 0..1, so a growing atlas stays right */
-#define GFX_TEXEL 0x80000000u
 
 typedef struct {
   float x, y, w, h;
@@ -64,11 +62,15 @@ uint32_t gfx_reserve(void);
 void gfx_set(uint32_t at, gfx_quad q);
 void gfx_clip(float x, float y, float w, float h);
 void gfx_noclip(void);
+/* The frame's background, all of it: free, where a quad over it all shades every pixel */
+void gfx_clear(gfx_color c);
 void gfx_end(gfx_target *t);
 
 /* Any thread; blocks that thread until the copy is done. `rgba` is
  * premultiplied. */
 bool gfx_upload(gfx_image *out, const void *rgba, int w, int h);
+/* The same from a byte a pixel (the glyph atlas): sampled as premultiplied white */
+bool gfx_upload_coverage(gfx_image *out, const void *a8, int w, int h);
 /* UI thread. NULL puts the placeholder back. */
 void gfx_bind(uint32_t slot, const gfx_image *image);
 /* UI thread: destroyed once no submitted frame can still use it. */

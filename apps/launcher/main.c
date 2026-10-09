@@ -2442,7 +2442,7 @@ int main(int argc, char **argv) {
     int w, h;
     if (!gfx_begin(screen, &w, &h))
       continue;
-    ui_fill(0, 0, w, h, BG);
+    gfx_clear(BG);
     if (paused && backdrop.image != VK_NULL_HANDLE) {
       gfx_push((gfx_quad){.w = w, .h = h, .u1 = 1, .v1 = 1,
                           .color = 0xffffffff, .tex = GFX_BACKDROP});

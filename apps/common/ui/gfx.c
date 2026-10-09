@@ -29,12 +29,22 @@
 #define MAX_TARGETS 2
 #define MAX_IMAGES 8 /* swapchain */
 
+/* quad.vert's Quad: a gfx_quad, or a part of a rounded one (gfx_push), with the
+ * box its shape is of */
+typedef struct {
+  float x, y, w, h;
+  float u0, v0, u1, v1;
+  float shape[4]; /* x y w h */
+  uint32_t color, tex;
+  float radius, border;
+} gpu_quad;
+
 typedef struct {
   VkCommandBuffer cmd;
   VkSemaphore acquired;
   uint64_t submitted;
   VkBuffer quads;
-  gfx_quad *map;
+  gpu_quad *map;
   VkDescriptorSet set;
   uint32_t seen[MAX_SLOTS];
 } frame;
@@ -51,7 +61,7 @@ struct gfx_target {
   VkImageView views[MAX_IMAGES];
   /* Per swapchain image: presentation may hold it past its frame */
   VkSemaphore rendered[MAX_IMAGES];
-  VkPipeline pipeline;
+  VkPipeline pipelines[3]; /* by kind */
   frame frames[FRAMES];
   uint32_t current;
 };
@@ -92,6 +102,17 @@ static size_t graveyard_count, graveyard_capacity;
 static frame *building;
 static uint32_t quad_count;
 static float clip[4];
+/* A draw per run of quads of one kind (quad.frag's KIND) and one clip (its scissor). Kept
+ * here: the quad buffer is write-only. */
+enum { KIND_BOX, KIND_TEXTURED, KIND_ROUNDED, KINDS, MAX_CLIPS = 1024 };
+static struct {
+  uint8_t kind;
+  uint16_t clip;
+} meta[MAX_QUADS];
+static float clips[MAX_CLIPS][4];
+static uint32_t clip_count, clip_at;
+/* What the frame starts as (gfx_clear): premultiplied */
+static VkClearColorValue clear_to;
 
 static bool ok(VkResult r, const char *what) {
   if (r >= 0)
@@ -195,14 +216,16 @@ static void destroy_image(gfx_image *image) {
 static _Thread_local VkCommandPool upload_pool;
 static _Thread_local VkCommandBuffer upload_cmd;
 
-bool gfx_upload(gfx_image *out, const void *rgba, int w, int h) {
+/* `bpp` bytes a texel of `format`, seen through `swizzle` */
+static bool upload(gfx_image *out, const void *pixels, int w, int h, VkFormat format, int bpp,
+                   VkComponentMapping swizzle) {
   *out = (gfx_image){.w = w, .h = h};
   const uint32_t families[] = {graphics_family, transfer_family};
   const bool shared = graphics_family != transfer_family;
   VkImageCreateInfo ci = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = VK_IMAGE_TYPE_2D,
-      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .format = format,
       .extent = {(uint32_t)w, (uint32_t)h, 1},
       .mipLevels = 1,
       .arrayLayers = 1,
@@ -225,6 +248,7 @@ bool gfx_upload(gfx_image *out, const void *rgba, int w, int h) {
       .image = out->image,
       .viewType = VK_IMAGE_VIEW_TYPE_2D,
       .format = ci.format,
+      .components = swizzle,
       .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
   };
   if (out->memory == VK_NULL_HANDLE ||
@@ -234,7 +258,7 @@ bool gfx_upload(gfx_image *out, const void *rgba, int w, int h) {
     return false;
   }
 
-  const VkDeviceSize size = (VkDeviceSize)w * h * 4;
+  const VkDeviceSize size = (VkDeviceSize)w * h * bpp;
   void *map;
   VkDeviceMemory staging_mem;
   VkBuffer staging = host_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &map,
@@ -243,7 +267,7 @@ bool gfx_upload(gfx_image *out, const void *rgba, int w, int h) {
     destroy_image(out);
     return false;
   }
-  memcpy(map, rgba, size);
+  memcpy(map, pixels, size);
 
   if (upload_pool == VK_NULL_HANDLE) {
     VkCommandPoolCreateInfo pi = {
@@ -321,6 +345,16 @@ bool gfx_upload(gfx_image *out, const void *rgba, int w, int h) {
   vkDestroyBuffer(dev, staging, NULL);
   vkFreeMemory(dev, staging_mem, NULL);
   return true;
+}
+
+bool gfx_upload(gfx_image *out, const void *rgba, int w, int h) {
+  return upload(out, rgba, w, h, VK_FORMAT_R8G8B8A8_UNORM, 4, (VkComponentMapping){0});
+}
+
+/* Coverage as premultiplied white: R into all four */
+bool gfx_upload_coverage(gfx_image *out, const void *a8, int w, int h) {
+  const VkComponentSwizzle r = VK_COMPONENT_SWIZZLE_R;
+  return upload(out, a8, w, h, VK_FORMAT_R8_UNORM, 1, (VkComponentMapping){r, r, r, r});
 }
 
 uint32_t gfx_slots(void) { return slot_count; }
@@ -585,14 +619,16 @@ bool gfx_init(const char *name) {
   return true;
 }
 
-static VkPipeline pipeline(VkFormat format) {
+static VkPipeline pipeline(VkFormat format, int32_t kind) {
   VkShaderModule vert = shader(quad_vert, sizeof(quad_vert));
   VkShaderModule frag = shader(quad_frag, sizeof(quad_frag));
+  const VkSpecializationMapEntry entry = {0, 0, sizeof(kind)};
+  const VkSpecializationInfo spec = {1, &entry, sizeof(kind), &kind};
   VkPipelineShaderStageCreateInfo stages[] = {
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
        .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main"},
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-       .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main"},
+       .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main", .pSpecializationInfo = &spec},
   };
   VkPipelineVertexInputStateCreateInfo vin = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -790,7 +826,8 @@ gfx_target *gfx_target_create(win *window, bool translucent) {
       if (formats[i].format == wanted[w] &&
           formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
         t->format = formats[i];
-  t->pipeline = pipeline(t->format.format);
+  for (int k = 0; k < KINDS; k++)
+    t->pipelines[k] = pipeline(t->format.format, k);
 
   VkCommandBuffer cmds[FRAMES];
   VkCommandBufferAllocateInfo cai = {
@@ -818,7 +855,7 @@ gfx_target *gfx_target_create(win *window, bool translucent) {
     f->acquired = semaphore(VK_SEMAPHORE_TYPE_BINARY);
     VkDeviceMemory mem;
     void *map;
-    f->quads = host_buffer(MAX_QUADS * sizeof(gfx_quad),
+    f->quads = host_buffer(MAX_QUADS * sizeof(gpu_quad),
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &map, &mem);
     if (f->quads == VK_NULL_HANDLE)
       abort();
@@ -839,20 +876,70 @@ gfx_target *gfx_target_create(win *window, bool translucent) {
   return t;
 }
 
+/* Its index in clips: the last one again when the same.
+ * ponytail: past MAX_CLIPS the last one is reused (clipped wrong); a frame has a few dozen. */
+static uint32_t add_clip(const float c[4]) {
+  if (clip_count > 0 && (memcmp(clips[clip_count - 1], c, sizeof(clips[0])) == 0 || clip_count == MAX_CLIPS))
+    return clip_count - 1;
+  memcpy(clips[clip_count], c, sizeof(clips[0]));
+  return clip_count++;
+}
+
 void gfx_clip(float x, float y, float w, float h) {
   clip[0] = x;
   clip[1] = y;
   clip[2] = x + w;
   clip[3] = y + h;
+  clip_at = add_clip(clip);
+}
+
+static uint8_t kind_of(const gfx_quad *q) {
+  return q->radius > 0 || q->border > 0 ? KIND_ROUNDED : q->tex == GFX_WHITE ? KIND_BOX : KIND_TEXTURED;
+}
+
+void gfx_clear(gfx_color c) {
+  const float a = c.a / 255.0f;
+  clear_to = (VkClearColorValue){{c.r / 255.0f * a, c.g / 255.0f * a, c.b / 255.0f * a, a}};
 }
 
 void gfx_noclip(void) { gfx_clip(-1e9f, -1e9f, 2e9f, 2e9f); }
 
+/* Quad `at` is the part x0 y0 x1 y1 of `q`, drawn as `kind` */
+static void put(uint32_t at, const gfx_quad *q, float x0, float y0, float x1, float y1, uint8_t kind,
+                uint32_t clip_index) {
+  /* Where the part is in the quad, 0 to 1 (an empty one, gfx_reserve's: all of it) */
+  const float iw = q->w > 0 ? 1 / q->w : 0, ih = q->h > 0 ? 1 / q->h : 0;
+  const float a = (x0 - q->x) * iw, b = q->w > 0 ? (x1 - q->x) * iw : 1;
+  const float c = (y0 - q->y) * ih, d = q->h > 0 ? (y1 - q->y) * ih : 1;
+  meta[at].kind = kind;
+  meta[at].clip = (uint16_t)clip_index;
+  building->map[at] = (gpu_quad){x0, y0, x1 - x0, y1 - y0,
+                                 q->u0 + (q->u1 - q->u0) * a, q->v0 + (q->v1 - q->v0) * c,
+                                 q->u0 + (q->u1 - q->u0) * b, q->v0 + (q->v1 - q->v0) * d,
+                                 {q->x, q->y, q->w, q->h}, q->color, q->tex, q->radius, q->border};
+}
+
+/* A rounded box (or its outline) in nine parts: only the corners and the edges, within
+ * radius + border + 1 of the outside, need the SDF; the middle is a plain box, nothing
+ * for an outline. Most of a tile is its middle. */
 void gfx_push(gfx_quad q) {
   if (building == NULL || quad_count == MAX_QUADS)
     return;
   memcpy(q.clip, clip, sizeof(clip));
-  building->map[quad_count++] = q;
+  const uint8_t kind = kind_of(&q);
+  const float m = ceilf(q.radius + q.border) + 1;
+  if (kind != KIND_ROUNDED || q.w <= 2 * m || q.h <= 2 * m || quad_count + 9 > MAX_QUADS) {
+    put(quad_count++, &q, q.x, q.y, q.x + q.w, q.y + q.h, kind, clip_at);
+    return;
+  }
+  const float xs[] = {q.x, q.x + m, q.x + q.w - m, q.x + q.w}, ys[] = {q.y, q.y + m, q.y + q.h - m, q.y + q.h};
+  /* The parts don't overlap: the middle first, then the rest in one draw (PanVK pays for each) */
+  if (q.border == 0)
+    put(quad_count++, &q, xs[1], ys[1], xs[2], ys[2], q.tex == GFX_WHITE ? KIND_BOX : KIND_TEXTURED, clip_at);
+  for (int r = 0; r < 3; r++)
+    for (int c = 0; c < 3; c++)
+      if (r != 1 || c != 1)
+        put(quad_count++, &q, xs[c], ys[r], xs[c + 1], ys[r + 1], KIND_ROUNDED, clip_at);
 }
 
 uint32_t gfx_reserve(void) {
@@ -863,8 +950,9 @@ uint32_t gfx_reserve(void) {
 
 /* Written, never read back: the buffer is the GPU's */
 void gfx_set(uint32_t at, gfx_quad q) {
-  if (building != NULL && at < quad_count)
-    building->map[at] = q;
+  if (building == NULL || at >= quad_count)
+    return;
+  put(at, &q, q.x, q.y, q.x + q.w, q.y + q.h, kind_of(&q), add_clip(q.clip));
 }
 
 bool gfx_begin(gfx_target *t, int *w, int *h) {
@@ -895,7 +983,8 @@ bool gfx_begin(gfx_target *t, int *w, int *h) {
     return false;
   }
   building = f;
-  quad_count = 0;
+  quad_count = clip_count = 0;
+  clear_to = (VkClearColorValue){{0}};
   gfx_noclip();
   *w = (int)t->extent.width;
   *h = (int)t->extent.height;
@@ -928,6 +1017,14 @@ static void update_set(frame *f) {
     vkUpdateDescriptorSets(dev, n, writes, 0, NULL);
 }
 
+/* The pixels whose centres are in the clip, as the shader tested them; false: none */
+static bool scissor(const float c[4], VkExtent2D extent, VkRect2D *out) {
+  const float x0 = CLAMP(ceilf(c[0] - 0.5f), 0, extent.width), y0 = CLAMP(ceilf(c[1] - 0.5f), 0, extent.height);
+  const float x1 = CLAMP(ceilf(c[2] - 0.5f), 0, extent.width), y1 = CLAMP(ceilf(c[3] - 0.5f), 0, extent.height);
+  *out = (VkRect2D){{(int32_t)x0, (int32_t)y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}};
+  return x1 > x0 && y1 > y0;
+}
+
 void gfx_end(gfx_target *t) {
   frame *f = &t->frames[t->current];
   if (building != f)
@@ -952,6 +1049,7 @@ void gfx_end(gfx_target *t) {
       .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
       .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .clearValue.color = clear_to,
   };
   VkRenderingInfo ri = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -962,17 +1060,27 @@ void gfx_end(gfx_target *t) {
   };
   vkCmdBeginRendering(cmd, &ri);
   if (quad_count > 0) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, t->pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
                             &f->set, 0, NULL);
     VkViewport viewport = {0, 0, t->extent.width, t->extent.height, 0, 1};
-    VkRect2D scissor = {{0, 0}, t->extent};
     vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
     const float px_to_ndc[2] = {2.0f / t->extent.width, 2.0f / t->extent.height};
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof(px_to_ndc), px_to_ndc);
-    vkCmdDraw(cmd, 4, quad_count, 0, 0);
+    /* A run ends where the kind or the clip changes */
+    int bound = -1;
+    for (uint32_t first = 0, i = 1; first < quad_count; i++) {
+      if (i < quad_count && meta[i].kind == meta[first].kind && meta[i].clip == meta[first].clip)
+        continue;
+      VkRect2D sc;
+      if (scissor(clips[meta[first].clip], t->extent, &sc)) {
+        if (bound != meta[first].kind)
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, t->pipelines[bound = meta[first].kind]);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdDraw(cmd, 4, i - first, 0, first);
+      }
+      first = i;
+    }
   }
   vkCmdEndRendering(cmd);
   barrier(cmd, image_barrier(image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
