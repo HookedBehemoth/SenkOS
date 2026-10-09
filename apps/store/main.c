@@ -548,7 +548,7 @@ static void progress_bar(float x, float y, float w, const port *p) {
 }
 
 static void thumbnail(str url, float x, float y, float w, float h) {
-  const asset a = assets_get(cached(url));
+  const asset a = assets_get(cached(url), (int)MAX(w, h));
   if (a.slot == GFX_PLACEHOLDER) {
     ui_rounded(x, y, w, h, EDGE, 8, 0);
     return;

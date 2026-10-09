@@ -6,6 +6,7 @@
  */
 #include "assets.h"
 
+#include <malloc.h>
 #include <spawn.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -25,11 +26,9 @@
 #include "ui.h"
 
 /* The whole process; past HIGH, evict down to LOW */
-#define LIMIT (100u << 20)
+#define LIMIT (32u << 20)
 #define HIGH (LIMIT / 10 * 9)
 #define LOW (LIMIT / 10 * 8)
-/* Longest side once loaded: a tile's icon at most */
-#define MAX_PX 256
 /* What a full decode may take on the way (JPEG decodes scaled down) */
 #define MAX_DECODE_PX (2048 * 2048)
 #define MAX_FILE (32u << 20)
@@ -39,6 +38,7 @@ enum { NONE, QUEUED, READY, FAILED };
 
 typedef struct {
   str path;
+  int px; /* the longest side asked for */
   int state;
   uint32_t slot;
   gfx_image image;
@@ -104,8 +104,8 @@ static uint8_t *decode_png(const uint8_t *data, size_t size, int *w, int *h) {
 }
 
 /* libjpeg-turbo scales by n/8 while decoding: the smallest that keeps the
- * longest side at MAX_PX or more */
-static uint8_t *decode_jpeg(const uint8_t *data, size_t size, int *w, int *h) {
+ * longest side at `px` or more */
+static uint8_t *decode_jpeg(const uint8_t *data, size_t size, int px, int *w, int *h) {
   tjhandle tj = tj3Init(TJINIT_DECOMPRESS);
   uint8_t *rgba = NULL;
   if (tj == NULL || tj3DecompressHeader(tj, data, size) != 0)
@@ -116,7 +116,7 @@ static uint8_t *decode_jpeg(const uint8_t *data, size_t size, int *w, int *h) {
   tjscalingfactor best = {1, 1};
   for (int i = 0; i < n; i++) {
     const tjscalingfactor f = factors[i];
-    if (MAX(TJSCALED(jw, f), TJSCALED(jh, f)) >= MIN(MAX_PX, MAX(jw, jh)) &&
+    if (MAX(TJSCALED(jw, f), TJSCALED(jh, f)) >= MIN(px, MAX(jw, jh)) &&
         TJSCALED(jw, f) * TJSCALED(jh, f) < TJSCALED(jw, best) * TJSCALED(jh, best))
       best = f;
   }
@@ -209,15 +209,16 @@ static uint8_t *decode_bmp(const uint8_t *d, size_t n, int *w, int *h) {
   return rgba;
 }
 
-/* Thumbnails (assets.h): $XDG_CACHE_HOME/thumbnails/<hash of path, size and mtime>.webp.
+/* Thumbnails (assets.h): $XDG_CACHE_HOME/thumbnails/<hash of path, size, mtime and px>.webp.
  * ponytail: never cleaned; stale ones stay until the cache is cleared. */
-static bool thumb_name(str path, char *out, size_t size) {
+static bool thumb_name(str path, int px, char *out, size_t size) {
   char p[PATH_MAX];
   struct stat st;
   if (str_copy(p, sizeof(p), path) != path.n || stat(p, &st) != 0)
     return false;
   uint64_t h = 1469598103934665603u;
-  const uint64_t parts[] = {(uint64_t)st.st_size, (uint64_t)st.st_mtim.tv_sec, (uint64_t)st.st_mtim.tv_nsec};
+  const uint64_t parts[] = {(uint64_t)st.st_size, (uint64_t)st.st_mtim.tv_sec, (uint64_t)st.st_mtim.tv_nsec,
+                            (uint64_t)px};
   for (size_t i = 0; i < path.n; i++)
     h = (h ^ (uint8_t)path.p[i]) * 1099511628211u;
   for (size_t i = 0; i < COUNTOF(parts); i++)
@@ -267,10 +268,10 @@ static void thumb_write(const char *name, const uint8_t *rgba, int w, int h) {
 }
 
 /* A video's: the player writes a frame of it as a thumbnail (ASSETS_THUMBNAILER) */
-static bool thumb_video(str path, const char *name) {
+static bool thumb_video(str path, int px, const char *name) {
   char video[PATH_MAX], size[16];
   str_copy(video, sizeof(video), path);
-  snprintf(size, sizeof(size), "%d", MAX_PX);
+  snprintf(size, sizeof(size), "%d", px);
   make_parents(name);
   char *argv[] = {ASSETS_THUMBNAILER, "--thumbnail", video, (char *)name, size, NULL};
   extern char **environ;
@@ -281,11 +282,11 @@ static bool thumb_video(str path, const char *name) {
 }
 
 /* By content, not by name */
-static uint8_t *decode(const uint8_t *d, size_t n, int *w, int *h) {
+static uint8_t *decode(const uint8_t *d, size_t n, int px, int *w, int *h) {
   if (n >= 8 && memcmp(d, "\x89PNG", 4) == 0)
     return decode_png(d, n, w, h);
   if (n >= 3 && d[0] == 0xff && d[1] == 0xd8 && d[2] == 0xff)
-    return decode_jpeg(d, n, w, h);
+    return decode_jpeg(d, n, px, w, h);
   if (n >= 12 && memcmp(d, "RIFF", 4) == 0 && memcmp(d + 8, "WEBP", 4) == 0)
     return decode_webp(d, n, w, h);
   if (n >= 2 && memcmp(d, "BM", 2) == 0)
@@ -293,16 +294,16 @@ static uint8_t *decode(const uint8_t *d, size_t n, int *w, int *h) {
   return NULL;
 }
 
-/* Premultiplied, then box-filtered down to MAX_PX, in place */
-static void prepare(uint8_t *rgba, int *w, int *h) {
+/* Premultiplied, then box-filtered down to a longest side of `px`, in place */
+static void prepare(uint8_t *rgba, int px, int *w, int *h) {
   for (size_t i = 0; i < (size_t)*w * *h * 4; i += 4)
     for (int c = 0; c < 3; c++)
       rgba[i + c] = (uint8_t)((rgba[i + c] * rgba[i + 3] + 127) / 255);
   const int longest = MAX(*w, *h);
-  if (longest <= MAX_PX)
+  if (longest <= px)
     return;
-  const int dw = MAX(1, *w * MAX_PX / longest);
-  const int dh = MAX(1, *h * MAX_PX / longest);
+  const int dw = MAX(1, *w * px / longest);
+  const int dh = MAX(1, *h * px / longest);
   /* Each destination pixel only reads source pixels at or after its own
    * index, so writing over the source as it goes is safe */
   for (int y = 0; y < dh; y++) {
@@ -344,20 +345,21 @@ static void *loader(void *data) {
     const bool video = key.n > 6 && memcmp(key.p, "video:", 6) == 0;
     const str path = video ? str_at(key, 6) : key;
     char thumb[PATH_MAX];
-    const bool cached = thumb_name(path, thumb, sizeof(thumb));
+    const int px = entries[index].px;
+    const bool cached = thumb_name(path, px, thumb, sizeof(thumb));
     uint8_t *file = cached ? read_file(thumb, &size) : NULL;
-    if (file == NULL && video && cached && thumb_video(path, thumb))
+    if (file == NULL && video && cached && thumb_video(path, px, thumb))
       file = read_file(thumb, &size);
     const bool original = file == NULL && !video;
     if (original)
       file = read_file(key.p, &size);
-    uint8_t *rgba = file != NULL ? decode(file, size, &w, &h) : NULL;
+    uint8_t *rgba = file != NULL ? decode(file, size, px, &w, &h) : NULL;
     free(file);
     gfx_image image = {0};
     bool ok = false;
     if (rgba != NULL) {
-      const bool shrinks = MAX(w, h) > MAX_PX;
-      prepare(rgba, &w, &h);
+      const bool shrinks = MAX(w, h) > px;
+      prepare(rgba, px, &w, &h);
       if (original && shrinks && cached)
         thumb_write(thumb, rgba, w, h);
       ok = gfx_upload(&image, rgba, w, h);
@@ -378,6 +380,9 @@ static void *loader(void *data) {
 }
 
 void assets_init(void) {
+  /* A decode's buffer (up to MAX_DECODE_PX * 4) goes back to the kernel when freed: glibc's
+   * threshold would otherwise rise past it and keep it in the loader's arena */
+  mallopt(M_MMAP_THRESHOLD, 128 << 10);
   for (size_t i = 0; i < COUNTOF(slot_owner); i++)
     slot_owner[i] = -1;
   spawn("assets", loader, NULL);
@@ -471,7 +476,13 @@ void assets_frame(void) {
   fprintf(stderr, "assets: %zu MB after eviction\n", used >> 20);
 }
 
-asset assets_get(str path) {
+void assets_drop(void) {
+  for (size_t i = 0; i < entry_count; i++)
+    if (entries[i].state == READY)
+      evict(&entries[i]);
+}
+
+asset assets_get(str path, int px) {
   const asset none = {GFX_PLACEHOLDER, 1, 1};
   if (path.n == 0)
     return none;
@@ -479,12 +490,13 @@ asset assets_get(str path) {
    * hundred paths; a hash when there are thousands */
   entry *e = NULL;
   for (size_t i = 0; i < entry_count && e == NULL; i++)
-    if (str_eq(entries[i].path, path))
+    if (entries[i].px == px && str_eq(entries[i].path, path))
       e = &entries[i];
   if (e == NULL) {
     if (entry_count == MAX_ENTRIES || (e = &entries[entry_count])->path.p != NULL ||
         (e->path = str_dup(path)).p == NULL)
       return none;
+    e->px = px;
     entry_count++;
   }
   atomic_store(&e->used, gfx_frame());

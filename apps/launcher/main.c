@@ -88,6 +88,8 @@ enum { TREE = ICON_PX + MARGIN };
 enum { TILE_W = 144, TILE_H = 160, ICON = 128, TILE_TEXT = 16, LETTER = 40,
        RADIUS = 12, GAP = 8 };
 enum { OSD_W = 320, OSD_H = 40, OSD_MS = 1500, RESULT_MS = 5000 };
+/* The app's image while it starts, scaled up to the screen */
+enum { SPLASH_PX = 256 };
 /* The performance overlay: a line a metric */
 enum { PERF_W = 200, PERF_TEXT = 14, PERF_LINE = 17 };
 enum { LICENSE_TEXT = 16 };
@@ -813,7 +815,7 @@ static void tile(const app *a, ui_rect r, bool focused, ui_rect view) {
   if (run_same(sb_str(a->exec), sb_str(a->arg), sb_str(a->dir)) != NULL)
     ui_rounded(r.x + r.w - 16, r.y + 8, 8, 8, ACTIVE, 4, 0);
   const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 8;
-  const asset icon = assets_get(sb_str(a->icon));
+  const asset icon = assets_get(sb_str(a->icon), ICON);
   if (icon.slot == GFX_PLACEHOLDER) {
     /* Until it loads, or without one: the initial */
     ui_rounded(ix, iy, ICON, ICON, EDGE, RADIUS - 2, 0);
@@ -1658,7 +1660,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     NAV_SCOPE(ui, nav_str("match")) { chosen = menu(ui, rows, n, left); }
     const float px = left.x + left.w, py = list.y + MARGIN;
     if (menu_focus >= 2 && (size_t)menu_focus - 2 < match.count) {
-      const asset art = assets_get(sb_str(match.games[menu_focus - 2].image));
+      const asset art = assets_get(sb_str(match.games[menu_focus - 2].image), ICON);
       if (art.slot != GFX_PLACEHOLDER) {
         const float scale = MIN((float)ICON / art.w, (float)ICON / art.h);
         gfx_push((gfx_quad){.x = px + (ICON - art.w * scale) / 2, .y = py, .w = art.w * scale, .h = art.h * scale,
@@ -2374,11 +2376,16 @@ int main(int argc, char **argv) {
       show_perf();
       perf_due = now + 1000;
     }
-    /* Under the app, or hidden: nothing would show */
+    /* Under the app, or hidden: nothing would show. The images' memory is the app's meanwhile. */
+    static bool dropped;
     if (front != NULL && !paused && starting.n == 0) {
+      if (!dropped)
+        assets_drop();
+      dropped = true;
       animating = false;
       continue;
     }
+    dropped = false;
     /* Nothing pressed: not recording after all */
     if (capture.option >= 0 && capture.combo == 0 && now - capture.since >= CAPTURE_MS) {
       capture.option = -1;
@@ -2459,7 +2466,7 @@ int main(int argc, char **argv) {
     /* Under the power options: they take the input */
     nav_set_inert(&ui, power_menu.shown);
     if (front != NULL && !paused) {
-      const asset splash = starting_image.n > 0 ? assets_get(sb_str(starting_image)) : (asset){.slot = GFX_PLACEHOLDER};
+      const asset splash = starting_image.n > 0 ? assets_get(sb_str(starting_image), SPLASH_PX) : (asset){.slot = GFX_PLACEHOLDER};
       if (splash.slot != GFX_PLACEHOLDER) {
         const float scale = MIN((float)w / splash.w, (float)h / splash.h);
         gfx_push((gfx_quad){.x = (w - splash.w * scale) / 2, .y = (h - splash.h * scale) / 2,
