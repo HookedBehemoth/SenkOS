@@ -75,6 +75,7 @@
 #include "updates.h"
 #include "wake.h"
 #include "util.h"
+#include "watch.h"
 #include "wifi.h"
 
 enum { BAR = 32, BAR_TEXT = 18, BAR_ICON = 18, ROW = 44, ROW_TEXT = 22, ICON_PX = 22, MARGIN = 12 };
@@ -159,6 +160,14 @@ enum { POWER_ENTRIES = 3 };
 #define HOME_KEY S("home")
 /* What a PC gets over USB, by the usb script (sysd runs it): /run/usb is "on|off MODE" */
 static STRBUF(64) usb_state;
+
+/* Not time(): the coarse clock, a tick behind, would show the minute just past at a minute's turn
+ * (watch.c's timer) */
+static time_t wall_time(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  return now.tv_sec;
+}
 
 /* Whether it changed */
 static bool read_usb(void) {
@@ -615,7 +624,7 @@ static void show_text(str text, int ms) {
 /* "[time]      [page]         [wifi][battery%][battery symbol]"; no Wi-Fi symbol while it's off */
 static void top_bar(int width, str page, const status *s) {
   char clock[8];
-  const time_t now = time(NULL);
+  const time_t now = wall_time();
   const str hhmm = {clock, strftime(clock, sizeof(clock), "%H:%M", localtime(&now))};
   const int y = (BAR - ui_text_height(BAR_TEXT)) / 2;
   ui_text(BAR_TEXT, MARGIN, y, hhmm, FG);
@@ -1254,7 +1263,7 @@ static size_t page_rows(int kind, entry *rows) {
                         .checked = clock_ntp()};
     if (!clock_ntp()) {
       char text[32];
-      const time_t now = time(NULL);
+      const time_t now = wall_time();
       strftime(text, sizeof(text), "%Y-%m-%d  %H:%M", localtime(&now));
       sb_set(when, S("Date and time  \u00b7  "), str_c(text));
       rows[n++] = (entry){.label = sb_str(when), .action = CLOCK, .icon = ICON_CALENDAR_CLOCK};
@@ -1320,7 +1329,7 @@ static struct {
 } clock_edit;
 
 static void clock_open(void) {
-  const time_t now = time(NULL);
+  const time_t now = wall_time();
   const struct tm *t = localtime(&now);
   clock_edit = (typeof(clock_edit)){{t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min}, 0};
   modal.kind = MODAL_CLOCK;
@@ -1619,7 +1628,7 @@ static void app_exited(nav *ui, running *r, size_t *page) {
 /* A frame is all it wants */
 static void redraw(win *w) {
   (void)w;
-  win_wake(UI_LOADED, 0);
+  win_wake(UI_CONFIGURED, 0);
 }
 
 static void key(unsigned code, bool down) {
@@ -1750,7 +1759,10 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   case UI_VOLUME: show_volume(value); return true;
   case UI_HASHED: rescan(*page); return true;
   case UI_LAUNCH: launch_path(ui); return true;
-  case UI_RELOAD: rescan(*page); return true;
+  case UI_RELOAD:
+    apps_cores();
+    rescan(*page);
+    return true;
   case UI_POWER_HOLD:
     if (front != NULL && !paused)
       pause_front(ui);
@@ -1776,6 +1788,8 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     down = value & 1;
     pad = why == UI_BUTTON;
     break;
+  case UI_CONFIGURED:
+  case UI_DONE: ui_scheme(); return true;
   default: return true; /* UI_LOADED */
   }
   /* Recording a binding: every button is the combo's, Menu and B too */
@@ -2121,6 +2135,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "launcher: no launch FIFO\n");
   static nav ui = {.animate = true, .duration = 150};
   apps_init();
+  apps_watch();
   sources_load();
   uint64_t present = sources_present();
   size_t page = load_page();
@@ -2129,18 +2144,24 @@ int main(int argc, char **argv) {
   read_status(&st);
   uint64_t status_at = ms_now();
   read_usb();
-  /* The clock shows minutes: a frame when one passes, not every second */
-  time_t shown_minute = 0;
+  clock_refresh();
+  watch_init();
+  /* What the status shows changed (watch.h), kept while it can't show */
+  unsigned changed = 0;
+  /* Up: a slot on trial (an update) works, Wi-Fi may come on. Once sysd is there:
+   * the first frame comes before rcS has started it. */
+  bool told_up = false;
   bool animating = true;
 
   for (;;) {
-    /* A frame's time while animating. Idle: wake once a second for the
-     * clock and the status, and draw only if either changed. Under the app:
-     * only events. And to hide the OSD. */
+    /* A frame's time while animating. Idle: only events, but once a second until sysd is up
+     * and while the Wi-Fi screen lists networks. Under the app: only events. And to hide
+     * the OSD. */
     /* The new app's window took the focus: no more splash */
     if (starting.n > 0 && window.configured && !window.activated && front != NULL)
       starting = S("");
-    int wait = front != NULL && !paused && starting.n == 0 ? -1 : animating ? 16 : 1000;
+    const bool seconds = !told_up || modal.kind == MODAL_WIFI;
+    int wait = front != NULL && !paused && starting.n == 0 ? -1 : animating ? 16 : seconds ? 1000 : -1;
     /* Calibrating: its next step; what it found on the OSD */
     str said = S("");
     const int step = power_tick(ms_now(), &said);
@@ -2157,8 +2178,9 @@ int main(int argc, char **argv) {
       if (wait < 0 || left < wait)
         wait = left;
     }
-    if (!win_wait(NULL, 0, wait))
+    if (!win_wait(watch_fds, WATCH_FDS, wait))
       return 1;
+    changed |= watch_changed();
     for (int why, value; win_woken(&why, &value); animating = true)
       if (!input(&ui, why, value, &page))
         return 0;
@@ -2179,11 +2201,9 @@ int main(int argc, char **argv) {
     }
     /* Events (input, an icon loaded, an app gone) count as changes */
     bool dirty = animating;
-    if (now - status_at >= 1000) {
-      /* Up: a slot on trial (an update) works, Wi-Fi may come on. Once sysd is there:
-       * the first frame comes before rcS has started it. */
-      static bool told_up;
-      if (!told_up && (told_up = sysd(S("up")))) {
+    const bool second = seconds && now - status_at >= 1000;
+    if (second || changed != 0) {
+      if (second && !told_up && (told_up = sysd(S("up")))) {
         power_apply();
         const str why = str_read(fopen(SLEEP_FAILED, "r"));
         if (why.n > 0) {
@@ -2198,23 +2218,29 @@ int main(int argc, char **argv) {
         }
         free((char *)why.p);
       }
-      const status was = st;
-      read_status(&st);
-      status_at = now;
-      dirty |= was.battery != st.battery || was.charging != st.charging ||
-               was.wifi != st.wifi || time(NULL) / 60 != shown_minute;
-      dirty |= read_usb();
-      dirty |= clock_refresh();
-      /* Time's rows: the zone, NTP and the clock as `clock` left them; Debug's SSH as sysd did */
-      dirty |= modal.kind == MODAL_TIME || modal.kind == MODAL_DEBUG;
-      if (modal.kind == MODAL_WIFI) {
+      if (second)
+        status_at = now;
+      /* The minute: the clock; and the battery level and the signal, which nothing tells */
+      if (changed & (WATCH_MINUTE | WATCH_POWER | WATCH_WIFI)) {
+        const status was = st;
+        read_status(&st);
+        dirty |= (changed & WATCH_MINUTE) || was.battery != st.battery || was.charging != st.charging ||
+                 was.wifi != st.wifi;
+      }
+      if (changed & WATCH_USB)
+        dirty |= read_usb();
+      /* Time's rows: the zone and NTP as `clock` left them */
+      if (changed & WATCH_TIME) {
+        clock_refresh();
+        dirty = true;
+      }
+      if (second && modal.kind == MODAL_WIFI) {
         wifi_poll();
         dirty = true;
       }
       /* A card came or went, or a source was added: the page again, or
-       * another if it has nothing left.
-       * ponytail: polled with the status; inotify on /run/media if a second is too slow. */
-      const uint64_t now_present = sources_present();
+       * another if it has nothing left */
+      const uint64_t now_present = changed & WATCH_MOUNTS ? sources_present() : present;
       if (now_present != present) {
         present = now_present;
         if (page >= 1 && !apps_present(&categories[page - 1]))
@@ -2223,9 +2249,9 @@ int main(int argc, char **argv) {
         dirty = true;
       }
     }
+    changed = 0;
     if (!dirty)
       continue;
-    shown_minute = time(NULL) / 60;
 
     assets_frame();
     int w, h;
@@ -2487,7 +2513,10 @@ int main(int argc, char **argv) {
       break;
     }
     /* Games join or leave once the status is next read */
-    case TOGGLE_SYSTEM: sources_toggle(sb_str(pick_path), (size_t)chosen->category); break;
+    case TOGGLE_SYSTEM:
+      sources_toggle(sb_str(pick_path), (size_t)chosen->category);
+      changed |= WATCH_MOUNTS; /* sources_present again */
+      break;
     case IGNORE: ignore(sb_str(failure.key)); /* fall through */
     case SLEEP_LIGHT:
       if (chosen->action == SLEEP_LIGHT)

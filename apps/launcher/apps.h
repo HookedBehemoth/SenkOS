@@ -61,7 +61,7 @@ typedef struct {
   /* Game systems, from a .system: Aliases, Patterns, MimeType, Pack, Order */
   str names, roms, mimes, pack;
   int order;
-  /* Those that run its games, found by apps_scan */
+  /* Those that run its games, found by apps_cores */
   core cores[CORES_MAX];
   size_t core_count;
   app *apps;
@@ -71,8 +71,12 @@ typedef struct {
 extern category *categories;
 extern size_t category_count;
 
-/* Reads the systems: the categories are they, then the app folders */
+/* Reads the systems: the categories are they, then the app folders; and apps_cores */
 void apps_init(void);
+/* Reads the emulators again: each system's cores */
+void apps_cores(void);
+/* A thread: UI_RELOAD (wake.h) when the card's emulators change */
+void apps_watch(void);
 
 /* Rereads the category's folder */
 void apps_scan(category *c);

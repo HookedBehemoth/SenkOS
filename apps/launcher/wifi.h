@@ -3,8 +3,8 @@
  * /run/wifi), and the networks, through wpa_supplicant's control socket
  * (/run/wpa_supplicant/wlan0, group player): what it found, what it knows,
  * what it's on. It saves the networks itself, where only root reads them.
- * Requests and their answers, no events: wifi_poll asks again while the
- * screen is up.
+ * Requests and their answers here (watch.c has the events): wifi_poll asks
+ * again while the screen is up.
  */
 #pragma once
 

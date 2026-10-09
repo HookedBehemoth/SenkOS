@@ -8,8 +8,8 @@
 
 #include "str.h"
 
-/* Sent; false when sysd isn't there (yet). Its reply comes on a thread: one that isn't "ok"
- * wakes the UI with UI_REFUSED. */
+/* Sent; false when sysd isn't there (yet). Its reply comes on a thread and wakes the UI:
+ * UI_DONE for "ok", else UI_REFUSED. */
 bool sysd(str request);
 /* What the last refusal said: "REQUEST: WHY" */
 str sysd_refused(char *buf, size_t size);

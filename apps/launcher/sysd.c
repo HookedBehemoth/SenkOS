@@ -32,7 +32,8 @@ static void *wait_reply(void *arg) {
     sb_set(refused, sb_str(p->request), S(": "), why);
     pthread_mutex_unlock(&lock);
     win_wake(UI_REFUSED, 0);
-  }
+  } else
+    win_wake(UI_DONE, 0);
   close(p->fd);
   free(p);
   return NULL;

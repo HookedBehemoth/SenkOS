@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Fri, 9 Oct 2026 02:50:54 +0200
+Subject: [PATCH] power: supply: axp20x_battery: report the AXP717's battery
+ interrupts
+
+The AXP717 raises interrupts when its fuel gauge has a new state of
+charge, when charging starts and is done, and when a battery is plugged
+in or removed, but nothing requested them: userspace had to poll the
+battery to notice a change. Give the battery cell those IRQs and send a
+power_supply uevent on each.
+
+Upstream-Status: Pending
+---
+ drivers/mfd/axp20x.c                  | 11 +++++++-
+ drivers/power/supply/axp20x_battery.c | 40 ++++++++++++++++++++++++++-
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/mfd/axp20x.c b/drivers/mfd/axp20x.c
+index 679364189..0640c8c76 100644
+--- a/drivers/mfd/axp20x.c
++++ b/drivers/mfd/axp20x.c
+@@ -368,6 +368,14 @@ static const struct resource axp313a_pek_resources[] = {
+ 	DEFINE_RES_IRQ_NAMED(AXP313A_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
+ };
+ 
++static const struct resource axp717_battery_power_supply_resources[] = {
++	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_GAUGE_NEW_SOC, "GAUGE_NEW_SOC"),
++	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_CHARG, "CHARG"),
++	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_CHARG_DONE, "CHARG_DONE"),
++	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_BATT_PLUGIN, "BATT_PLUGIN"),
++	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_BATT_REMOVAL, "BATT_REMOVAL"),
++};
++
+ static const struct resource axp717_pek_resources[] = {
+ 	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_PEK_RIS_EDGE, "PEK_DBR"),
+ 	DEFINE_RES_IRQ_NAMED(AXP717_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
+@@ -1070,7 +1078,8 @@ static struct mfd_cell axp717_cells[] = {
+ 		    axp717_usb_power_supply_resources, NULL, 0, 0,
+ 		    "x-powers,axp717-usb-power-supply"),
+ 	MFD_CELL_OF("axp20x-battery-power-supply",
+-		    NULL, NULL, 0, 0, "x-powers,axp717-battery-power-supply"),
++		    axp717_battery_power_supply_resources, NULL, 0, 0,
++		    "x-powers,axp717-battery-power-supply"),
+ };
+ 
+ static const struct resource axp288_adc_resources[] = {
+diff --git a/drivers/power/supply/axp20x_battery.c b/drivers/power/supply/axp20x_battery.c
+index d75725cee..d6ee558da 100644
+--- a/drivers/power/supply/axp20x_battery.c
++++ b/drivers/power/supply/axp20x_battery.c
+@@ -107,6 +107,8 @@ struct axp_data {
+ 	void	(*set_bat_info)(struct platform_device *pdev,
+ 				struct axp20x_batt_ps *axp_batt,
+ 				struct power_supply_battery_info *info);
++	const char * const *irq_names;
++	unsigned int	num_irq_names;
+ };
+ 
+ struct axp20x_batt_ps {
+@@ -1047,6 +1049,14 @@ static const struct axp_data axp221_data = {
+ 	.set_bat_info = axp209_set_battery_info,
+ };
+ 
++static const char * const axp717_irq_names[] = {
++	"GAUGE_NEW_SOC",
++	"CHARG",
++	"CHARG_DONE",
++	"BATT_PLUGIN",
++	"BATT_REMOVAL",
++};
++
+ static const struct axp_data axp717_data = {
+ 	.ccc_scale = 64000,
+ 	.ccc_offset = 0,
+@@ -1057,6 +1067,8 @@ static const struct axp_data axp717_data = {
+ 	.set_max_voltage = axp717_battery_set_max_voltage,
+ 	.cfg_iio_chan = axp717_bat_cfg_iio_channels,
+ 	.set_bat_info = axp717_set_battery_info,
++	.irq_names = axp717_irq_names,
++	.num_irq_names = ARRAY_SIZE(axp717_irq_names),
+ };
+ 
+ static const struct axp_data axp813_data = {
+@@ -1089,13 +1101,24 @@ static const struct of_device_id axp20x_battery_ps_id[] = {
+ };
+ MODULE_DEVICE_TABLE(of, axp20x_battery_ps_id);
+ 
++static irqreturn_t axp20x_battery_irq(int irq, void *devid)
++{
++	struct axp20x_batt_ps *axp20x_batt = devid;
++
++	power_supply_changed(axp20x_batt->batt);
++
++	return IRQ_HANDLED;
++}
++
+ static int axp20x_power_probe(struct platform_device *pdev)
+ {
++	struct axp20x_dev *axp20x = dev_get_drvdata(pdev->dev.parent);
+ 	struct axp20x_batt_ps *axp20x_batt;
+ 	struct power_supply_config psy_cfg = {};
+ 	struct power_supply_battery_info *info;
+ 	struct device *dev = &pdev->dev;
+-	int ret;
++	unsigned int i;
++	int irq, ret;
+ 
+ 	if (!of_device_is_available(pdev->dev.of_node))
+ 		return -ENODEV;
+@@ -1139,6 +1162,21 @@ static int axp20x_power_probe(struct platform_device *pdev)
+ 	 */
+ 	axp20x_get_constant_charge_current(axp20x_batt, &axp20x_batt->max_ccc);
+ 
++	/* Requested after registering, as they may trigger immediately */
++	for (i = 0; i < axp20x_batt->data->num_irq_names; i++) {
++		const char *name = axp20x_batt->data->irq_names[i];
++
++		irq = platform_get_irq_byname(pdev, name);
++		if (irq < 0)
++			return irq;
++
++		irq = regmap_irq_get_virq(axp20x->regmap_irqc, irq);
++		ret = devm_request_any_context_irq(dev, irq, axp20x_battery_irq,
++						   0, name, axp20x_batt);
++		if (ret < 0)
++			return dev_err_probe(dev, ret, "requesting %s IRQ\n", name);
++	}
++
+ 	return 0;
+ }
+ 

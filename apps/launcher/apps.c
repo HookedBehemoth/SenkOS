@@ -2,14 +2,17 @@
 #include "cfg.h"
 #include "romdb.h"
 #include "util.h"
+#include "wake.h"
 
 #include <dirent.h>
 #include <fnmatch.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -376,18 +379,22 @@ static void layered(const char *mine, const char *image, str ext, void (*each)(c
   }
 }
 
-/* An emulator for the system `ctx`, if its MimeType says so */
+/* An emulator, for each system its MimeType says */
 static void add_core(const char *path, void *ctx) {
-  category *c = ctx;
+  (void)ctx;
   static app e;
   memset(&e, 0, sizeof(e));
   str mimes = {0};
-  if (parse_desktop(path, S(""), &e, &mimes) && shares_item(mimes, c->mimes) && c->core_count < CORES_MAX) {
-    core *k = &c->cores[c->core_count++];
-    sb_set(k->name, sb_str(e.name));
-    sb_set(k->exec, sb_str(e.exec));
-    sb_set(k->dir, sb_str(e.dir));
-  }
+  if (parse_desktop(path, S(""), &e, &mimes))
+    for (size_t i = 0; i < category_count; i++) {
+      category *c = &categories[i];
+      if (c->roms.n == 0 || !shares_item(mimes, c->mimes) || c->core_count == CORES_MAX)
+        continue;
+      core *k = &c->cores[c->core_count++];
+      sb_set(k->name, sb_str(e.name));
+      sb_set(k->exec, sb_str(e.exec));
+      sb_set(k->dir, sb_str(e.dir));
+    }
   free((char *)mimes.p);
 }
 
@@ -436,16 +443,20 @@ void apps_init(void) {
   qsort(categories, category_count, sizeof(*categories), by_order);
   for (size_t i = 0; i < COUNTOF(app_folders); i++)
     categories[category_count++] = app_folders[i];
+  apps_cores();
+}
+
+void apps_cores(void) {
+  for (size_t i = 0; i < category_count; i++)
+    categories[i].core_count = 0;
+  layered("apps/emulators", EMULATORS, S(".desktop"), add_core, NULL);
+  for (size_t i = 0; i < category_count; i++)
+    qsort(categories[i].cores, categories[i].core_count, sizeof(core), by_core_name);
 }
 
 /* The category's folder, then its sources */
 void apps_scan(category *c) {
   c->count = 0;
-  if (c->roms.n > 0) {
-    c->core_count = 0;
-    layered("apps/emulators", EMULATORS, S(".desktop"), add_core, c);
-    qsort(c->cores, c->core_count, sizeof(*c->cores), by_core_name);
-  }
   STRBUF(256) folder;
   sb_set(folder, root(), S("/"), c->folder);
   const str picks = c->roms.n > 0 ? str_read(config_file("-cores", "r")) : (str){0};
@@ -509,3 +520,38 @@ uint64_t sources_present(void) {
     present |= (uint64_t)is_dir(sources[i].path.p) << i;
   return present;
 }
+
+/* The card's emulators, copied over MTP or SMB: UI_RELOAD once they settle. While the
+ * folder isn't there, apps/ for it to come. */
+static void *watch_thread(void *arg) {
+  (void)arg;
+  const int fd = inotify_init1(IN_CLOEXEC);
+  STRBUF(256) apps, emulators;
+  sb_set(apps, root(), S("/apps"));
+  sb_set(emulators, sb_str(apps), S("/emulators"));
+  enum { CHANGES = IN_CREATE | IN_DELETE | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF };
+  inotify_add_watch(fd, apps.p, IN_CREATE | IN_MOVED_TO);
+  int wd = inotify_add_watch(fd, emulators.p, CHANGES);
+  char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+  for (bool changed = false; fd >= 0;) {
+    /* Quiet for 300 ms after a change: one reload for a copy of many */
+    struct pollfd p = {.fd = fd, .events = POLLIN};
+    if (poll(&p, 1, changed ? 300 : -1) == 0) {
+      changed = false;
+      win_wake(UI_RELOAD, 0);
+      continue;
+    }
+    const ssize_t n = read(fd, buf, sizeof(buf));
+    for (ssize_t at = 0; at < n;) {
+      const struct inotify_event *e = (const struct inotify_event *)(buf + at);
+      if (e->wd == wd)
+        changed = true;
+      else if (e->len > 0 && strcmp(e->name, "emulators") == 0)
+        changed = (wd = inotify_add_watch(fd, emulators.p, CHANGES)) >= 0;
+      at += (ssize_t)sizeof(*e) + e->len;
+    }
+  }
+  return NULL;
+}
+
+void apps_watch(void) { spawn("watch", watch_thread, NULL); }
