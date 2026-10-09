@@ -11,7 +11,8 @@
 #include "nav.h"
 #include "str.h"
 
-void keyboard_open(void);
+/* With `text` typed already */
+void keyboard_open(str text);
 str keyboard_text(void);
 void keyboard_delete(void);
 void keyboard_shift(void);

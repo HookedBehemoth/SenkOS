@@ -1,5 +1,6 @@
 #include "romdb.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -100,6 +101,107 @@ bool romdb_find(str path, uint32_t crc, romdb_game *out) {
     sb_add(out->image, path);
   }
   return true;
+}
+
+/* Up to 16 words of `s`, lowercase ASCII, up to its first tag: "Zelda, The (USA) [!]" is
+ * "zelda", "the". Anything else ASCII parts them, and digits from letters: "mother3". */
+enum { WORDS = 16 };
+static size_t words(str s, str *out, char (*buf)[32]) {
+  size_t n = 0;
+  for (size_t i = 0; i < s.n && s.p[i] != '(' && s.p[i] != '[' && n < WORDS;) {
+    size_t len = 0;
+    for (; i < s.n && ((unsigned char)s.p[i] >= 0x80 || isalnum((unsigned char)s.p[i])); i++) {
+      if (len > 0 && !isdigit((unsigned char)buf[n][len - 1]) != !isdigit((unsigned char)s.p[i]))
+        break;
+      if (len < sizeof(buf[n]))
+        buf[n][len++] = (char)tolower((unsigned char)s.p[i]);
+    }
+    if (len > 0) {
+      out[n] = (str){buf[n], len};
+      n++;
+    }
+    while (i < s.n && (unsigned char)s.p[i] < 0x80 && !isalnum((unsigned char)s.p[i]) && s.p[i] != '(' &&
+           s.p[i] != '[')
+      i++;
+  }
+  return n;
+}
+
+typedef struct {
+  uint32_t crc;
+  const char *title; /* interned: one title, one pointer */
+  int score;
+} hit;
+
+/* Best first, then by title */
+static int by_score(const hit *x, const hit *y) {
+  return x->score != y->score ? y->score - x->score : strcasecmp(x->title, y->title);
+}
+
+/* ponytail: every record scored, a few thousand words; an index if packs grow past ~100k */
+size_t romdb_search(str path, str query, uint32_t *crcs, size_t max) {
+  size_t size;
+  const header *h = open_pack(path, &size);
+  str q[WORDS];
+  char qbuf[WORDS][32];
+  const size_t qn = words(query, q, qbuf);
+  if (h == NULL || qn == 0 || max == 0)
+    return 0;
+  const uint8_t *base = (const uint8_t *)h;
+  const romdb_record *records = (const romdb_record *)(base + h->records);
+  const uint32_t *all = (const uint32_t *)(base + h->crcs);
+  hit *hits = malloc((max + 1) * sizeof(*hits));
+  size_t n = 0;
+  for (uint32_t i = 0; hits != NULL && i < h->count; i++) {
+    const romdb_record *r = &records[i];
+    if (r->title == 0 || r->title >= h->blob - h->strings)
+      continue;
+    const char *title = (const char *)base + h->strings + r->title;
+    str t[WORDS];
+    char tbuf[WORDS][32];
+    const size_t tn = words(str_c(title), t, tbuf);
+    /* In halves: a word is one of the title's, or its initials ("aos": Aria of Sorrow); half of
+     * one when it's only the start of one */
+    char initials[WORDS];
+    for (size_t b = 0; b < tn; b++)
+      initials[b] = t[b].p[0];
+    size_t halves = 0;
+    for (size_t a = 0; a < qn; a++) {
+      size_t best = q[a].n >= 2 && q[a].n <= tn && memmem(initials, tn, q[a].p, q[a].n) != NULL ? 2 : 0;
+      for (size_t b = 0; b < tn && best < 2; b++)
+        if (t[b].n >= q[a].n && memcmp(t[b].p, q[a].p, q[a].n) == 0)
+          best = t[b].n == q[a].n ? 2 : 1;
+      halves += best;
+    }
+    if (halves == 0)
+      continue;
+    /* Dice: words shared, over all of both; a title in many regions once (one with art) */
+    const hit e = {all[i], title, (int)(halves * 1000 / (qn + tn))};
+    size_t k = 0;
+    while (k < n && hits[k].title != e.title)
+      k++;
+    if (k < n) {
+      if (records[i].image != 0xffff && hits[k].crc != e.crc) {
+        const uint32_t *at = bsearch(&hits[k].crc, all, h->count, sizeof(*all), by_crc);
+        if (at != NULL && records[at - all].image == 0xffff)
+          hits[k].crc = e.crc;
+      }
+      continue;
+    }
+    /* The best `max`, kept sorted: the new one in, the worst out */
+    if (n == max && by_score(&e, &hits[n - 1]) >= 0)
+      continue;
+    k = n < max ? n++ : n - 1;
+    while (k > 0 && by_score(&e, &hits[k - 1]) < 0) {
+      hits[k] = hits[k - 1];
+      k--;
+    }
+    hits[k] = e;
+  }
+  for (size_t i = 0; i < n; i++)
+    crcs[i] = hits[i].crc;
+  free(hits);
+  return n;
 }
 
 /* The CRC cache: what the thread works through and what it found */

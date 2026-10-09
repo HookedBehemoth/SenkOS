@@ -83,36 +83,64 @@ static void use_core(const category *c, app *a, int index) {
     sb_set(a->dir, str_head(sb_str(a->arg), str_rfind(sb_str(a->arg), '/')));
 }
 
-/* The core picked for `rom` in `picks` (launcher-cores: a line
- * "ROM\tcore name" each); else the first */
-static int core_of(const category *c, str picks, str rom) {
-  while (picks.n > 0) {
-    str name = str_cut(&picks, '\n');
-    if (!str_eq(str_cut(&name, '\t'), rom))
-      continue;
-    for (size_t i = 0; i < c->core_count; i++)
-      if (str_eq(name, sb_str(c->cores[i].name)))
-        return (int)i;
+/* The value of `key`'s line ("key\tvalue") in `lines`, if it has one */
+static bool line_of(str lines, str key, str *value) {
+  while (lines.n > 0) {
+    *value = str_cut(&lines, '\n');
+    if (str_eq(str_cut(value, '\t'), key))
+      return true;
   }
-  return 0;
+  return false;
 }
 
-/* The game's line replaced: the others as they were, then its own */
-void apps_set_core(category *c, app *a, int index) {
-  const str text = str_read(config_file("-cores", "r"));
-  FILE *f = config_file("-cores", "w");
+/* The config file `suffix`'s line for `key` replaced: the others as they were, then its own
+ * (none for an empty value) */
+static void set_line(const char *suffix, str key, str value) {
+  const str text = str_read(config_file(suffix, "r"));
+  FILE *f = config_file(suffix, "w");
   if (f != NULL) {
     for (str rest = text; rest.n > 0;) {
       const str line = str_cut(&rest, '\n');
       str name = line;
-      if (!str_eq(str_cut(&name, '\t'), sb_str(a->arg)))
+      if (!str_eq(str_cut(&name, '\t'), key))
         str_fput(f, line, S("\n"));
     }
-    str_fput(f, sb_str(a->arg), S("\t"), sb_str(c->cores[index].name), S("\n"));
+    if (value.n > 0)
+      str_fput(f, key, S("\t"), value, S("\n"));
     fclose(f);
   }
   free((char *)text.p);
+}
+
+str apps_pack(const category *c) {
+  static STRBUF(512) path;
+  if (c->pack.n == 0 || !sb_set(path, root(), S("/OS/assets/thumbnails/"), c->pack, S(".pack")))
+    return S("");
+  return sb_str(path);
+}
+
+/* The core picked for `rom` in `picks` (launcher-cores: a line
+ * "ROM\tcore name" each); else the first */
+static int core_of(const category *c, str picks, str rom) {
+  str name;
+  if (line_of(picks, rom, &name))
+    for (size_t i = 0; i < c->core_count; i++)
+      if (str_eq(name, sb_str(c->cores[i].name)))
+        return (int)i;
+  return 0;
+}
+
+void apps_set_core(category *c, app *a, int index) {
+  set_line("-cores", sb_str(a->arg), sb_str(c->cores[index].name));
   use_core(c, a, index);
+}
+
+/* launcher-matches: a line "ROM\tCRC" (hex) each */
+void apps_set_match(app *a, uint32_t crc) {
+  STRBUF(16) hex = {0};
+  if (crc != 0)
+    sb_fmt(hex, "%08x", crc);
+  set_line("-matches", sb_str(a->arg), sb_str(hex));
 }
 
 static bool is_file(const char *path) {
@@ -257,7 +285,7 @@ static bool parse_port(str dir, app *a) {
   return a->name.n > 0;
 }
 
-static void scan_entry(category *c, str picks, str folder, str name) {
+static void scan_entry(category *c, str picks, str matched, str folder, str name) {
   STRBUF(512) path;
   struct stat st;
   if (name.p[0] == '.' || !sb_set(path, folder, S("/"), name) || stat(path.p, &st) != 0)
@@ -277,11 +305,15 @@ static void scan_entry(category *c, str picks, str folder, str name) {
     sb_set(a->arg, sb_str(path));
     use_core(c, a, core_of(c, picks, sb_str(path)));
     find_image(a, stem(sb_str(path)));
-    uint32_t crc;
+    /* Picked by hand, else by its CRC */
+    str match;
+    STRBUF(16) hex;
+    if (line_of(matched, sb_str(path), &match) && sb_set(hex, match))
+      a->match = (uint32_t)strtoul(hex.p, NULL, 16);
+    uint32_t crc = a->match;
     romdb_game game;
-    STRBUF(512) pack;
-    if (c->pack.n > 0 && sb_set(pack, root(), S("/OS/assets/thumbnails/"), c->pack, S(".pack")) &&
-        romdb_crc(sb_str(path), &st, &crc) && romdb_find(sb_str(pack), crc, &game)) {
+    const str pack = apps_pack(c);
+    if (pack.n > 0 && (crc != 0 || romdb_crc(sb_str(path), &st, &crc)) && romdb_find(pack, crc, &game)) {
       sb_set(a->name, game.title);
       if (a->icon.n == 0)
         sb_set(a->icon, sb_str(game.image));
@@ -329,13 +361,13 @@ bool apps_present(const category *c) {
   return false;
 }
 
-static void scan_folder(category *c, str picks, str folder) {
+static void scan_folder(category *c, str picks, str matched, str folder) {
   DIR *dir = opendir(folder.p);
   if (dir == NULL)
     return;
   struct dirent *d;
   while ((d = readdir(dir)) != NULL)
-    scan_entry(c, picks, folder, str_c(d->d_name));
+    scan_entry(c, picks, matched, folder, str_c(d->d_name));
   closedir(dir);
 }
 
@@ -460,11 +492,13 @@ void apps_scan(category *c) {
   STRBUF(256) folder;
   sb_set(folder, root(), S("/"), c->folder);
   const str picks = c->roms.n > 0 ? str_read(config_file("-cores", "r")) : (str){0};
-  scan_folder(c, picks, sb_str(folder));
+  const str matched = c->roms.n > 0 ? str_read(config_file("-matches", "r")) : (str){0};
+  scan_folder(c, picks, matched, sb_str(folder));
   for (size_t i = 0; i < source_count; i++)
     if (&categories[sources[i].category] == c)
-      scan_folder(c, picks, sb_str(sources[i].path));
+      scan_folder(c, picks, matched, sb_str(sources[i].path));
   free((char *)picks.p);
+  free((char *)matched.p);
   qsort(c->apps, c->count, sizeof(*c->apps), by_name);
 }
 

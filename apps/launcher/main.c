@@ -6,7 +6,8 @@
  *
  * D-pad moves (left/right past the edge, or L1/R1, change page), A launches,
  * Start or Menu opens the quick menu (Store, Settings, Power, Sleep, Reboot, Power off), Select on a game picks
- * its core, on a port its readme or its page in the store. Power: home's clocks and the backlight
+ * its core and its title and box art (any of its pack's games), on a port its readme or its page in the
+ * store. The focused tile's or row's text scrolls when it doesn't fit. Power: home's clocks and the backlight
  * (power.h). Settings: Storage, Wi-Fi, Time, Updates, Licenses. Wi-Fi: on or off, the networks
  * (wifi.h), a password typed on the on-screen keyboard (keyboard.h). Time (clock.h): the zone,
  * guessed or picked; NTP, or the date and time by hand. Updates: a newer system
@@ -114,13 +115,14 @@ enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUI
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
        WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
        SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE,
-       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE };
+       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, MATCH, MATCH_SEARCH, MATCH_PICK };
 typedef struct {
   str label;
   str command;
   int action;
   int icon;     /* ICON_*, -1 for none */
-  int category; /* SETTINGS: appctl's; BROWSE_OPEN, LICENSE_OPEN, ZONE_*: the row; TOGGLE_SYSTEM: into categories */
+  int category; /* SETTINGS: appctl's; BROWSE_OPEN, LICENSE_OPEN, ZONE_*: the row; TOGGLE_SYSTEM: into categories;
+                 * PICK_CORE: the core; MATCH_PICK: into match.games, -1 for none */
   bool checked; /* a check mark at the end */
   int depth;    /* under the row above it at depth - 1: a tree's branch */
 } entry;
@@ -217,7 +219,6 @@ static const entry fail_launch_entries[] = {{.label = S("OK"), .action = DISMISS
                                             {.label = S("Ignore for this app"), .action = IGNORE, .icon = ICON_EYE_OFF}};
 static const entry fail_sleep_entries[] = {{.label = S("Use light sleep"), .action = SLEEP_LIGHT, .icon = ICON_MOON},
                                            {.label = S("Keep deep sleep"), .action = DISMISS, .icon = ICON_CHECK}};
-/* The core picker's rows: one per core, PICK_CORE (CORES_MAX: apps.h) */
 
 /* Running (only while something is), then the categories */
 #define PAGES (category_count + 1)
@@ -272,15 +273,14 @@ static struct {
   STRBUF(1300) key;
   nav_id back;
 } failure;
-/* Over home: the quick menu, or Select on a game whose system has more than
- * one core: which runs it. Instead of home: Storage, Libraries, and a
+/* Over home: the quick menu, or Select on a game: which core runs it, its title and box art. Instead of home: Storage, Libraries, and a
  * folder's systems; Licenses, and one's texts. */
 enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_PORT, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS, MODAL_LICENSES,
        MODAL_LICENSE, MODAL_WIFI, MODAL_KEYBOARD, MODAL_UPDATES, MODAL_README, MODAL_SETTINGS, MODAL_POWER,
-       MODAL_ZONES, MODAL_ZONE, MODAL_CLOCK, MODAL_TIME, MODAL_DEBUG };
+       MODAL_ZONES, MODAL_ZONE, MODAL_CLOCK, MODAL_TIME, MODAL_DEBUG, MODAL_MATCH };
 static struct {
   int kind;
-  STRBUF(512) rom; /* MODAL_CORES: the game's arg, as a rescan reorders; MODAL_PORT, MODAL_README: its folder */
+  STRBUF(512) rom; /* MODAL_CORES, MODAL_MATCH: the game's arg, as a rescan reorders; MODAL_PORT, MODAL_README: its folder */
   STRBUF(64) name; /* MODAL_PORT, MODAL_README: the port's */
   nav_id back;
 } modal;
@@ -653,6 +653,49 @@ static void top_bar(int width, str page, const status *s) {
   ui_fill(0, BAR, width, 1, DIM);
 }
 
+/* The focused tile's or row's text, when it doesn't fit: held, scrolled to its end, held, back
+ * to its start; MARQUEE_PASSES times, then it rests at its start (no frames while idle).
+ * marquee_due: the frame it next moves in, 0 for none. */
+enum { MARQUEE_PX = 30 /* a second */, MARQUEE_HOLD = 1500, MARQUEE_PASSES = 3 };
+static uint64_t marquee_due, marquee_since, frame_now;
+/* The text scrolling (a hash), 0 once a frame had none: focused again, it starts over */
+static uint64_t marquee_of;
+static bool marquee_drawn;
+
+/* `text` from x on, in `room`; clipped to that and `view`, the list's clip, which is put back */
+static void marquee(int px, float x, int y, float room, str text, gfx_color color, ui_rect view) {
+  /* Another text: from its start */
+  uint64_t key = 1469598103934665603u;
+  for (size_t i = 0; i < text.n; i++)
+    key = (key ^ (uint8_t)text.p[i]) * 1099511628211u;
+  if (key != marquee_of) {
+    marquee_of = key;
+    marquee_since = frame_now;
+  }
+  marquee_drawn = true;
+  const int over = ui_text_width(px, text) - (int)room;
+  const uint64_t scroll = (uint64_t)over * 1000 / MARQUEE_PX, cycle = MARQUEE_HOLD * 2 + scroll;
+  const uint64_t t = (frame_now - marquee_since) % cycle;
+  const bool done = (frame_now - marquee_since) / cycle >= MARQUEE_PASSES;
+  int offset = 0;
+  uint64_t next = MARQUEE_HOLD - MIN(t, MARQUEE_HOLD);
+  if (t >= MARQUEE_HOLD + scroll) {
+    offset = over;
+    next = cycle - t;
+  } else if (t >= MARQUEE_HOLD) {
+    offset = (int)((t - MARQUEE_HOLD) * MARQUEE_PX / 1000);
+    next = 1000 / MARQUEE_PX;
+  }
+  if (done)
+    offset = 0;
+  else
+    marquee_due = frame_now + MAX(next, 1);
+  const float x0 = MAX(x, view.x), x1 = MIN(x + room, view.x + view.w);
+  gfx_clip(x0, view.y, MAX(0, x1 - x0), view.h);
+  ui_text(px, (int)x - offset, y, text, color);
+  gfx_clip(view.x, view.y, view.w, view.h);
+}
+
 /* Returns the entry activated this frame, if any. */
 static const entry *menu(nav *ui, const entry *entries, size_t count,
                          ui_rect view) {
@@ -712,8 +755,11 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
       x += ICON_PX + MARGIN;
     }
     const float room = r.x + r.w - x - MARGIN - (entries[i].checked ? ICON_PX + MARGIN : 0);
-    ui_text(ROW_TEXT, x, (int)r.y + ((int)r.h - ui_text_height(ROW_TEXT)) / 2,
-            ui_text_fit(ROW_TEXT, entries[i].label, room, NULL), FG);
+    const int ty = (int)r.y + ((int)r.h - ui_text_height(ROW_TEXT)) / 2;
+    if ((flags & NAV_FOCUSED) && ui_text_width(ROW_TEXT, entries[i].label) > room)
+      marquee(ROW_TEXT, x, ty, room, entries[i].label, FG, view);
+    else
+      ui_text(ROW_TEXT, x, ty, ui_text_fit(ROW_TEXT, entries[i].label, room, NULL), FG);
     if (entries[i].checked)
       ui_icon(ICON_CHECK, ICON_PX, (int)(r.x + r.w) - MARGIN - ICON_PX, (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
   }
@@ -722,8 +768,8 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
   return chosen;
 }
 
-/* Over its background (tiles) */
-static void tile(const app *a, ui_rect r) {
+/* Over its background (tiles), in `view` */
+static void tile(const app *a, ui_rect r, bool focused, ui_rect view) {
   if (run_same(sb_str(a->exec), sb_str(a->arg), sb_str(a->dir)) != NULL)
     ui_rounded(r.x + r.w - 16, r.y + 8, 8, 8, ACTIVE, 4, 0);
   const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 8;
@@ -745,11 +791,15 @@ static void tile(const app *a, ui_rect r) {
                         .color = 0xffffffff, .tex = icon.slot,
                         .radius = RADIUS - 2});
   }
+  const int ty = (int)(iy + ICON + (r.y + r.h - iy - ICON - ui_text_height(TILE_TEXT)) / 2);
+  const float room = r.w - MARGIN;
+  if (focused && ui_text_width(TILE_TEXT, sb_str(a->name)) > room) {
+    marquee(TILE_TEXT, r.x + MARGIN / 2, ty, room, sb_str(a->name), FG, view);
+    return;
+  }
   int nw;
-  const str name = ui_text_fit(TILE_TEXT, sb_str(a->name), r.w - MARGIN, &nw);
-  ui_text(TILE_TEXT, (int)(r.x + (r.w - nw) / 2),
-            (int)(iy + ICON + (r.y + r.h - iy - ICON - ui_text_height(TILE_TEXT)) / 2),
-            name, FG);
+  const str name = ui_text_fit(TILE_TEXT, sb_str(a->name), room, &nw);
+  ui_text(TILE_TEXT, (int)(r.x + (r.w - nw) / 2), ty, name, FG);
 }
 
 /* A grid, scrolled by rows. Returns the app activated this frame, if any. */
@@ -789,7 +839,7 @@ static const app *tiles(nav *ui, const category *c, ui_rect view) {
     if (flags & NAV_FOCUSED)
       tiles_focus = (int)i;
     if (r.y < view.y + view.h && r.y + r.h > view.y)
-      tile(&c->apps[i], r);
+      tile(&c->apps[i], r, flags & NAV_FOCUSED, view);
     if (flags & NAV_ACTIVATED)
       chosen = &c->apps[i];
   }
@@ -963,6 +1013,11 @@ static void show_failure(nav *ui, int kind, str title, str why, str key) {
   nav_focus(ui, 0);
 }
 
+/* Row `i` of menu() in the top-level scope `scope` */
+static nav_id menu_row(nav_id scope, size_t i) {
+  return nav_child(nav_child(scope, nav_str("menu")), nav_int(i));
+}
+
 static app *picked_game(category *c) {
   for (size_t i = 0; i < c->count; i++)
     if (str_eq(sb_str(c->apps[i].arg), sb_str(modal.rom)))
@@ -970,20 +1025,61 @@ static app *picked_game(category *c) {
   return NULL;
 }
 
-/* The game's system's cores, the one it runs with checked */
-static entry core_rows[CORES_MAX];
-static const entry *core_dialog(nav *ui, int w, int h, category *c) {
+/* Select on a game: its system's cores when there's a choice, the one it runs with checked;
+ * its title and box art when its system has a pack */
+static const entry *game_dialog(nav *ui, int w, int h, category *c) {
+  static entry rows[CORES_MAX + 1];
   const app *a = picked_game(c);
   if (a == NULL) {
     modal.kind = MODAL_NONE;
     return NULL;
   }
-  const size_t n = c->core_count;
-  for (size_t i = 0; i < n; i++) {
-    core_rows[i] = (entry){.label = sb_str(c->cores[i].name), .action = PICK_CORE, .icon = ICON_GAMEPAD_2,
-                           .checked = (int)i == a->core};
-  }
-  return dialog_box(ui, w, h, sb_str(a->name), S("Run with"), core_rows, n);
+  size_t n = 0;
+  for (size_t i = 0; c->core_count > 1 && i < c->core_count; i++)
+    rows[n++] = (entry){.label = sb_str(c->cores[i].name), .action = PICK_CORE, .icon = ICON_GAMEPAD_2,
+                        .category = (int)i, .checked = (int)i == a->core};
+  if (c->pack.n > 0)
+    rows[n++] = (entry){.label = S("Title and box art"), .action = MATCH, .icon = ICON_IMAGE};
+  return dialog_box(ui, w, h, sb_str(a->name), c->core_count > 1 ? S("Run with") : S(""), rows, n);
+}
+
+/* MODAL_MATCH: the pack's games that the game (modal.rom) may be, for its title and box art;
+ * found by its file's name, or by what was typed */
+enum { MATCH_MAX = 100 };
+static struct {
+  size_t category;
+  STRBUF(128) query;
+  uint32_t crcs[MATCH_MAX];
+  romdb_game games[MATCH_MAX];
+  size_t count;
+} match;
+/* MODAL_KEYBOARD: what it types for, MODAL_WIFI (a password) or MODAL_MATCH (a search) */
+static int keyboard_for = MODAL_WIFI;
+
+static void match_find(nav *ui, str query) {
+  sb_set(match.query, query);
+  const str pack = apps_pack(&categories[match.category]);
+  const size_t n = romdb_search(pack, query, match.crcs, MATCH_MAX);
+  match.count = 0;
+  for (size_t i = 0; i < n; i++)
+    if (romdb_find(pack, match.crcs[i], &match.games[match.count]))
+      match.crcs[match.count++] = match.crcs[i];
+  modal.kind = MODAL_MATCH;
+  /* The one picked, else the best: after Search and By its contents */
+  const app *a = picked_game(&categories[match.category]);
+  size_t row = match.count > 0 ? 2 : 0;
+  for (size_t i = 0; a != NULL && i < match.count; i++)
+    if (match.crcs[i] == a->match)
+      row = i + 2;
+  nav_focus(ui, menu_row(nav_str("match"), row));
+}
+
+/* By the ROM's name: "Super Mario Land 2 (Rev 1).gb" looks for "super mario land 2" */
+static void match_open(nav *ui, size_t category) {
+  const str path = sb_str(modal.rom), name = str_at(path, str_rfind(path, '/') + 1);
+  const size_t dot = str_rfind(name, '.');
+  match.category = category;
+  match_find(ui, dot > 0 ? str_head(name, dot) : name);
 }
 
 /* Select on a port: its readme, its page in the store */
@@ -1082,11 +1178,6 @@ static void browse(nav *ui, str dir) {
   nav_focus(ui, 0);
 }
 
-/* Row `i` of menu() in the top-level scope `scope` */
-static nav_id menu_row(nav_id scope, size_t i) {
-  return nav_child(nav_child(scope, nav_str("menu")), nav_int(i));
-}
-
 /* To the folder above, on the one we were in; the card's top is the top's */
 static void browse_up(nav *ui) {
   STRBUF(256) from, parent;
@@ -1171,6 +1262,10 @@ static struct {
 } wifi_pick;
 
 static void keyboard_submit(nav *ui) {
+  if (keyboard_for == MODAL_MATCH) {
+    match_find(ui, keyboard_text());
+    return;
+  }
   if (!wifi_connect(sb_str(wifi_pick.ssid), true, keyboard_text()))
     fprintf(stderr, "launcher: wifi: couldn't add %s\n", wifi_pick.ssid.p);
   modal.kind = MODAL_WIFI;
@@ -1465,9 +1560,13 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
     NAV_SCOPE(ui, nav_str("wifi")) { chosen = menu(ui, rows, n, below); }
     hint = menu_focus > 0 && wifi_networks[menu_focus - 1].saved ? S("X: forget") : S("");
   } else if (modal.kind == MODAL_KEYBOARD) {
-    top_bar(w, S("Wi-Fi"), st);
+    const bool search = keyboard_for == MODAL_MATCH;
+    top_bar(w, search ? S("Title and box art") : S("Wi-Fi"), st);
     STRBUF(200) label;
-    sb_set(label, S("Password for "), sb_str(wifi_pick.ssid));
+    if (search)
+      sb_set(label, S("Search "), categories[match.category].name);
+    else
+      sb_set(label, S("Password for "), sb_str(wifi_pick.ssid));
     bool done = false;
     NAV_SCOPE(ui, nav_str("keyboard")) { done = keyboard(ui, list, sb_str(label)); }
     if (done)
@@ -1502,6 +1601,32 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
       clock_dialog(w, h);
       hint = S("Up, down: change    Left, right: move");
     }
+  } else if (modal.kind == MODAL_MATCH) {
+    /* Search, None, then what was found; the focused one's box art beside them */
+    top_bar(w, S("Title and box art"), st);
+    const app *a = picked_game(&categories[match.category]);
+    size_t n = 0;
+    sb_set(labels[0], S("Search  \u00b7  "), sb_str(match.query));
+    rows[n++] = (entry){.label = sb_str(labels[0]), .action = MATCH_SEARCH, .icon = ICON_SEARCH};
+    rows[n++] = (entry){.label = S("By its contents"), .action = MATCH_PICK, .icon = ICON_MICROCHIP, .category = -1,
+                        .checked = a != NULL && a->match == 0};
+    for (size_t i = 0; i < match.count; i++)
+      rows[n++] = (entry){.label = match.games[i].title, .action = MATCH_PICK, .icon = ICON_IMAGE, .category = (int)i,
+                          .checked = a != NULL && a->match == match.crcs[i]};
+    const ui_rect left = {list.x, list.y, list.w - ICON - MARGIN * 2, list.h};
+    NAV_SCOPE(ui, nav_str("match")) { chosen = menu(ui, rows, n, left); }
+    const float px = left.x + left.w, py = list.y + MARGIN;
+    if (menu_focus >= 2 && (size_t)menu_focus - 2 < match.count) {
+      const asset art = assets_get(sb_str(match.games[menu_focus - 2].image));
+      if (art.slot != GFX_PLACEHOLDER) {
+        const float scale = MIN((float)ICON / art.w, (float)ICON / art.h);
+        gfx_push((gfx_quad){.x = px + (ICON - art.w * scale) / 2, .y = py, .w = art.w * scale, .h = art.h * scale,
+                            .u1 = 1, .v1 = 1, .color = 0xffffffff, .tex = art.slot, .radius = RADIUS - 2});
+      } else {
+        ui_rounded(px, py, ICON, ICON, EDGE, RADIUS - 2, 0);
+      }
+    }
+    hint = S("");
   } else if (modal.kind == MODAL_POWER) {
     top_bar(w, S("Power"), st);
     NAV_SCOPE(ui, nav_str("home power")) { power_page(ui, list, false); }
@@ -1889,8 +2014,8 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   if (modal.kind == MODAL_KEYBOARD && !paused) {
     switch (button) {
     case APPCTL_B:
-      modal.kind = MODAL_WIFI;
-      nav_focus(ui, 0);
+      modal.kind = keyboard_for;
+      nav_focus(ui, keyboard_for == MODAL_MATCH ? menu_row(nav_str("match"), 0) : 0);
       return true;
     case APPCTL_X: keyboard_delete(); return true;
     case APPCTL_Y: keyboard_shift(); return true;
@@ -1987,10 +2112,10 @@ static bool input(nav *ui, int why, int value, size_t *page) {
       return true;
     }
   }
-  /* Select on a game: which core runs it, when there's a choice */
+  /* Select on a game: which core runs it, when there's a choice; its title and box art */
   if (button == APPCTL_SELECT && !paused && !dialog && *page >= 1 && tiles_focus >= 0 &&
-      (size_t)tiles_focus < categories[*page - 1].count &&
-      categories[*page - 1].core_count > 1) {
+      (size_t)tiles_focus < categories[*page - 1].count && categories[*page - 1].roms.n > 0 &&
+      (categories[*page - 1].core_count > 1 || categories[*page - 1].pack.n > 0)) {
     modal.kind = MODAL_CORES;
     modal.back = ui->focus;
     sb_set(modal.rom, sb_str(categories[*page - 1].apps[tiles_focus].arg));
@@ -2178,6 +2303,12 @@ int main(int argc, char **argv) {
       if (wait < 0 || left < wait)
         wait = left;
     }
+    /* A text scrolling: its next step (none under the app) */
+    if (marquee_due != 0 && (front == NULL || paused)) {
+      const int left = (int)(marquee_due - MIN(marquee_due, ms_now()));
+      if (wait < 0 || left < wait)
+        wait = left;
+    }
     if (!win_wait(watch_fds, WATCH_FDS, wait))
       return 1;
     changed |= watch_changed();
@@ -2200,7 +2331,7 @@ int main(int argc, char **argv) {
       animating = true;
     }
     /* Events (input, an icon loaded, an app gone) count as changes */
-    bool dirty = animating;
+    bool dirty = animating || (marquee_due != 0 && now >= marquee_due);
     const bool second = seconds && now - status_at >= 1000;
     if (second || changed != 0) {
       if (second && !told_up && (told_up = sysd(S("up")))) {
@@ -2264,6 +2395,9 @@ int main(int argc, char **argv) {
       ui_fill(0, 0, w, h, SCRIM);
     }
     nav_begin(&ui, &ctx, now);
+    frame_now = now;
+    marquee_due = 0;
+    marquee_drawn = false;
     const entry *chosen = NULL;
     const app *picked = NULL;
     bool calibrate = false;
@@ -2343,7 +2477,7 @@ int main(int argc, char **argv) {
       if (modal.kind == MODAL_PORT)
         NAV_SCOPE(&ui, nav_str("port")) { chosen = port_dialog(&ui, w, h); }
       if (modal.kind == MODAL_CORES && page >= 1)
-        NAV_SCOPE(&ui, nav_str("cores")) { chosen = core_dialog(&ui, w, h, &categories[page - 1]); }
+        NAV_SCOPE(&ui, nav_str("cores")) { chosen = game_dialog(&ui, w, h, &categories[page - 1]); }
       nav_set_inert(&ui, power_menu.shown);
       if (failure.shown)
         NAV_SCOPE(&ui, nav_str("failure")) { chosen = failure_dialog(&ui, w, h); }
@@ -2354,6 +2488,8 @@ int main(int argc, char **argv) {
         chosen = dialog_box(&ui, w, h, S(""), S(""), power_entries, POWER_ENTRIES);
       }
     animating = nav_end(&ui, RING, 2);
+    if (!marquee_drawn)
+      marquee_of = 0;
     if (paused) {
       front->in_settings = in_settings;
       front->settings_category = settings_category;
@@ -2408,9 +2544,30 @@ int main(int argc, char **argv) {
     case PICK_CORE: {
       app *a = picked_game(&categories[page - 1]);
       if (a != NULL)
-        apps_set_core(&categories[page - 1], a, (int)(chosen - core_rows));
+        apps_set_core(&categories[page - 1], a, chosen->category);
       modal.kind = MODAL_NONE;
       nav_focus(&ui, modal.back);
+      break;
+    }
+    case MATCH: match_open(&ui, page - 1); break;
+    /* From what was looked for last: the file's name, or what was typed */
+    case MATCH_SEARCH:
+      keyboard_open(sb_str(match.query));
+      keyboard_for = MODAL_MATCH;
+      modal.kind = MODAL_KEYBOARD;
+      nav_focus(&ui, 0);
+      break;
+    /* Its new title may sort it elsewhere: the focus goes with it */
+    case MATCH_PICK: {
+      category *c = &categories[match.category];
+      app *a = picked_game(c);
+      if (a != NULL)
+        apps_set_match(a, chosen->category >= 0 ? match.crcs[chosen->category] : 0);
+      apps_scan(c);
+      modal.kind = MODAL_NONE;
+      nav_focus(&ui, modal.back);
+      if ((a = picked_game(c)) != NULL)
+        nav_focus(&ui, nav_child(nav_child(nav_int(page), nav_str("tiles")), nav_int(a - c->apps)));
       break;
     }
     /* The quick menu stays: closed, its last frame would show until the wake-up */
@@ -2467,7 +2624,8 @@ int main(int argc, char **argv) {
           wifi_connect(sb_str(net->ssid), net->secured, S(""));
         } else {
           sb_set(wifi_pick.ssid, sb_str(net->ssid));
-          keyboard_open();
+          keyboard_open(S(""));
+          keyboard_for = MODAL_WIFI;
           modal.kind = MODAL_KEYBOARD;
           nav_focus(&ui, 0);
         }

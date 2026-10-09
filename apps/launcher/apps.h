@@ -16,8 +16,9 @@
  *   (what its emulators take), Pack (the game pack's name in
  *   OS/assets/thumbnails, romdb.h), Order (of the pages; then by name).
  *   Every file in the folder matching Patterns is a game. Its title and box art come from the system's game
- *   pack by CRC, once that is known; an image of the same name next to the
- *   ROM wins over the pack's.
+ *   pack by CRC, once that is known, or from the pack's game picked for it by hand (Select:
+ *   kept in $XDG_CONFIG_HOME/launcher-matches); an image of the same name next to the ROM
+ *   wins over the pack's.
  * - Emulators and players: the .desktop files in apps/emulators over the
  *   image's (EMULATORS): one of the same file name replaces the image's, or
  *   hides it (Hidden=true). One runs a system's games when its MimeType has
@@ -45,6 +46,7 @@ typedef struct {
   STRBUF(320) icon; /* a path, or a key into a game pack */
   STRBUF(128) tags; /* Keywords then Categories, each ';'-terminated */
   int core;         /* into the category's cores */
+  uint32_t match;   /* the pack's game picked for it by hand (its CRC), 0: none */
 } app;
 
 /* An emulator or player, from its .desktop */
@@ -85,6 +87,11 @@ void apps_scan(category *c);
 bool apps_present(const category *c);
 /* Runs `a` with core `index` from now on */
 void apps_set_core(category *c, app *a, int index);
+/* Its title and box art from the pack's game `crc` from now on; 0: by its own CRC again.
+ * Shows once the page is read again. */
+void apps_set_match(app *a, uint32_t crc);
+/* The system's game pack, "" for none; until the next call */
+str apps_pack(const category *c);
 /* Kept in $XDG_CONFIG_HOME/launcher-folders, a line "category's folder\tpath"
  * each ("apps/ports\t/run/media/mmcblk1p2/ports": ports on the second card).
  * A folder may be a source of more than one system. */

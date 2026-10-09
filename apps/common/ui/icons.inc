@@ -34,6 +34,7 @@ enum {
   ICON_SAVE_IN,
   ICON_SAVE_OUT,
   ICON_SCROLL_TEXT,
+  ICON_SEARCH,
   ICON_SHOPPING_BAG,
   ICON_SMARTPHONE,
   ICON_SPEAKER,
@@ -426,6 +427,13 @@ static const float icon_scroll_text[] = {
     2.0f, 7.0f, ICON_CUBIC, 2.0f, 7.552f, 2.448f, 8.0f, 3.0f,
     8.0f, ICON_LINE, 6.0f, 8.0f, ICON_END,
 };
+static const float icon_search[] = {
+    ICON_MOVE, 3.0f, 11.0f, ICON_CUBIC, 3.0f, 6.582f, 6.582f, 3.0f,
+    11.0f, 3.0f, ICON_CUBIC, 15.418f, 3.0f, 19.0f, 6.582f, 19.0f,
+    11.0f, ICON_CUBIC, 19.0f, 15.418f, 15.418f, 19.0f, 11.0f, 19.0f,
+    ICON_CUBIC, 6.582f, 19.0f, 3.0f, 15.418f, 3.0f, 11.0f, ICON_CLOSE,
+    ICON_MOVE, 21.0f, 21.0f, ICON_LINE, 16.700f, 16.700f, ICON_END,
+};
 static const float icon_shopping_bag[] = {
     ICON_MOVE, 6.0f, 2.0f, ICON_LINE, 3.0f, 6.0f, ICON_LINE, 3.0f,
     20.0f, ICON_CUBIC, 3.0f, 21.105f, 3.895f, 22.0f, 5.0f, 22.0f,
@@ -593,6 +601,7 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_save_in,
     icon_save_out,
     icon_scroll_text,
+    icon_search,
     icon_shopping_bag,
     icon_smartphone,
     icon_speaker,

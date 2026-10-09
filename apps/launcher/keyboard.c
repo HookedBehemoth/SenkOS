@@ -17,9 +17,8 @@ static const char *const layers[3][4] = {
 static int layer;
 static STRBUF(128) text;
 
-void keyboard_open(void) {
-  text.n = 0;
-  text.p[0] = '\0';
+void keyboard_open(str start) {
+  sb_set(text, start);
   layer = 0;
 }
 
