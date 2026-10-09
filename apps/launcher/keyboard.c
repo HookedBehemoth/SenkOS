@@ -2,11 +2,11 @@
 
 enum { KEY_H = 44, GAP = 4, TEXT = 20, FIELD = 40, COLS = 10 };
 
-static const gfx_color FG = {0xee, 0xee, 0xee, 0xff};
-static const gfx_color DIM = {0x8a, 0x8a, 0x94, 0xff};
-static const gfx_color KEY = {0x26, 0x27, 0x2e, 0xff};
-static const gfx_color FOCUS = {0x3a, 0x40, 0x52, 0xff};
-static const gfx_color FIELD_BG = {0x1c, 0x1d, 0x23, 0xff};
+#define FG ui_pal.fg
+#define DIM ui_pal.dim
+#define KEY ui_pal.key
+#define FOCUS ui_pal.key_focus
+#define FIELD_BG ui_pal.tile
 
 /* Four rows of ten, each layer; a key is one UTF-8 character */
 static const char *const layers[3][4] = {

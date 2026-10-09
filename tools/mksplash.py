@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""PNG -> boot splash, drawn centred. The top-left pixel is the background.
+"""PNG -> boot splash, drawn centred. The top-left pixel is the background; a
+transparent PNG goes on the colour given (the UI's bg, ui.c), so one art makes both:
 
-  tools/mksplash.py splash.png yocto/meta-senkos/recipes-bsp/u-boot/files/splash.lz4
+  f=yocto/meta-senkos/recipes-bsp/u-boot/files
+  tools/mksplash.py $f/splash-art.png $f/splash.lz4 141418
+  tools/mksplash.py $f/splash-art.png $f/splash-light.lz4 f2f2f5
 """
 import struct
 import subprocess
@@ -10,7 +13,12 @@ import sys
 from PIL import Image, ImageChops
 
 src, dst = sys.argv[1:3]
-img = Image.open(src).convert("RGB")
+img = Image.open(src).convert("RGBA")
+if len(sys.argv) > 3:
+    under = Image.new("RGBA", (img.width + 2, img.height + 2), "#" + sys.argv[3])
+    under.alpha_composite(img, (1, 1))
+    img = under
+img = img.convert("RGB")
 bg = img.getpixel((0, 0))
 box = ImageChops.difference(img, Image.new("RGB", img.size, bg)).getbbox() or (0, 0, 1, 1)
 # symmetric around the centre, so centring the crop puts it back where it was drawn

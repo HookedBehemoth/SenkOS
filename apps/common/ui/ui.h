@@ -25,13 +25,26 @@
 typedef struct {
   float x, y, w, h;
 } ui_rect;
-typedef uint8_t ui_color[4];
 /* nav.c carries it around; nothing here draws with it. */
 typedef struct {
   float edge[4];
   float width[4];
 } ui_mask;
 typedef enum { UI_HORIZONTAL, UI_VERTICAL } ui_axis;
+
+/* The colors every app draws with: dark, or light while UI_LIGHT is there
+ * (sysd's "theme light|dark"; boot.cmd picks the splash by it too, so it's on
+ * the boot partition). The freedesktop convention, the portal's
+ * org.freedesktop.appearance color-scheme, needs a session bus; there's none. */
+#define UI_LIGHT "/uboot/light"
+typedef struct {
+  gfx_color bg, fg, dim, faint, focus, tile, edge, key, key_focus, accent, ok, bad;
+} ui_palette;
+extern ui_palette ui_pal;
+extern bool ui_light;
+/* Picks the palette again, a stat: ui_init, then the app on UI_CONFIGURED (it may be
+ * back on top after a change), and the launcher once sysd has made one */
+void ui_scheme(void);
 
 void ui_rounded(float x, float y, float w, float h, gfx_color c, float radius, float border);
 void ui_fill(float x, float y, float w, float h, gfx_color c);
@@ -74,6 +87,7 @@ str ui_markdown(str md);
  * UI_WAKE_APP */
 enum {
   UI_LOADED = WIN_WAKE_APP, /* an image is in (assets.h): a frame is all it wants */
+  UI_CONFIGURED,            /* the window's configure callback: a frame, and ui_scheme */
   UI_WAKE_APP,
 };
 
@@ -91,7 +105,7 @@ static inline ui_rect ui_inset(ui_rect r, float n) {
 }
 
 static inline void ui_stroke(ui_context *ctx, ui_rect r,
-                             const ui_rect *clip, const ui_color color,
+                             const ui_rect *clip, gfx_color color,
                              float width, float radius) {
   (void)ctx;
   if (clip != NULL)
@@ -99,7 +113,7 @@ static inline void ui_stroke(ui_context *ctx, ui_rect r,
   gfx_push((gfx_quad){
       .x = r.x, .y = r.y, .w = r.w, .h = r.h,
       .u1 = 1, .v1 = 1,
-      .color = color[0] | color[1] << 8 | color[2] << 16 | (uint32_t)color[3] << 24,
+      .color = gfx_rgba(color),
       .tex = GFX_WHITE,
       .radius = radius,
       .border = width,

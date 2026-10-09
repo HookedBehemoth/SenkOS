@@ -36,10 +36,11 @@ After 3 failed tries, U-Boot boots `slot` again and drops `tryslot`.
 
 The kernel shows a splash (kernel patch 0052, `drm_splash`) from ~0.5 s until Weston takes the display over without a
 modeset. It lights the panel from a work item, so the panel's ~290 ms of init sleeps hold up nothing. The image is
-`/uboot/splash.lz4` (`splash=<file>` in `/uboot/splash.txt` picks another file there): U-Boot unpacks it into
-memory it reserves and passes its place in `/chosen`, and the kernel frees it once drawn. `tools/mksplash.py` makes it
-from a PNG (any size, drawn centred); the top-left pixel is the background, and only the box around the rest is stored. The image's
-copy is `splash.lz4` in the U-Boot recipe. `touch /uboot/fbdev` shows the kernel console (fbcon) instead.
+`/uboot/splash.lz4`, or `/uboot/splash-light.lz4` while `/uboot/light` is there (light mode, sysd's `theme light|dark`;
+the apps read the same file) (`splash=<file>` in `/uboot/splash.txt` picks another file there): U-Boot unpacks it into
+memory it reserves and passes its place in `/chosen`, and the kernel frees it once drawn. `tools/mksplash.py` makes both
+from `splash-art.png` (transparent, any size, drawn centred) on the UI's background; only the box around the art is stored. The
+image's copies are in the U-Boot recipe. Like `boot.scr`, an OTA doesn't put them on `/uboot`. `touch /uboot/fbdev` shows the kernel console (fbcon) instead.
 
 Userspace starts with the UI: rcS S01 (`/etc/init.d/weston`) mounts `/data` and starts seatd, Weston and the
 launcher. PipeWire and the rest of rcS (udev's coldplug, the USB gadget, the watchdog) wait for the

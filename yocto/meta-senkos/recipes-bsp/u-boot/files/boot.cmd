@@ -35,8 +35,9 @@ setenv brightness
 if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} brightness.txt; then
 	env import -t ${scriptaddr} ${filesize} brightness
 fi
-# splash=<file>, optional
+# splash=<file>, optional; else the light one while /uboot/light is there (the UI's light mode)
 setenv splash splash.lz4
+if test -e ${devtype} ${devnum}:${distro_bootpart} light; then setenv splash splash-light.lz4; fi
 if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} splash.txt; then
 	env import -t ${scriptaddr} ${filesize} splash
 fi

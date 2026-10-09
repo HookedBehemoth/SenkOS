@@ -40,6 +40,7 @@
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
 #define LIGHT_SLEEP "/data/OS/config/light-sleep"
+#define LIGHT_MODE "/uboot/light"
 /* The power key held this long is the launcher's (POWER_HOLD_MS) */
 #define HOLD_S 1.0
 #define ARGV(...) ((const char *const[]){__VA_ARGS__, NULL})
@@ -74,6 +75,9 @@ static const struct cmd {
 	/* `suspend` never powers the SoC off while LIGHT_SLEEP is there */
 	{"sleep light", NULL, {ARGV("touch", LIGHT_SLEEP)}},
 	{"sleep deep", NULL, {ARGV("rm", "-f", LIGHT_SLEEP)}},
+	/* The UI's colors and the boot splash (boot.cmd): light while LIGHT_MODE is there */
+	{"theme light", NULL, {ARGV("touch", LIGHT_MODE)}},
+	{"theme dark", NULL, {ARGV("rm", "-f", LIGHT_MODE)}},
 };
 
 /* What runs for a client, which waits for the reply */

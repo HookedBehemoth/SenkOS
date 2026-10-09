@@ -400,7 +400,7 @@ static const nav_item_record *fallback(nav *ui) {
 
 static float mix(float a, float b, float t) { return a + (b - a) * t; }
 
-bool nav_end(nav *ui, const ui_color color, float width) {
+bool nav_end(nav *ui, gfx_color color, float width) {
   bool running = ui->acted;
   ui->acted = false;
   const nav_item_record *focused = shown(ui, ui->focus);

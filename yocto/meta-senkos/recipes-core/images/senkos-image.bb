@@ -258,4 +258,4 @@ WKS_FILE = "senkos.wks.in"
 # Only what senkos.wks.in needs (the oe-core default also builds grub-efi, systemd-boot, cdrtools, btrfs/squashfs/erofs tools)
 WKS_FILE_DEPENDS = "wic-native e2fsprogs-native dosfstools-native mtools-native bmaptool-native u-boot"
 # Kernel + dtbs live in each slot's /boot; the FAT partition has the boot script and splash
-IMAGE_BOOT_FILES = "boot.scr splash.lz4"
+IMAGE_BOOT_FILES = "boot.scr splash.lz4 splash-light.lz4"

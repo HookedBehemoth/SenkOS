@@ -88,23 +88,24 @@ enum { LICENSE_TEXT = 16 };
 /* portrun's state for each port (docs/ports.md) */
 #define PORT_STATE "/data/OS/saves/ports"
 
-static const gfx_color BG = {0x14, 0x14, 0x18, 0xff};
-static const gfx_color FG = {0xee, 0xee, 0xee, 0xff};
-static const gfx_color DIM = {0x55, 0x55, 0x5c, 0xff};
-static const gfx_color FOCUS = {0x2a, 0x2e, 0x3a, 0xff};
-static const gfx_color TILE = {0x1c, 0x1d, 0x23, 0xff};
-static const gfx_color EDGE = {0x33, 0x34, 0x3c, 0xff};
+/* The system's palette (ui.h) */
+#define BG ui_pal.bg
+#define FG ui_pal.fg
+#define DIM ui_pal.faint
+#define FOCUS ui_pal.focus
+#define TILE ui_pal.tile
+#define EDGE ui_pal.edge
 /* Over the paused app's blurred frame */
-static const gfx_color SCRIM = {0x14, 0x14, 0x18, 0xb0};
-static const gfx_color LOW = {0xe0, 0x40, 0x40, 0xff};
-static const gfx_color CHARGING = {0x50, 0xc8, 0x60, 0xff};
-static const ui_color RING = {0x6a, 0x9c, 0xff, 0xff};
+#define SCRIM ((gfx_color){BG.r, BG.g, BG.b, 0xb0})
+#define LOW ui_pal.bad
+#define CHARGING ui_pal.ok
+#define RING ui_pal.accent
 /* A binding being recorded */
-static const gfx_color RING_TEXT = {0x6a, 0x9c, 0xff, 0xff};
+#define RING_TEXT ui_pal.accent
 /* The dot on a tile whose app is running */
-static const gfx_color ACTIVE = {0x6a, 0x9c, 0xff, 0xff};
+#define ACTIVE ui_pal.accent
 /* An option this game has its own of */
-static const gfx_color PER_GAME = {0x6a, 0x9c, 0xff, 0xff};
+#define PER_GAME ui_pal.accent
 
 /* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sysd */
 /* HEADER: a section's title, not a row to choose */
@@ -112,7 +113,7 @@ enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUI
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
        WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
        SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE,
-       SLEEP_LIGHT, DEEP_SLEEP };
+       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE };
 typedef struct {
   str label;
   str command;
@@ -579,7 +580,7 @@ static void show_volume(int percent) {
   int w, h;
   if (!gfx_begin(osd_screen, &w, &h))
     return;
-  ui_fill(0, 0, w, h, (gfx_color){BG.r, BG.g, BG.b, SCRIM.a});
+  ui_fill(0, 0, w, h, SCRIM);
   ui_fill(MARGIN, OSD_H / 2 - 5, 6, 10, FG);
   /* The cone, a column a pixel */
   const float x0 = MARGIN + 6, x1 = x0 + 8, y = OSD_H / 2;
@@ -603,7 +604,7 @@ static void show_text(str text, int ms) {
   int w, h;
   if (osd_screen == NULL || !gfx_begin(osd_screen, &w, &h))
     return;
-  ui_fill(0, 0, w, h, (gfx_color){BG.r, BG.g, BG.b, SCRIM.a});
+  ui_fill(0, 0, w, h, SCRIM);
   int tw;
   text = ui_text_fit(BAR_TEXT, text, w - MARGIN * 2, &tw);
   ui_text(BAR_TEXT, (w - tw) / 2, (h - ui_text_height(BAR_TEXT)) / 2, text, FG);
@@ -1271,6 +1272,8 @@ static size_t page_rows(int kind, entry *rows) {
     rows[n++] = (entry){.label = S("Storage"), .action = STORAGE, .icon = ICON_HARD_DRIVE};
     rows[n++] = (entry){.label = S("Wi-Fi"), .action = WIFI, .icon = ICON_WIFI};
     rows[n++] = (entry){.label = S("Time"), .action = TIME, .icon = ICON_CLOCK};
+    rows[n++] = (entry){.label = S("Light mode"), .action = LIGHT_MODE, .icon = ICON_SUN,
+                        .checked = ui_light};
     rows[n++] = (entry){.label = S("Updates"), .action = UPDATES, .icon = ICON_DOWNLOAD};
     rows[n++] = (entry){.label = S("Debug"), .action = DEBUG, .icon = ICON_CPU};
     rows[n++] = (entry){.label = S("Licenses"), .action = LICENSES_OPEN, .icon = ICON_SCROLL_TEXT};
@@ -1372,7 +1375,7 @@ static void clock_dialog(int w, int h) {
       ui_text(ROW_TEXT, (int)fx, (int)ly, i == 0 ? S("Date") : S("Time"), DIM);
     ui_rounded(fx, fy, field_w[i], fh, i == clock_edit.at ? FOCUS : BG, 6, 0);
     if (i == clock_edit.at)
-      ui_rounded(fx - 2, fy - 2, field_w[i] + 4, fh + 4, (gfx_color){RING[0], RING[1], RING[2], RING[3]}, 8, 2);
+      ui_rounded(fx - 2, fy - 2, field_w[i] + 4, fh + 4, RING, 8, 2);
     STRBUF(8) value;
     value.n = 0;
     sb_fmt(value, i == 0 ? "%04d" : "%02d", clock_edit.field[i]);
@@ -2425,6 +2428,7 @@ int main(int argc, char **argv) {
     case SSH: sysd(access(SSH_OFF, F_OK) != 0 ? S("ssh off") : S("ssh on")); break;
     case SSH_EVERYWHERE: sysd(access(SSH_ALL, F_OK) == 0 ? S("ssh usb") : S("ssh all")); break;
     case DEEP_SLEEP: sysd(access(LIGHT_SLEEP, F_OK) == 0 ? S("sleep deep") : S("sleep light")); break;
+    case LIGHT_MODE: sysd(ui_light ? S("theme dark") : S("theme light")); break;
     case WIFI:
       modal.kind = MODAL_WIFI;
       wifi_poll();

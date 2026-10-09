@@ -46,17 +46,18 @@ enum { BAR = 32, BAR_TEXT = 18, ROW = 40, ROW_TEXT = 20, SMALL = 16, ICON_PX = 2
 enum { TILE_W = 144, TILE_H = 150, THUMB_W = 128, THUMB_H = 96, TILE_TEXT = 16, RADIUS = 12, GAP = 8 };
 enum { SHOT_W = 288, SHOT_H = 216, README_TEXT = 16 };
 
-static const gfx_color BG = {0x14, 0x14, 0x18, 0xff};
-static const gfx_color FG = {0xee, 0xee, 0xee, 0xff};
-static const gfx_color DIM = {0x8a, 0x8a, 0x94, 0xff};
-static const gfx_color FAINT = {0x55, 0x55, 0x5c, 0xff};
-static const gfx_color FOCUS = {0x2a, 0x2e, 0x3a, 0xff};
-static const gfx_color TILE = {0x1c, 0x1d, 0x23, 0xff};
-static const gfx_color EDGE = {0x33, 0x34, 0x3c, 0xff};
-static const gfx_color ACCENT = {0x6a, 0x9c, 0xff, 0xff};
-static const gfx_color OK = {0x50, 0xc8, 0x60, 0xff};
-static const gfx_color BAD = {0xe0, 0x60, 0x60, 0xff};
-static const ui_color RING = {0x6a, 0x9c, 0xff, 0xff};
+/* The system's palette (ui.h) */
+#define BG ui_pal.bg
+#define FG ui_pal.fg
+#define DIM ui_pal.dim
+#define FAINT ui_pal.faint
+#define FOCUS ui_pal.focus
+#define TILE ui_pal.tile
+#define EDGE ui_pal.edge
+#define ACCENT ui_pal.accent
+#define OK ui_pal.ok
+#define BAD ui_pal.bad
+#define RING ui_pal.accent
 
 /* The store's reasons to win_wake */
 enum {
@@ -508,7 +509,7 @@ static STRBUF(256) open_id; /* `store ID`: once the catalog has it */
 
 static void redraw(win *w) {
   (void)w;
-  win_wake(UI_LOADED, 0);
+  win_wake(UI_CONFIGURED, 0);
 }
 static win window = {.app_id = "store", .title = "Store", .w = 640, .h = 480, .configure = redraw};
 
@@ -869,6 +870,8 @@ int main(int argc, char **argv) {
     for (int why, value; win_woken(&why, &value); animating = true) {
       if (why == WIN_QUIT)
         return 0;
+      if (why == UI_CONFIGURED)
+        ui_scheme();
       if (why == STORE_CATALOG) {
         load_catalog();
         port *p = open_id.n > 0 ? find(sb_str(open_id)) : NULL;

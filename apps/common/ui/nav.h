@@ -180,4 +180,4 @@ void nav_fill(nav *ui, gfx_color color, float radius);
 void nav_set_inert(nav *ui, bool inert);
 /* Draws the focus ring. True while something is still animating, or when an
  * activation this frame may have changed what the next one shows. */
-bool nav_end(nav *ui, const ui_color ring, float ring_width);
+bool nav_end(nav *ui, gfx_color ring, float ring_width);
