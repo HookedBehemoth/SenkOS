@@ -3,13 +3,18 @@
  * appctl.h (pause, settings) like corehost; without the launcher it just plays.
  *
  *   mediaplayer FILE
+ *   mediaplayer --thumbnail FILE OUT SIZE
+ *
+ * --thumbnail writes a frame from a tenth of the way in, its longest side SIZE, to OUT as WebP
+ * (common/ui/assets.h: the launcher's tiles), and quits.
  *
  * GStreamer's playbin3 decodes: on Cedrus through v4l2codecs, whose dmabufs
  * waylandsink hands to Weston as they are. If decoding fails (a codec profile
  * the engine lacks), the file is opened again with software decoders.
  *
  * Our toplevel is black; waylandsink draws into a subsurface of it, and the
- * OSD (title, time, progress) is a CPU-drawn subsurface above that.
+ * OSD (title, time, progress) and a toast (top right: "Software decoding") are
+ * CPU-drawn subsurfaces above that.
  *
  * A, Start: pause    Left/Right: -/+10 s    L1/R1: -/+60 s
  * Up/Down: previous/next video in the folder    X, Y, Select: OSD    B: quit
@@ -36,6 +41,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <gst/gst.h>
+#include <webp/encode.h>
 #include <gst/video/videooverlay.h>
 #define GST_USE_UNSTABLE_API
 #include <gst/wayland/wayland.h>
@@ -50,6 +56,9 @@
 
 #define OSD_H 72
 #define OSD_SHOWN_MS 3000
+/* The toast's surface, its box right-aligned in it */
+#define TOAST_W 320
+#define TOAST_H 40
 #define SEEK_SHORT (10 * GST_SECOND)
 #define SEEK_LONG (60 * GST_SECOND)
 #define REPEAT_DELAY_MS 400
@@ -57,8 +66,8 @@
 /* As the launcher's Videos page has them (launcher/apps.c) */
 static const str video_exts[] = {S(".mp4"), S(".mkv"), S(".webm"), S(".mov"), S(".m4v"), S(".avi"), S(".ts")};
 
-static struct wl_surface *video_surface, *osd_surface;
-static struct wl_subsurface *video_sub, *osd_sub;
+static struct wl_surface *video_surface, *osd_surface, *toast_surface;
+static struct wl_subsurface *video_sub, *osd_sub, *toast_sub;
 static void configured(win *w);
 static win window = {.app_id = "mediaplayer", .title = "Media player", .fullscreen = true,
                      .w = 640, .h = 480, .configure = configured};
@@ -75,6 +84,10 @@ static bool user_paused, ctl_paused, prerolled;
 static uint64_t osd_until;
 static STRBUF(128) message;
 static uint64_t message_until;
+/* toast_until 0: none up; toast_drawn: `toasting` is on screen */
+static STRBUF(64) toasting;
+static uint64_t toast_until;
+static bool toast_drawn;
 
 static int ctl = -1;
 static appctl_shm *shm;
@@ -301,6 +314,43 @@ static void osd_draw(void) {
 
 static void osd_poke(void) { osd_until = ms_now() + OSD_SHOWN_MS; }
 
+/* --- toast: a note in the top-right corner, without the OSD -------------- */
+
+static shm_buffer toast_buffers[2];
+
+static void toast(str text) {
+  sb_set(toasting, text);
+  toast_until = ms_now() + OSD_SHOWN_MS;
+  toast_drawn = false;
+}
+
+static void toast_draw(void) {
+  if (!window.configured)
+    return;
+  if (ms_now() >= toast_until) {
+    if (toast_until != 0) {
+      wl_surface_attach(toast_surface, NULL, 0, 0);
+      wl_surface_commit(toast_surface);
+      toast_until = 0;
+    }
+    return;
+  }
+  if (toast_drawn)
+    return;
+  shm_buffer *b = !toast_buffers[0].busy ? &toast_buffers[0] : !toast_buffers[1].busy ? &toast_buffers[1] : NULL;
+  if (b == NULL || (b->buffer == NULL && !shm_buffer_make(b, TOAST_W, TOAST_H, WL_SHM_FORMAT_ARGB8888)))
+    return;
+  const int pad = 14, w = MIN(TOAST_W, text_width(sb_str(toasting), 16) + 2 * pad);
+  fill(b, 0, 0, TOAST_W, TOAST_H, 0);
+  fill(b, TOAST_W - w, 0, w, TOAST_H, 0xd0101014);
+  text_fit(b, TOAST_W - w + pad, 26, sb_str(toasting), 16, 0xffd070, TOAST_W - pad);
+  wl_surface_attach(toast_surface, b->buffer, 0, 0);
+  wl_surface_damage(toast_surface, 0, 0, TOAST_W, TOAST_H);
+  wl_surface_commit(toast_surface);
+  b->busy = true;
+  toast_drawn = true;
+}
+
 /* --- window -------------------------------------------------------------- */
 
 static shm_buffer black, clear;
@@ -309,6 +359,7 @@ static void attach_background(void) {
   if (black.w != window.w || black.h != window.h)
     shm_buffer_make(&black, window.w, window.h, WL_SHM_FORMAT_XRGB8888);
   wl_subsurface_set_position(osd_sub, 0, window.h - OSD_H);
+  wl_subsurface_set_position(toast_sub, window.w - TOAST_W - 16, 16);
   wl_surface_attach(window.surface, black.buffer, 0, 0);
   wl_surface_damage(window.surface, 0, 0, window.w, window.h);
   wl_surface_commit(window.surface);
@@ -360,7 +411,10 @@ static bool window_init(void) {
   osd_surface = wl_compositor_create_surface(win_compositor);
   osd_sub = wl_subcompositor_get_subsurface(win_subcompositor, osd_surface, top);
   wl_subsurface_set_desync(video_sub);
+  toast_surface = wl_compositor_create_surface(win_compositor);
+  toast_sub = wl_subcompositor_get_subsurface(win_subcompositor, toast_surface, top);
   wl_subsurface_set_desync(osd_sub);
+  wl_subsurface_set_desync(toast_sub);
   /* An unmapped parent hides its children: the video's gets a clear pixel */
   shm_buffer_make(&clear, 1, 1, WL_SHM_FORMAT_ARGB8888);
   wl_surface_attach(video_surface, clear.buffer, 0, 0);
@@ -368,6 +422,7 @@ static bool window_init(void) {
   /* Pass input to... nothing: the OSD and video never take it */
   struct wl_region *none = wl_compositor_create_region(win_compositor);
   wl_surface_set_input_region(osd_surface, none);
+  wl_surface_set_input_region(toast_surface, none);
   wl_surface_set_input_region(video_surface, none);
   wl_region_destroy(none);
   win_map(&window);
@@ -803,7 +858,7 @@ static void bus_messages(void) {
       if (!software) {
         use_software();
         open_file(GST_CLOCK_TIME_IS_VALID(pos) ? pos : 0);
-        show(S("Software decoding"));
+        toast(S("Software decoding"));
       } else {
         close_file();
         show(str_c(err->message));
@@ -936,7 +991,88 @@ static bool control(void) {
   return true;
 }
 
+/* Until `pipeline` has prerolled (a frame is waiting in the sink); false on an error or after 5 s */
+static bool until_prerolled(GstElement *pipeline) {
+  GstBus *bus = gst_element_get_bus(pipeline);
+  GstMessage *m = gst_bus_timed_pop_filtered(bus, 5 * GST_SECOND, GST_MESSAGE_ASYNC_DONE | GST_MESSAGE_ERROR);
+  const bool ok = m != NULL && GST_MESSAGE_TYPE(m) == GST_MESSAGE_ASYNC_DONE;
+  if (m != NULL)
+    gst_message_unref(m);
+  gst_object_unref(bus);
+  return ok;
+}
+
+static int thumbnail(const char *file, const char *out, int size) {
+  GstElement *play = gst_element_factory_make("playbin3", NULL);
+  /* RGBA in system memory: a decoder's GPU or dmabuf frames are converted out of it (videoconvert
+   * passes frames it needn't convert through as they are) */
+  GstElement *sink = gst_parse_bin_from_description("videoconvert ! video/x-raw,format=RGBA ! fakesink name=frame",
+                                                    TRUE, NULL);
+  gchar *uri = gst_filename_to_uri(file, NULL);
+  if (play == NULL || sink == NULL || uri == NULL)
+    return 1;
+  /* Video only */
+  g_object_set(play, "uri", uri, "video-sink", sink, "flags", 1, NULL);
+  g_free(uri);
+  gst_element_set_state(play, GST_STATE_PAUSED);
+  gint64 length = 0;
+  bool ok = until_prerolled(play);
+  /* Past a black start */
+  if (ok && gst_element_query_duration(play, GST_FORMAT_TIME, &length) && length > 0 &&
+      gst_element_seek_simple(play, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT, length / 10))
+    ok = until_prerolled(play);
+  GstElement *fake = gst_bin_get_by_name(GST_BIN(sink), "frame");
+  GstSample *frame = NULL;
+  if (ok)
+    g_object_get(fake, "last-sample", &frame, NULL);
+  gst_object_unref(fake);
+  GstVideoInfo info;
+  GstMapInfo map;
+  int status = 1;
+  if (frame != NULL && gst_video_info_from_caps(&info, gst_sample_get_caps(frame)) &&
+      gst_buffer_map(gst_sample_get_buffer(frame), &map, GST_MAP_READ)) {
+    /* Square pixels, the longest side `size`; each a box of the frame's averaged */
+    const double fw = (double)info.width * info.par_n / info.par_d, fh = info.height;
+    const int w = (int)MAX(1, fw >= fh ? size : fw * size / fh), h = (int)MAX(1, fw >= fh ? fh * size / fw : size);
+    const int sw = info.width, sh = info.height, stride = info.stride[0];
+    uint8_t *rgba = malloc((size_t)w * h * 4);
+    for (int y = 0; rgba != NULL && y < h; y++) {
+      const int y0 = y * sh / h, y1 = MAX(y0 + 1, (y + 1) * sh / h);
+      for (int x = 0; x < w; x++) {
+        const int x0 = x * sw / w, x1 = MAX(x0 + 1, (x + 1) * sw / w);
+        uint32_t sum[4] = {0};
+        for (int sy = y0; sy < y1; sy++)
+          for (int sx = x0; sx < x1; sx++)
+            for (int c = 0; c < 4; c++)
+              sum[c] += map.data[(size_t)sy * stride + sx * 4 + c];
+        for (int c = 0; c < 4; c++)
+          rgba[((size_t)y * w + x) * 4 + c] = (uint8_t)(sum[c] / (uint32_t)((y1 - y0) * (x1 - x0)));
+      }
+    }
+    uint8_t *webp = NULL;
+    const size_t bytes = rgba != NULL ? WebPEncodeRGBA(rgba, w, h, w * 4, 85, &webp) : 0;
+    FILE *f = bytes > 0 ? fopen(out, "wb") : NULL;
+    const bool written = f != NULL && fwrite(webp, 1, bytes, f) == bytes;
+    if (f != NULL && fclose(f) == 0 && written)
+      status = 0;
+    else
+      unlink(out);
+    WebPFree(webp);
+    free(rgba);
+    gst_buffer_unmap(gst_sample_get_buffer(frame), &map);
+  }
+  if (frame != NULL)
+    gst_sample_unref(frame);
+  gst_element_set_state(play, GST_STATE_NULL);
+  gst_object_unref(play);
+  return status;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 5 && strcmp(argv[1], "--thumbnail") == 0) {
+    gst_init(NULL, NULL);
+    return thumbnail(argv[2], argv[3], atoi(argv[4]));
+  }
   if (argc != 2) {
     fprintf(stderr, "usage: %s FILE\n", argv[0]);
     return 2;
@@ -980,6 +1116,7 @@ int main(int argc, char **argv) {
     input();
     bus_messages();
     osd_draw();
+    toast_draw();
     /* A crash or a dead battery costs at most this much */
     if (ms_now() - saved > 30000 && !user_paused && !ctl_paused) {
       remember();

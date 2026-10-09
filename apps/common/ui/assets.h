@@ -5,12 +5,18 @@
  *
  * The whole process stays under LIMIT: past the high mark, images not shown
  * for a while go, least recently shown first.
+ *
+ * What had to shrink to load is kept shrunk, a WebP in $XDG_CACHE_HOME/thumbnails, and read from
+ * there from then on. "video:PATH" is a video's thumbnail: ASSETS_THUMBNAILER --thumbnail PATH OUT
+ * SIZE writes it there (a frame as WebP, its longest side SIZE).
  */
 #pragma once
 
 #include <stdint.h>
 
 #include "str.h"
+
+#define ASSETS_THUMBNAILER "mediaplayer"
 
 typedef struct {
   uint32_t slot;

@@ -43,7 +43,7 @@ typedef struct {
   /* sh -c, with $1 = arg */
   STRBUF(512) exec, arg;
   STRBUF(256) dir;
-  STRBUF(320) icon; /* a path, or a key into a game pack */
+  STRBUF(320) icon; /* a path, a key into a game pack, or "video:" and a video (assets.h) */
   STRBUF(128) tags; /* Keywords then Categories, each ';'-terminated */
   int core;         /* into the category's cores */
   uint32_t match;   /* the pack's game picked for it by hand (its CRC), 0: none */

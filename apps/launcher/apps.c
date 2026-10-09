@@ -318,6 +318,9 @@ static void scan_entry(category *c, str picks, str matched, str folder, str name
       if (a->icon.n == 0)
         sb_set(a->icon, sb_str(game.image));
     }
+    /* A video without an image: a frame of it (assets.h) */
+    if (a->icon.n == 0 && str_eq(c->folder, S("videos")))
+      sb_set(a->icon, S("video:"), sb_str(path));
     c->count++;
     return;
   }

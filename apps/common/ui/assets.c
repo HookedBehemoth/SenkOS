@@ -6,14 +6,19 @@
  */
 #include "assets.h"
 
+#include <spawn.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <png.h>
 #include <turbojpeg.h>
 #include <webp/decode.h>
+#include <webp/encode.h>
 
 
 #include "gfx.h"
@@ -204,6 +209,77 @@ static uint8_t *decode_bmp(const uint8_t *d, size_t n, int *w, int *h) {
   return rgba;
 }
 
+/* Thumbnails (assets.h): $XDG_CACHE_HOME/thumbnails/<hash of path, size and mtime>.webp.
+ * ponytail: never cleaned; stale ones stay until the cache is cleared. */
+static bool thumb_name(str path, char *out, size_t size) {
+  char p[PATH_MAX];
+  struct stat st;
+  if (str_copy(p, sizeof(p), path) != path.n || stat(p, &st) != 0)
+    return false;
+  uint64_t h = 1469598103934665603u;
+  const uint64_t parts[] = {(uint64_t)st.st_size, (uint64_t)st.st_mtim.tv_sec, (uint64_t)st.st_mtim.tv_nsec};
+  for (size_t i = 0; i < path.n; i++)
+    h = (h ^ (uint8_t)path.p[i]) * 1099511628211u;
+  for (size_t i = 0; i < COUNTOF(parts); i++)
+    h = (h ^ parts[i]) * 1099511628211u;
+  const char *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+  if (cache != NULL && cache[0] == '/')
+    snprintf(out, size, "%s/thumbnails/%016llx.webp", cache, (unsigned long long)h);
+  else
+    snprintf(out, size, "%s/.cache/thumbnails/%016llx.webp", home != NULL ? home : "/tmp", (unsigned long long)h);
+  return true;
+}
+
+/* The folders `name` goes in */
+static void make_parents(const char *name) {
+  char dir[PATH_MAX];
+  snprintf(dir, sizeof(dir), "%s", name);
+  for (char *slash = strchr(dir + 1, '/'); slash != NULL; slash = strchr(slash + 1, '/')) {
+    *slash = '\0';
+    mkdir(dir, 0755);
+    *slash = '/';
+  }
+}
+
+/* `rgba` (premultiplied) as WebP, written aside, then renamed: a reader sees all of it or nothing */
+static void thumb_write(const char *name, const uint8_t *rgba, int w, int h) {
+  const size_t n = (size_t)w * h * 4;
+  uint8_t *straight = malloc(n), *webp = NULL;
+  if (straight == NULL)
+    return;
+  for (size_t i = 0; i < n; i += 4)
+    for (int c = 0; c < 4; c++)
+      straight[i + c] = c < 3 && rgba[i + 3] != 0 ? (uint8_t)MIN(255, rgba[i + c] * 255 / rgba[i + 3]) : rgba[i + c];
+  const size_t size = WebPEncodeRGBA(straight, w, h, w * 4, 85, &webp);
+  free(straight);
+  char tmp[PATH_MAX + 16];
+  make_parents(name);
+  snprintf(tmp, sizeof(tmp), "%s.%d", name, (int)getpid());
+  FILE *f = size > 0 ? fopen(tmp, "wb") : NULL;
+  const bool ok = f != NULL && fwrite(webp, 1, size, f) == size;
+  if (f != NULL && fclose(f) == 0 && ok && rename(tmp, name) == 0) {
+    WebPFree(webp);
+    return;
+  }
+  fprintf(stderr, "assets: can't write %s\n", name);
+  unlink(tmp);
+  WebPFree(webp);
+}
+
+/* A video's: the player writes a frame of it as a thumbnail (ASSETS_THUMBNAILER) */
+static bool thumb_video(str path, const char *name) {
+  char video[PATH_MAX], size[16];
+  str_copy(video, sizeof(video), path);
+  snprintf(size, sizeof(size), "%d", MAX_PX);
+  make_parents(name);
+  char *argv[] = {ASSETS_THUMBNAILER, "--thumbnail", video, (char *)name, size, NULL};
+  extern char **environ;
+  pid_t pid;
+  int status;
+  return posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ) == 0 && waitpid(pid, &status, 0) == pid &&
+         WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 /* By content, not by name */
 static uint8_t *decode(const uint8_t *d, size_t n, int *w, int *h) {
   if (n >= 8 && memcmp(d, "\x89PNG", 4) == 0)
@@ -263,13 +339,27 @@ static void *loader(void *data) {
 
     size_t size = 0;
     int w = 0, h = 0;
-    uint8_t *file = read_file(entries[index].path.p, &size);
-    uint8_t *rgba = file ? decode(file, size, &w, &h) : NULL;
+    /* Its thumbnail if there is one (a video's made now), else the file */
+    const str key = entries[index].path;
+    const bool video = key.n > 6 && memcmp(key.p, "video:", 6) == 0;
+    const str path = video ? str_at(key, 6) : key;
+    char thumb[PATH_MAX];
+    const bool cached = thumb_name(path, thumb, sizeof(thumb));
+    uint8_t *file = cached ? read_file(thumb, &size) : NULL;
+    if (file == NULL && video && cached && thumb_video(path, thumb))
+      file = read_file(thumb, &size);
+    const bool original = file == NULL && !video;
+    if (original)
+      file = read_file(key.p, &size);
+    uint8_t *rgba = file != NULL ? decode(file, size, &w, &h) : NULL;
     free(file);
     gfx_image image = {0};
     bool ok = false;
     if (rgba != NULL) {
+      const bool shrinks = MAX(w, h) > MAX_PX;
       prepare(rgba, &w, &h);
+      if (original && shrinks && cached)
+        thumb_write(thumb, rgba, w, h);
       ok = gfx_upload(&image, rgba, w, h);
       free(rgba);
     }

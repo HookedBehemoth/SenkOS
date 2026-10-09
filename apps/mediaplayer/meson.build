@@ -7,5 +7,6 @@ executable('mediaplayer', 'main.c',
     dependency('gstreamer-wayland-1.0'),
     dependency('freetype2'),
     dependency('fontconfig'),
+    dependency('libwebp'),
   ],
   install: true)
