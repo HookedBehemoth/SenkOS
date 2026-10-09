@@ -35,6 +35,8 @@ str power_value(int row);
 /* Left or right on a row: set and saved */
 void power_step(int row, int by);
 
+/* The frames shown so far (Weston's frames.so), false without the counter */
+bool power_frames(uint32_t *out);
 void power_calibrate(void);
 bool power_calibrating(void);
 /* "Testing CPU 1104 · GPU 648 MHz" */

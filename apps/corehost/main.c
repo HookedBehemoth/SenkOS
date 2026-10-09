@@ -213,13 +213,12 @@ enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
 _Static_assert(BINDINGS <= 32, "active is a bit per binding");
 
 /* Our own options, after the core's: these choices, then the bindings */
-enum { HOST_SCALE, HOST_FILTER, HOST_FPS, HOST_CHOICES };
+enum { HOST_SCALE, HOST_FILTER, HOST_CHOICES };
 static const struct {
   const char *key, *label, *values;
 } host_options[HOST_CHOICES] = {
     {"corehost_scale", "Scaling", "Integer|Fit|Stretch"},
     {"corehost_filter", "Filter", "Sharp|Smooth"},
-    {"corehost_fps", "Show FPS", "Off|On"},
 };
 static unsigned host_option_at; /* index of the first one in shm */
 /* Published once the game is loaded: the input descriptors are in by then */
@@ -656,7 +655,7 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
 }
 
 /* The overlay: a few lines of text top left, in a dark box over the game
- * (state saved, fast forward, FPS). Drawn as rectangles, the box and runs of
+ * (state saved, fast forward). Drawn as rectangles, the box and runs of
  * a 5x7 font's pixels, which each video path fills its own way. */
 static const char font_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:%/-><";
 static const uint8_t font_rows[][7] = {
@@ -2145,29 +2144,9 @@ int main(int argc, char **argv) {
     const bool rewinding = active & (1u << HOT_REWIND);
     muted = fast || rewinding;
 
-    /* The overlay: FPS (frames run a second, and the share of the time the
-     * core took), what is going on, the last notice */
-    static int64_t second_at, core_ns;
-    static unsigned frames_run;
-    static char fps_line[32];
-    const int64_t run_at = ns_now();
-    if (run_at - second_at >= 1000000000) {
-      snprintf(fps_line, sizeof(fps_line), "%u FPS %d%%", frames_run,
-               (int)(core_ns * 100 / (run_at - second_at)));
-      /* For measuring from outside (tools, ssh) */
-      static int log_fps = -1;
-      if (log_fps < 0)
-        log_fps = getenv("COREHOST_LOG_FPS") != NULL;
-      if (log_fps)
-        fprintf(stderr, "corehost: %s\n", fps_line);
-      second_at = run_at;
-      frames_run = 0;
-      core_ns = 0;
-    }
+    /* The overlay: what is going on, the last notice */
     int l = 0;
     memset(overlay, 0, sizeof(overlay));
-    if (host_value(HOST_FPS))
-      snprintf(overlay[l++], sizeof(overlay[0]), "%s", fps_line);
     if (rewinding)
       snprintf(overlay[l++], sizeof(overlay[0]), "<< Rewind");
     else if (fast)
@@ -2175,14 +2154,13 @@ int main(int argc, char **argv) {
     if (notice[0] && ms_now() < notice_until)
       snprintf(overlay[l++], sizeof(overlay[0]), "%s", notice);
 
-    for (int i = 0; i < (fast && !rewinding ? FAST_SPEED : 1); i++, frames_run++) {
+    for (int i = 0; i < (fast && !rewinding ? FAST_SPEED : 1); i++) {
       if (rewinding)
         rewind_pop();
       else if (++frame % REWIND_EVERY == 0)
         rewind_push();
       core.retro_run();
     }
-    core_ns += ns_now() - run_at;
     if (atomic_exchange(&redescribed, false)) {
       atomic_store(&shm->option_count, host_option_at);
       publish_and_load();

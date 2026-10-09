@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sat, 10 Oct 2026 00:25:47 +0200
+Subject: [PATCH] media: cedrus: expose the engine's busy time in sysfs
+
+The video engine's runtime PM stays active for as long as a stream is
+open, so nothing tells a system monitor how much of that time it spends
+decoding. Count the time from each job's trigger to its interrupt (or
+the watchdog) and show the total as busy_ns on the device, for userspace
+to sample.
+
+Upstream-Status: Pending
+---
+ drivers/staging/media/sunxi/cedrus/cedrus.c   | 19 +++++++++++++++++++
+ drivers/staging/media/sunxi/cedrus/cedrus.h   |  6 ++++++
+ .../staging/media/sunxi/cedrus/cedrus_dec.c   |  1 +
+ .../staging/media/sunxi/cedrus/cedrus_hw.c    |  4 ++++
+ 4 files changed, 30 insertions(+)
+
+diff --git a/drivers/staging/media/sunxi/cedrus/cedrus.c b/drivers/staging/media/sunxi/cedrus/cedrus.c
+index 76f1de1..806c0cf 100644
+--- a/drivers/staging/media/sunxi/cedrus/cedrus.c
++++ b/drivers/staging/media/sunxi/cedrus/cedrus.c
+@@ -761,6 +761,24 @@ static const struct dev_pm_ops cedrus_dev_pm_ops = {
+ 			   cedrus_hw_resume, NULL)
+ };
+ 
++/* For a load meter: sample twice, divide by the time between */
++static ssize_t busy_ns_show(struct device *device,
++			    struct device_attribute *attr, char *buf)
++{
++	struct cedrus_dev *dev = dev_get_drvdata(device);
++
++	return sysfs_emit(buf, "%lld\n", atomic64_read(&dev->busy_ns));
++}
++
++static DEVICE_ATTR_RO(busy_ns);
++
++static struct attribute *cedrus_attrs[] = {
++	&dev_attr_busy_ns.attr,
++	NULL,
++};
++
++ATTRIBUTE_GROUPS(cedrus);
++
+ static struct platform_driver cedrus_driver = {
+ 	.probe		= cedrus_probe,
+ 	.remove		= cedrus_remove,
+@@ -768,6 +786,7 @@ static struct platform_driver cedrus_driver = {
+ 		.name		= CEDRUS_NAME,
+ 		.of_match_table	= cedrus_dt_match,
+ 		.pm		= &cedrus_dev_pm_ops,
++		.dev_groups	= cedrus_groups,
+ 	},
+ };
+ module_platform_driver(cedrus_driver);
+diff --git a/drivers/staging/media/sunxi/cedrus/cedrus.h b/drivers/staging/media/sunxi/cedrus/cedrus.h
+index 1037b56..b80d703 100644
+--- a/drivers/staging/media/sunxi/cedrus/cedrus.h
++++ b/drivers/staging/media/sunxi/cedrus/cedrus.h
+@@ -22,7 +22,9 @@
+ #include <media/videobuf2-v4l2.h>
+ #include <media/videobuf2-dma-contig.h>
+ 
++#include <linux/atomic.h>
+ #include <linux/iopoll.h>
++#include <linux/ktime.h>
+ #include <linux/platform_device.h>
+ #include <linux/workqueue.h>
+ 
+@@ -215,6 +217,10 @@ struct cedrus_dev {
+ 	unsigned int		capabilities;
+ 
+ 	struct delayed_work	watchdog_work;
++
++	/* The running job's start, and the engine's time busy since probe (busy_ns) */
++	ktime_t			run_start;
++	atomic64_t		busy_ns;
+ };
+ 
+ extern struct cedrus_dec_ops cedrus_dec_ops_mpeg2;
+diff --git a/drivers/staging/media/sunxi/cedrus/cedrus_dec.c b/drivers/staging/media/sunxi/cedrus/cedrus_dec.c
+index 476c063..4522b79 100644
+--- a/drivers/staging/media/sunxi/cedrus/cedrus_dec.c
++++ b/drivers/staging/media/sunxi/cedrus/cedrus_dec.c
+@@ -117,6 +117,7 @@ void cedrus_device_run(void *priv)
+ 		schedule_delayed_work(&dev->watchdog_work,
+ 				      msecs_to_jiffies(2000));
+ 
++		dev->run_start = ktime_get();
+ 		ctx->current_codec->trigger(ctx);
+ 	} else {
+ 		v4l2_m2m_buf_done_and_job_finish(ctx->dev->m2m_dev,
+diff --git a/drivers/staging/media/sunxi/cedrus/cedrus_hw.c b/drivers/staging/media/sunxi/cedrus/cedrus_hw.c
+index 91fbb1e..d5d7320 100644
+--- a/drivers/staging/media/sunxi/cedrus/cedrus_hw.c
++++ b/drivers/staging/media/sunxi/cedrus/cedrus_hw.c
+@@ -194,6 +194,8 @@ static irqreturn_t cedrus_irq(int irq, void *data)
+ 
+ 	ctx->current_codec->irq_disable(ctx);
+ 	ctx->current_codec->irq_clear(ctx);
++	atomic64_add(ktime_to_ns(ktime_sub(ktime_get(), dev->run_start)),
++		     &dev->busy_ns);
+ 
+ 	if (status == CEDRUS_IRQ_ERROR)
+ 		state = VB2_BUF_STATE_ERROR;
+@@ -219,6 +221,8 @@ void cedrus_watchdog(struct work_struct *work)
+ 		return;
+ 
+ 	v4l2_err(&dev->v4l2_dev, "frame processing timed out!\n");
++	atomic64_add(ktime_to_ns(ktime_sub(ktime_get(), dev->run_start)),
++		     &dev->busy_ns);
+ 
+ 
+ 	reset_control_reset(dev->rstc);
+-- 
+2.56.0
+

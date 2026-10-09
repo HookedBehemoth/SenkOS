@@ -149,7 +149,7 @@ static struct {
 
 static int frames_fd = -1;
 
-static bool read_frames(uint32_t *out) {
+bool power_frames(uint32_t *out) {
   if (frames_fd < 0) {
     /* Weston's, in the apps' runtime dir */
     const char *dir = run_app_env("XDG_RUNTIME_DIR");
@@ -221,7 +221,7 @@ void power_step(int row, int by) {
 
 void power_calibrate(void) {
   uint32_t frames;
-  if (app_key.n == 0 || (cpu_count == 0 && gpu_count == 0) || !read_frames(&frames))
+  if (app_key.n == 0 || (cpu_count == 0 && gpu_count == 0) || !power_frames(&frames))
     return;
   cal = (typeof(cal)){.on = true, .cpu = cpu_count, .gpu = gpu_count, .at = ms_now() + FIRST_SETTLE_MS};
   set_clocks(cal.cpu, cal.gpu);
@@ -289,7 +289,7 @@ int power_tick(uint64_t now, str *say) {
   if (now < cal.at)
     return (int)(cal.at - now);
   uint32_t frames;
-  if (!read_frames(&frames)) {
+  if (!power_frames(&frames)) {
     power_cancel();
     return -1;
   }

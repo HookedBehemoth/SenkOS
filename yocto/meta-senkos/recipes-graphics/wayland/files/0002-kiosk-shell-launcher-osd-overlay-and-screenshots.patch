@@ -1,15 +1,16 @@
 From: SenkOS
 Subject: [PATCH] kiosk-shell: launcher OSD overlay, screenshots for every client
 
-The launcher's window titled "osd" (app_id "launcher") keeps its own size in a
-layer above every surface tree and never takes focus. Any client may use
+The launcher's windows titled "osd" (top centre) and "perf" (the performance
+overlay, top left), app_id "launcher", keep their own size in a layer above
+every surface tree and never take focus. Any client may use
 weston_capture_v1: the launcher's pause screen captures the app it covers.
 
 Upstream-Status: Inappropriate [device policy]
 ---
 --- a/kiosk-shell/kiosk-shell.c
 +++ b/kiosk-shell/kiosk-shell.c
-@@ -833,6 +833,18 @@
+@@ -833,6 +833,19 @@ kiosk_shell_output_create(struct kiosk_shell *shell, struct weston_output *outpu
   * libweston-desktop
   */
  
@@ -22,13 +23,14 @@ Upstream-Status: Inappropriate [device policy]
 +	const char *title = weston_desktop_surface_get_title(desktop_surface);
 +
 +	return app_id && title &&
-+	       strcmp(app_id, "launcher") == 0 && strcmp(title, "osd") == 0;
++	       strcmp(app_id, "launcher") == 0 &&
++	       (strcmp(title, "osd") == 0 || strcmp(title, "perf") == 0);
 +}
 +
  static void
  desktop_surface_added(struct weston_desktop_surface *desktop_surface,
  		      void *data)
-@@ -847,6 +859,14 @@
+@@ -847,6 +860,14 @@ desktop_surface_added(struct weston_desktop_surface *desktop_surface,
  		return;
  
  	weston_surface_set_label_func(surface, weston_shell_utils_surface_get_label);
@@ -43,18 +45,22 @@ Upstream-Status: Inappropriate [device policy]
  	kiosk_shell_surface_set_fullscreen(shsurf, NULL);
  }
  
-@@ -992,6 +1012,22 @@
+@@ -992,6 +1013,26 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
  	if (surface->width == 0)
  		return;
  
-+	/* Top centre, 40 px down */
++	/* The OSD top centre, 40 px down; the performance overlay top left */
 +	if (shsurf->overlay) {
 +		if (!weston_surface_is_mapped(surface) && shsurf->output) {
 +			struct weston_output *output = shsurf->output->output;
 +			struct weston_coord_global pos = output->pos;
++			const char *title =
++				weston_desktop_surface_get_title(desktop_surface);
 +
-+			pos.c.x += (output->width - surface->width) / 2;
-+			pos.c.y += 40;
++			if (strcmp(title, "perf") != 0) {
++				pos.c.x += (output->width - surface->width) / 2;
++				pos.c.y += 40;
++			}
 +			weston_view_set_position(shsurf->view, pos);
 +			weston_view_move_to_layer(shsurf->view,
 +						  &shsurf->shell->overlay_layer.view_list);
@@ -66,7 +72,7 @@ Upstream-Status: Inappropriate [device policy]
  	if (!shsurf->appid_output_assigned && app_id) {
  		struct kiosk_shell_output *shoutput = NULL;
  
-@@ -1426,6 +1462,8 @@
+@@ -1426,6 +1467,8 @@ kiosk_shell_destroy(struct wl_listener *listener, void *data)
  	weston_layer_fini(&shell->background_layer);
  	kiosk_shell_destroy_surfaces_on_layer(&shell->normal_layer);
  	kiosk_shell_destroy_surfaces_on_layer(&shell->inactive_layer);
@@ -75,7 +81,7 @@ Upstream-Status: Inappropriate [device policy]
  
  	wl_list_for_each_safe(shseat, shseat_next, &shell->seat_list, link) {
  		kiosk_shell_seat_destroy(shseat);
-@@ -1436,6 +1474,15 @@
+@@ -1436,6 +1479,15 @@ kiosk_shell_destroy(struct wl_listener *listener, void *data)
  	free(shell);
  }
  
@@ -91,7 +97,7 @@ Upstream-Status: Inappropriate [device policy]
  static void
  kiosk_shell_notify_session(struct wl_listener *listener, void *data)
  {
-@@ -1492,6 +1539,7 @@
+@@ -1492,6 +1544,7 @@ wet_shell_init(struct weston_compositor *ec,
  	weston_layer_init(&shell->background_layer, ec);
  	weston_layer_init(&shell->normal_layer, ec);
  	weston_layer_init(&shell->inactive_layer, ec);
@@ -99,7 +105,7 @@ Upstream-Status: Inappropriate [device policy]
  
  	weston_layer_set_position(&shell->background_layer,
  				  WESTON_LAYER_POSITION_BACKGROUND);
-@@ -1501,6 +1549,8 @@
+@@ -1501,6 +1554,8 @@ wet_shell_init(struct weston_compositor *ec,
  	 * are placed at NORMAL+1, are visible.  */
  	weston_layer_set_position(&shell->normal_layer,
  				  WESTON_LAYER_POSITION_NORMAL);
@@ -108,7 +114,7 @@ Upstream-Status: Inappropriate [device policy]
  
  	shell->desktop = weston_desktop_create(ec, &kiosk_shell_desktop_api,
  					       shell);
-@@ -1529,6 +1579,8 @@
+@@ -1529,6 +1584,8 @@ wet_shell_init(struct weston_compositor *ec,
  	shell->session_listener.notify = kiosk_shell_notify_session;
  	wl_signal_add(&ec->session_signal, &shell->session_listener);
  	screenshooter_create(ec);
@@ -119,7 +125,7 @@ Upstream-Status: Inappropriate [device policy]
  
 --- a/kiosk-shell/kiosk-shell.h
 +++ b/kiosk-shell/kiosk-shell.h
-@@ -42,6 +42,8 @@
+@@ -42,6 +42,8 @@ struct kiosk_shell {
  	struct weston_layer background_layer;
  	struct weston_layer normal_layer;
  	struct weston_layer inactive_layer;
@@ -128,7 +134,7 @@ Upstream-Status: Inappropriate [device policy]
  
  	struct wl_list output_list;
  	struct wl_list seat_list;
-@@ -80,6 +82,7 @@
+@@ -80,6 +82,7 @@ struct kiosk_shell_surface {
  	} xwayland;
  
  	bool appid_output_assigned;

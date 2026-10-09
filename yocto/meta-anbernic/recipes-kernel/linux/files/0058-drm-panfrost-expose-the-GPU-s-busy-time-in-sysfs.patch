@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sat, 10 Oct 2026 00:13:34 +0200
+Subject: [PATCH] drm/panfrost: expose the GPU's busy time in sysfs
+
+The devfreq governor's busy time is reset at each of its polls, and fdinfo
+only covers a client's own jobs (and only with profiling on): nothing tells
+a system monitor how loaded the GPU is. Keep a busy time that is never
+reset and show it as busy_ns on the device, for userspace to sample.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/panfrost/panfrost_devfreq.c | 22 +++++++++++++++++++--
+ drivers/gpu/drm/panfrost/panfrost_devfreq.h |  5 ++++-
+ drivers/gpu/drm/panfrost/panfrost_drv.c     | 13 ++++++++++++
+ 3 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/panfrost/panfrost_devfreq.c b/drivers/gpu/drm/panfrost/panfrost_devfreq.c
+index b51c307..b262f21 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_devfreq.c
++++ b/drivers/gpu/drm/panfrost/panfrost_devfreq.c
+@@ -20,9 +20,10 @@ static void panfrost_devfreq_update_utilization(struct panfrost_devfreq *pfdevfr
+ 	now = ktime_get();
+ 	last = pfdevfreq->time_last_update;
+ 
+-	if (pfdevfreq->busy_count > 0)
++	if (pfdevfreq->busy_count > 0) {
+ 		pfdevfreq->busy_time += ktime_sub(now, last);
+-	else
++		pfdevfreq->busy_total += ktime_sub(now, last);
++	} else
+ 		pfdevfreq->idle_time += ktime_sub(now, last);
+ 
+ 	pfdevfreq->time_last_update = now;
+@@ -286,3 +287,20 @@ void panfrost_devfreq_record_idle(struct panfrost_devfreq *pfdevfreq)
+ 
+ 	spin_unlock_irqrestore(&pfdevfreq->lock, irqflags);
+ }
++
++/* Time with a job on the GPU since boot, up to now */
++u64 panfrost_devfreq_busy_ns(struct panfrost_devfreq *pfdevfreq)
++{
++	unsigned long irqflags;
++	u64 ns;
++
++	if (!pfdevfreq->devfreq)
++		return 0;
++
++	spin_lock_irqsave(&pfdevfreq->lock, irqflags);
++	panfrost_devfreq_update_utilization(pfdevfreq);
++	ns = ktime_to_ns(pfdevfreq->busy_total);
++	spin_unlock_irqrestore(&pfdevfreq->lock, irqflags);
++
++	return ns;
++}
+diff --git a/drivers/gpu/drm/panfrost/panfrost_devfreq.h b/drivers/gpu/drm/panfrost/panfrost_devfreq.h
+index 48dbe18..0a5f991 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_devfreq.h
++++ b/drivers/gpu/drm/panfrost/panfrost_devfreq.h
+@@ -26,8 +26,10 @@ struct panfrost_devfreq {
+ 	ktime_t idle_time;
+ 	ktime_t time_last_update;
+ 	int busy_count;
++	/* Never reset, unlike busy_time: sampled from userspace (sysfs busy_ns) */
++	ktime_t busy_total;
+ 	/*
+-	 * Protect busy_time, idle_time, time_last_update and busy_count
++	 * Protect busy_time, idle_time, busy_total, time_last_update and busy_count
+ 	 * because these can be updated concurrently between multiple jobs.
+ 	 */
+ 	spinlock_t lock;
+@@ -41,5 +43,6 @@ void panfrost_devfreq_suspend(struct panfrost_device *pfdev);
+ 
+ void panfrost_devfreq_record_busy(struct panfrost_devfreq *devfreq);
+ void panfrost_devfreq_record_idle(struct panfrost_devfreq *devfreq);
++u64 panfrost_devfreq_busy_ns(struct panfrost_devfreq *devfreq);
+ 
+ #endif /* __PANFROST_DEVFREQ_H__ */
+diff --git a/drivers/gpu/drm/panfrost/panfrost_drv.c b/drivers/gpu/drm/panfrost/panfrost_drv.c
+index 784e36d..d03be98 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_drv.c
++++ b/drivers/gpu/drm/panfrost/panfrost_drv.c
+@@ -1058,8 +1058,21 @@ static ssize_t profiling_store(struct device *dev,
+ 
+ static DEVICE_ATTR_RW(profiling);
+ 
++/* For a load meter: sample twice, divide by the time between */
++static ssize_t busy_ns_show(struct device *dev,
++			    struct device_attribute *attr, char *buf)
++{
++	struct panfrost_device *pfdev = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%llu\n",
++			  panfrost_devfreq_busy_ns(&pfdev->pfdevfreq));
++}
++
++static DEVICE_ATTR_RO(busy_ns);
++
+ static struct attribute *panfrost_attrs[] = {
+ 	&dev_attr_profiling.attr,
++	&dev_attr_busy_ns.attr,
+ 	NULL,
+ };
+ 
+-- 
+2.56.0
+

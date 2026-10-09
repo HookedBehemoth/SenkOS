@@ -40,7 +40,7 @@ typedef struct {
    * not, and the focus (a nav_id) in the menu and each category */
   bool in_settings;
   int settings_category; /* appctl's: which of the settings */
-  uint32_t menu_focus, settings_focus[APPCTL_CATEGORIES + 1]; /* and the Power page (main.c) */
+  uint32_t menu_focus, settings_focus[APPCTL_CATEGORIES + 2]; /* and the Power and Debug pages (main.c) */
 } running;
 
 extern running runs[RUNNING_MAX];

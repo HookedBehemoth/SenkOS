@@ -29,6 +29,8 @@
  *
  * The volume keys are the launcher's (volume_thread); a second window, "osd",
  * shows the level, and the patched kiosk shell keeps it on top without focus.
+ * A third, "perf", is the performance overlay (perf.h), top left; Settings > Debug and every
+ * app's pause menu (Debug) toggle it and its metrics.
  *
  * `launcher launch PATH` (a port's folder, a ROM, an executable) starts that
  * app as A on its tile does: through /run/launcher (a desktop: $XDG_RUNTIME_DIR/launcher), a FIFO the
@@ -68,6 +70,7 @@
 #include "licenses.h"
 #include "nav.h"
 #include "pad.h"
+#include "perf.h"
 #include "power.h"
 #include "romdb.h"
 #include "running.h"
@@ -85,6 +88,8 @@ enum { TREE = ICON_PX + MARGIN };
 enum { TILE_W = 144, TILE_H = 160, ICON = 128, TILE_TEXT = 16, LETTER = 40,
        RADIUS = 12, GAP = 8 };
 enum { OSD_W = 320, OSD_H = 40, OSD_MS = 1500, RESULT_MS = 5000 };
+/* The performance overlay: a line a metric */
+enum { PERF_W = 200, PERF_TEXT = 14, PERF_LINE = 17 };
 enum { LICENSE_TEXT = 16 };
 
 /* portrun's state for each port (docs/ports.md) */
@@ -115,7 +120,7 @@ enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUI
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
        WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
        SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE,
-       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, MATCH, MATCH_SEARCH, MATCH_PICK };
+       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, PERF, MATCH, MATCH_SEARCH, MATCH_PICK };
 typedef struct {
   str label;
   str command;
@@ -127,10 +132,10 @@ typedef struct {
   int depth;    /* under the row above it at depth - 1: a tree's branch */
 } entry;
 
-/* All of it for an app on the control channel, else Resume, Power, Home and Quit.
+/* All of it for an app on the control channel, else Resume, Power, Debug, Home and Quit.
  * The settings: an entry per category (named as appctl_category_names), for
- * those the app has options in; Power, the launcher's own, for every app. */
-enum { POWER_PAGE = APPCTL_CATEGORIES };
+ * those the app has options in; Power and Debug, the launcher's own, for every app. */
+enum { POWER_PAGE = APPCTL_CATEGORIES, DEBUG_PAGE };
 static const entry pause_entries[] = {
     {.label = S("Resume"), .action = RESUME, .icon = ICON_PLAY},
     {.label = S("Restart"), .action = RESTART, .icon = ICON_ROTATE_CCW},
@@ -141,11 +146,12 @@ static const entry pause_entries[] = {
     {.label = S("Audio"), .action = SETTINGS, .icon = ICON_SPEAKER, .category = APPCTL_AUDIO},
     {.label = S("Input"), .action = SETTINGS, .icon = ICON_DPAD, .category = APPCTL_INPUT},
     {.label = S("Power"), .action = SETTINGS, .icon = ICON_ZAP, .category = POWER_PAGE},
+    {.label = S("Debug"), .action = SETTINGS, .icon = ICON_GAUGE, .category = DEBUG_PAGE},
     {.label = S("Home"), .action = HOME, .icon = ICON_HOUSE},
     {.label = S("Quit"), .action = QUIT, .icon = ICON_X},
 };
 /* appctl's names, measured once (main) */
-static str button_names[APPCTL_BUTTONS], category_names[APPCTL_CATEGORIES + 1];
+static str button_names[APPCTL_BUTTONS], category_names[DEBUG_PAGE + 1];
 /* sysd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
     {.label = S("Store"), .command = S("store"), .action = RUN_COMMAND, .icon = ICON_SHOPPING_BAG},
@@ -237,7 +243,9 @@ static void redraw(win *w);
 static win window = {.app_id = "launcher", .title = "Launcher", .w = 640, .h = 480, .configure = redraw};
 /* The kiosk shell knows it by app_id and title, and keeps it on top */
 static win osd = {.app_id = "launcher", .title = "osd", .w = OSD_W, .h = OSD_H};
-static gfx_target *screen, *osd_screen;
+/* The same, top left */
+static win perf = {.app_id = "launcher", .title = "perf", .w = PERF_W, .h = PERF_METRICS * PERF_LINE + 8};
+static gfx_target *screen, *osd_screen, *perf_screen;
 static ui_context ctx;
 /* On screen or under the pause screen; NULL: home */
 static running *front;
@@ -619,6 +627,38 @@ static void show_text(str text, int ms) {
   ui_text(BAR_TEXT, (w - tw) / 2, (h - ui_text_height(BAR_TEXT)) / 2, text, FG);
   gfx_end(osd_screen);
   osd_until = ms_now() + ms;
+}
+
+/* The overlay's lines, a box behind each; created on first use, as the OSD */
+static void show_perf(void) {
+  if (!perf.configured)
+    win_map(&perf);
+  if (perf_screen == NULL)
+    perf_screen = gfx_target_create(&perf, true);
+  int w, h;
+  if (perf_screen == NULL || !gfx_begin(perf_screen, &w, &h))
+    return;
+  str lines[PERF_METRICS];
+  const size_t n = perf_sample(lines);
+  for (size_t i = 0; i < n; i++) {
+    const int y = 4 + (int)i * PERF_LINE;
+    ui_fill(0, y - 1, ui_text_width(PERF_TEXT, lines[i]) + 12, PERF_LINE, (gfx_color){0, 0, 0, 0xc0});
+    ui_text(PERF_TEXT, 6, y + (PERF_LINE - ui_text_height(PERF_TEXT)) / 2 - 1, lines[i], FG);
+  }
+  gfx_end(perf_screen);
+}
+
+/* The overlay on or off, its rows: under it (while on) each metric */
+static size_t perf_rows(entry *rows) {
+  static const int icons[PERF_METRICS] = {ICON_GAUGE,   ICON_CPU,        ICON_MICROCHIP, ICON_PLAY,
+                                          ICON_LIBRARY, ICON_HARD_DRIVE, ICON_SUN};
+  size_t n = 0;
+  rows[n++] = (entry){.label = S("Performance overlay"), .action = PERF, .icon = ICON_GAUGE, .category = -1,
+                      .checked = perf_on()};
+  for (int i = 0; perf_on() && i < PERF_METRICS; i++)
+    rows[n++] = (entry){.label = perf_labels[i], .action = PERF, .icon = icons[i], .category = i,
+                        .checked = perf_shows(i), .depth = 1};
+  return n;
 }
 
 /* "[time]      [page]         [wifi][battery%][battery symbol]"; no Wi-Fi symbol while it's off */
@@ -1346,7 +1386,7 @@ static size_t update_rows(entry *rows, str *said) {
 #define SLEEP_FAILED "/run/sleep-failed"
 
 /* Settings, Time and Debug: what each row does */
-enum { PAGE_MAX = 8 };
+enum { PAGE_MAX = 8 + PERF_METRICS + 1 };
 static size_t page_rows(int kind, entry *rows) {
   static STRBUF(96) zone, when;
   size_t n = 0;
@@ -1372,6 +1412,7 @@ static size_t page_rows(int kind, entry *rows) {
                           .icon = ICON_TRIANGLE_ALERT, .checked = access(SSH_ALL, F_OK) == 0, .depth = 1};
     rows[n++] = (entry){.label = S("Deep sleep  \u00b7  saves battery"), .action = DEEP_SLEEP, .icon = ICON_MOON,
                         .checked = access(LIGHT_SLEEP, F_OK) != 0};
+    n += perf_rows(rows + n);
   } else {
     rows[n++] = (entry){.label = S("Storage"), .action = STORAGE, .icon = ICON_HARD_DRIVE};
     rows[n++] = (entry){.label = S("Wi-Fi"), .action = WIFI, .icon = ICON_WIFI};
@@ -2245,9 +2286,11 @@ int main(int argc, char **argv) {
   for (int c = 0; c < APPCTL_CATEGORIES; c++)
     category_names[c] = str_c(appctl_category_names[c]);
   category_names[POWER_PAGE] = S("Power");
+  category_names[DEBUG_PAGE] = S("Debug");
   set_listening(true);
   open_pad();
   power_init();
+  perf_init();
   power_use(HOME_KEY);
   clock_refresh();
   const int volume_keys = input_open(S("gpio-keys-volume"), 0);
@@ -2298,6 +2341,13 @@ int main(int argc, char **argv) {
       osd_until = ms_now();
     if (step >= 0 && (wait < 0 || step < wait))
       wait = step;
+    /* The overlay: once a second */
+    static uint64_t perf_due;
+    if (perf_on()) {
+      const int left = (int)(perf_due - MIN(perf_due, ms_now()));
+      if (wait < 0 || left < wait)
+        wait = left;
+    }
     if (osd_until != 0) {
       const int left = (int)(osd_until - MIN(osd_until, ms_now()));
       if (wait < 0 || left < wait)
@@ -2319,6 +2369,10 @@ int main(int argc, char **argv) {
     if (osd_until != 0 && now >= osd_until) {
       win_unmap(&osd);
       osd_until = 0;
+    }
+    if (perf_on() && now >= perf_due) {
+      show_perf();
+      perf_due = now + 1000;
     }
     /* Under the app, or hidden: nothing would show */
     if (front != NULL && !paused && starting.n == 0) {
@@ -2426,6 +2480,12 @@ int main(int argc, char **argv) {
         const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
         if (settings_category == POWER_PAGE)
           NAV_SCOPE(&ui, nav_int(settings_category)) { calibrate = power_page(&ui, list, true); }
+        else if (settings_category == DEBUG_PAGE)
+          NAV_SCOPE(&ui, nav_int(settings_category)) {
+            static entry rows[PERF_METRICS + 1];
+            settings_focus = power_focus = -1;
+            chosen = menu(&ui, rows, perf_rows(rows), list);
+          }
         else
           NAV_SCOPE(&ui, nav_int(settings_category)) { settings(&ui, front, list); }
         const bool on_binding = settings_focus >= 0 &&
@@ -2445,7 +2505,7 @@ int main(int argc, char **argv) {
         size_t n = 0;
         for (size_t i = 0; i < COUNTOF(pause_entries); i++) {
           const int a = pause_entries[i].action;
-          if (a == SETTINGS ? pause_entries[i].category == POWER_PAGE ||
+          if (a == SETTINGS ? pause_entries[i].category >= POWER_PAGE ||
                                   (run_controlled(front) && has_settings(front, pause_entries[i].category))
               : a == SAVE_STATE || a == LOAD_STATE || a == RESTART ? run_controlled(front) && front->shm->slots > 0
               : run_controlled(front) || a == RESUME || a == HOME || a == QUIT)
@@ -2612,6 +2672,13 @@ int main(int argc, char **argv) {
     case SSH_EVERYWHERE: sysd(access(SSH_ALL, F_OK) == 0 ? S("ssh usb") : S("ssh all")); break;
     case DEEP_SLEEP: sysd(access(LIGHT_SLEEP, F_OK) == 0 ? S("sleep deep") : S("sleep light")); break;
     case LIGHT_MODE: sysd(ui_light ? S("theme dark") : S("theme light")); break;
+    case PERF:
+      perf_toggle(chosen->category);
+      if (perf_on())
+        show_perf();
+      else if (perf.configured)
+        win_unmap(&perf);
+      break;
     case WIFI:
       modal.kind = MODAL_WIFI;
       wifi_poll();
