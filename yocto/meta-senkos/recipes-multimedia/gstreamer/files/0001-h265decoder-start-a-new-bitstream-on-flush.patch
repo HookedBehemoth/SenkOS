@@ -1,0 +1,26 @@
+From: SenkOS
+Subject: [PATCH] h265decoder: start a new bitstream on flush
+
+After a flushing seek the stream resumes at a key unit, which can be a CRA.
+new_bitstream stayed FALSE, so the CRA got NoRaslOutputFlag = 0 and its RASL
+pictures were decoded against references that are not in the DPB. On Cedrus
+(v4l2slh265dec) the engine then reads stale reference addresses: an IOMMU
+fault, a request that never completes, and "Not enough memory to decode H265
+stream".
+
+Upstream-Status: Pending
+
+---
+--- a/gst-libs/gst/codecs/gsth265decoder.c
++++ b/gst-libs/gst/codecs/gsth265decoder.c
+@@ -1340,6 +1340,10 @@
+   GstH265Decoder *self = GST_H265_DECODER (decoder);
+ 
+   gst_h265_decoder_clear_dpb (self, TRUE);
++  /* After a seek a CRA starts a new bitstream: its RASL pictures reference
++   * pictures that were never decoded and must be dropped (8.1.3) */
++  self->priv->new_bitstream = TRUE;
++  self->priv->prev_nal_is_eos = FALSE;
+ 
+   return TRUE;
+ }
