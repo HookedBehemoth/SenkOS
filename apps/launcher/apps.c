@@ -77,6 +77,7 @@ static void use_core(const category *c, app *a, int index) {
     return;
   }
   sb_set(a->exec, sb_str(c->cores[index].exec));
+  a->flags = c->cores[index].flags;
   if (c->cores[index].dir.n > 0)
     sb_set(a->dir, sb_str(c->cores[index].dir));
   else
@@ -228,6 +229,8 @@ static bool parse_desktop(const char *path, str folder, app *a, str *mimes) {
       shown = false;
     else if (str_eq(r.key, S("Type")) && !str_eq(r.value, S("Application")))
       shown = false;
+    else if (str_eq(r.key, S("X-SenkOS-AskQuit")) && str_eq(r.value, S("false")))
+      a->flags |= APP_QUIT_NOW;
   }
   free((char *)text.p);
   field_codes(a, mimes != NULL);
@@ -429,6 +432,7 @@ static void add_core(const char *path, void *ctx) {
       sb_set(k->name, sb_str(e.name));
       sb_set(k->exec, sb_str(e.exec));
       sb_set(k->dir, sb_str(e.dir));
+      k->flags = e.flags;
     }
   free((char *)mimes.p);
 }

@@ -34,13 +34,14 @@ typedef struct {
   STRBUF(256) dir;
   int ctl;
   appctl_shm *shm;
+  unsigned flags; /* APP_* (apps.h) */
   /* SIGTERM sent, exit not seen yet */
   bool quitting;
-  /* Where its pause screen was left, for the next pause: in Settings or
-   * not, and the focus (a nav_id) in the menu and each category */
-  bool in_settings;
+  /* Where its pause screen was left, for the next pause: in Settings' list, in a category or
+   * neither, and the focus (a nav_id) in the menu, the list and each category */
+  bool in_list, in_settings;
   int settings_category; /* appctl's: which of the settings */
-  uint32_t menu_focus, settings_focus[APPCTL_CATEGORIES + 2]; /* and the Power and Debug pages (main.c) */
+  uint32_t menu_focus, list_focus, settings_focus[APPCTL_CATEGORIES + 2]; /* and the Power and Debug pages (main.c) */
 } running;
 
 extern running runs[RUNNING_MAX];

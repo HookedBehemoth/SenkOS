@@ -144,8 +144,9 @@ void nav_wheel(nav *ui, float delta);
 /* Scrolls the innermost vertical list that has a step by that many steps:
  * what Up and Down do over text with nothing in it to focus. */
 void nav_step(nav *ui, int steps);
-/* Put the focus somewhere directly, e.g. back where a screen was left. Zero
- * lets the screen choose: its default, or the first thing on screen. */
+/* Put the focus somewhere directly, e.g. back where a screen was left; the
+ * ring jumps there, as on a new screen. Zero lets the screen choose: its
+ * default, or the first thing on screen. */
 void nav_focus(nav *ui, nav_id id);
 
 /* The frame. */

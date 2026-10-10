@@ -164,6 +164,8 @@ void nav_activate(nav *ui) {
 void nav_focus(nav *ui, nav_id id) {
   ui->focus = id;
   ui->reveal = true;
+  /* Another screen, or one opened over this: the ring starts there rather than flying over */
+  ui->ring_frame = 0;
 }
 void nav_wheel(nav *ui, float delta) { ui->wheel += delta; }
 void nav_step(nav *ui, int steps) { ui->steps += steps; }

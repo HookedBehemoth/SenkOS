@@ -22,15 +22,16 @@
  * with nothing pressed along (Menu and a button are the app's hotkeys), it
  * pauses the app and shows a menu over a blur of its last frame. Home leaves
  * the app paused in the background, on the Running page. An app on the control channel (running.h, corehost)
- * also gets Save state, Load state and Settings (its options). The focus at
- * home, and in each app's pause menu, is kept meanwhile. While an app has the screen the launcher
- * sleeps: only the pad's Menu, the volume keys and an app's exit wake it (and power calibration's
- * steps). Every app's pause menu has Power (power.h): its clocks, and the backlight.
+ * with save states also gets Save state, Load state and Restart; Load state, Restart and Quit ask
+ * first (Quit not for an app whose .desktop says X-SenkOS-AskQuit=false: the media player). Settings lists the categories of its options, and every app's Power (power.h: its clocks,
+ * and the backlight) and Debug. The focus at home, and in each app's pause menu, is kept meanwhile.
+ * While an app has the screen the launcher sleeps: only the pad's Menu, the volume keys and an
+ * app's exit wake it (and power calibration's steps).
  *
- * The volume keys are the launcher's (volume_thread); a second window, "osd",
- * shows the level, and the patched kiosk shell keeps it on top without focus.
- * A third, "perf", is the performance overlay (perf.h), top left; Settings > Debug and every
- * app's pause menu (Debug) toggle it and its metrics.
+ * The volume keys are the launcher's (volume_thread), the backlight's with Menu held; a second
+ * window, "osd", shows the level, and the patched kiosk shell keeps it on top without focus.
+ * A third, "perf", is the performance overlay (perf.h), in a corner; Settings > Debug and every
+ * app's pause menu (Settings > Debug) toggle it, its metrics and its corner.
  *
  * `launcher launch PATH` (a port's folder, a ROM, an executable) starts that
  * app as A on its tile does: through /run/launcher (a desktop: $XDG_RUNTIME_DIR/launcher), a FIFO the
@@ -101,6 +102,8 @@ enum { LICENSE_TEXT = 16 };
 #define BG ui_pal.bg
 #define FG ui_pal.fg
 #define DIM ui_pal.faint
+/* Text that is read, not just there: a value, a hint */
+#define MUTED ui_pal.dim
 #define FOCUS ui_pal.focus
 #define TILE ui_pal.tile
 #define EDGE ui_pal.edge
@@ -115,6 +118,10 @@ enum { LICENSE_TEXT = 16 };
 #define ACTIVE ui_pal.accent
 /* An option this game has its own of */
 #define PER_GAME ui_pal.accent
+/* The OSD and the performance overlay, over whatever app: the same in light mode */
+#define OSD_BG ((gfx_color){0x14, 0x14, 0x18, 0xc0})
+#define OSD_FG ((gfx_color){0xee, 0xee, 0xee, 0xff})
+#define OSD_TRACK ((gfx_color){0x55, 0x55, 0x5c, 0xff})
 
 /* What a menu row does; RUN_COMMAND: sh -c its command; POWER: its command to sysd */
 /* HEADER: a section's title, not a row to choose */
@@ -122,35 +129,41 @@ enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUI
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
        WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
        SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE,
-       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, PERF, MATCH, MATCH_SEARCH, MATCH_PICK };
+       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, PERF, PERF_CORNER, MATCH, MATCH_SEARCH, MATCH_PICK, CONFIRM,
+       SETTINGS_LIST };
 typedef struct {
   str label;
   str command;
   int action;
   int icon;     /* ICON_*, -1 for none */
   int category; /* SETTINGS: appctl's; BROWSE_OPEN, LICENSE_OPEN, ZONE_*: the row; TOGGLE_SYSTEM: into categories;
-                 * PICK_CORE: the core; MATCH_PICK: into match.games, -1 for none */
+                 * PICK_CORE: the core; MATCH_PICK: into match.games, -1 for none; CONFIRM: the action asked
+                 * for again */
   bool checked; /* a check mark at the end */
   int depth;    /* under the row above it at depth - 1: a tree's branch */
 } entry;
 
-/* All of it for an app on the control channel, else Resume, Power, Debug, Home and Quit.
- * The settings: an entry per category (named as appctl_category_names), for
- * those the app has options in; Power and Debug, the launcher's own, for every app. */
-enum { POWER_PAGE = APPCTL_CATEGORIES, DEBUG_PAGE };
+/* All of it for an app with save states, else Resume, Settings, Home and Quit. Load state,
+ * Restart and Quit ask first. */
 static const entry pause_entries[] = {
     {.label = S("Resume"), .action = RESUME, .icon = ICON_PLAY},
-    {.label = S("Restart"), .action = RESTART, .icon = ICON_ROTATE_CCW},
     {.label = S("Save state"), .action = SAVE_STATE, .icon = ICON_SAVE_IN},
-    {.label = S("Load state"), .action = LOAD_STATE, .icon = ICON_SAVE_OUT},
+    {.label = S("Load state"), .action = CONFIRM, .icon = ICON_SAVE_OUT, .category = LOAD_STATE},
+    {.label = S("Settings"), .action = SETTINGS_LIST, .icon = ICON_COG},
+    {.label = S("Restart"), .action = CONFIRM, .icon = ICON_ROTATE_CCW, .category = RESTART},
+    {.label = S("Home"), .action = HOME, .icon = ICON_HOUSE},
+    {.label = S("Quit"), .action = CONFIRM, .icon = ICON_X, .category = QUIT},
+};
+/* Settings: an entry per category (named as appctl_category_names), for those the app has
+ * options in; Power and Debug, the launcher's own, for every app. */
+enum { POWER_PAGE = APPCTL_CATEGORIES, DEBUG_PAGE };
+static const entry settings_entries[] = {
     {.label = S("System"), .action = SETTINGS, .icon = ICON_COG, .category = APPCTL_SYSTEM},
     {.label = S("Graphics"), .action = SETTINGS, .icon = ICON_IMAGE, .category = APPCTL_GRAPHICS},
     {.label = S("Audio"), .action = SETTINGS, .icon = ICON_SPEAKER, .category = APPCTL_AUDIO},
     {.label = S("Input"), .action = SETTINGS, .icon = ICON_DPAD, .category = APPCTL_INPUT},
     {.label = S("Power"), .action = SETTINGS, .icon = ICON_ZAP, .category = POWER_PAGE},
     {.label = S("Debug"), .action = SETTINGS, .icon = ICON_GAUGE, .category = DEBUG_PAGE},
-    {.label = S("Home"), .action = HOME, .icon = ICON_HOUSE},
-    {.label = S("Quit"), .action = QUIT, .icon = ICON_X},
 };
 /* appctl's names, measured once (main) */
 static str button_names[APPCTL_BUTTONS], category_names[DEBUG_PAGE + 1];
@@ -251,8 +264,13 @@ static gfx_target *screen, *osd_screen, *perf_screen;
 static ui_context ctx;
 /* On screen or under the pause screen; NULL: home */
 static running *front;
-static bool paused, in_settings;
+/* The pause screen: its menu, Settings' list of categories (settings_list), or a category
+ * (in_settings, the list under it) */
+static bool paused, settings_list, in_settings;
 static int settings_category;
+/* Over the pause menu: CONFIRM's action, asked about; -1: none. `confirm_back`: the focus under. */
+static int confirming = -1;
+static nav_id confirm_back;
 /* Recording a binding in Settings: every button pressed since the first;
  * letting go of that first one sets the combo. Nothing pressed for
  * CAPTURE_MS gives up. */
@@ -263,8 +281,8 @@ static struct {
   int first;
   uint64_t since;
 } capture = {.option = -1};
-/* Menu is down while the app has the screen: the release pauses, unless
- * another button made it a hotkey */
+/* The pad's Menu is down: its release pauses, resumes or opens the quick menu, unless another
+ * button or a volume key made it a hotkey */
 static bool menu_down, menu_combo;
 /* Where the focus was at home, for coming back */
 static nav_id home_focus;
@@ -434,7 +452,8 @@ static void go_home(nav *ui) {
   front = NULL;
   power_use(HOME_KEY);
   starting = S("");
-  paused = in_settings = false;
+  paused = settings_list = in_settings = false;
+  confirming = -1;
   capture.option = -1;
   set_listening(true);
   drop_backdrop();
@@ -453,7 +472,7 @@ static void hand_over(nav *ui, running *r) {
     home_focus = ui->focus;
   front = r;
   power_use(power_key(r));
-  paused = in_settings = false;
+  paused = settings_list = in_settings = false;
   set_listening(false);
   grab(false);
 }
@@ -476,7 +495,7 @@ static bool first_start(str dir) {
 
 /* The same app again comes back instead of starting twice (two of a game
  * would share its save) */
-static void start(nav *ui, str label, str icon, str exec, str arg, str dir) {
+static void start(nav *ui, str label, str icon, str exec, str arg, str dir, unsigned flags) {
   running *r = run_same(exec, arg, dir);
   if (r != NULL) {
     hand_over(ui, r);
@@ -487,6 +506,7 @@ static void start(nav *ui, str label, str icon, str exec, str arg, str dir) {
   r = run_launch(label, icon, exec, arg, dir);
   if (r == NULL)
     return;
+  r->flags = flags;
   hand_over(ui, r);
   starting = first_start(dir) ? S("Running initial setup\u2026") : S("Loading\u2026");
   sb_set(starting_image, dir, S("/splash.png"));
@@ -506,19 +526,24 @@ static void pause_front(nav *ui) {
     gfx_bind(GFX_BACKDROP, &backdrop);
   free(rgba);
   paused = true;
+  settings_list = front->in_list;
   in_settings = front->in_settings;
   settings_category = front->settings_category;
+  confirming = -1;
   capture.option = -1;
   notice.n = 0;
   set_listening(true);
   grab(true);
-  nav_focus(ui, in_settings ? front->settings_focus[settings_category] : front->menu_focus);
+  nav_focus(ui, in_settings     ? front->settings_focus[settings_category]
+                : settings_list ? front->list_focus
+                                : front->menu_focus);
   /* kiosk-shell puts a toplevel on top when it maps: map again */
   win_map(&window);
 }
 
 static void resume_front(void) {
-  paused = in_settings = false;
+  paused = settings_list = in_settings = false;
+  confirming = -1;
   power_menu.shown = false;
   set_listening(false);
   grab(false);
@@ -529,7 +554,7 @@ static void resume_front(void) {
 
 /* The pause screen stays up over the app until it has exited */
 static void quit_front(void) {
-  paused = in_settings = false;
+  paused = settings_list = in_settings = false;
   set_listening(false);
   grab(false);
   run_quit(front);
@@ -587,9 +612,9 @@ static void read_status(status *s) {
   s->wifi = wifi_signal();
 }
 
-/* Speaker, then the level as a bar. Created on first use: a second
- * swapchain at startup delays the first frame. */
-static void show_volume(int percent) {
+/* A speaker (the volume) or a sun (the backlight), then the level as a bar. Created on first
+ * use: a second swapchain at startup delays the first frame. */
+static void show_level(bool brightness, int percent) {
   if (!osd.configured)
     win_map(&osd);
   if (osd_screen == NULL)
@@ -599,17 +624,21 @@ static void show_volume(int percent) {
   int w, h;
   if (!gfx_begin(osd_screen, &w, &h))
     return;
-  ui_fill(0, 0, w, h, SCRIM);
-  ui_fill(MARGIN, OSD_H / 2 - 5, 6, 10, FG);
-  /* The cone, a column a pixel */
+  ui_fill(0, 0, w, h, OSD_BG);
   const float x0 = MARGIN + 6, x1 = x0 + 8, y = OSD_H / 2;
-  for (float x = x0; x < x1; x++) {
-    const float half = 5 + (x - x0) * 6 / (x1 - x0);
-    ui_fill(x, y - half, 1, half * 2, FG);
+  if (brightness) {
+    ui_icon(ICON_SUN, BAR_ICON, MARGIN - 2, (OSD_H - BAR_ICON) / 2, OSD_FG);
+  } else {
+    ui_fill(MARGIN, OSD_H / 2 - 5, 6, 10, OSD_FG);
+    /* The cone, a column a pixel */
+    for (float x = x0; x < x1; x++) {
+      const float half = 5 + (x - x0) * 6 / (x1 - x0);
+      ui_fill(x, y - half, 1, half * 2, OSD_FG);
+    }
   }
   const float bx = x1 + MARGIN, bw = OSD_W - bx - MARGIN * 1.5f;
-  ui_rounded(bx, y - 3, bw, 6, DIM, 3, 0);
-  ui_rounded(bx, y - 3, bw * percent / 100, 6, FG, 3, 0);
+  ui_rounded(bx, y - 3, bw, 6, OSD_TRACK, 3, 0);
+  ui_rounded(bx, y - 3, bw * CLAMP(percent, 0, 100) / 100, 6, OSD_FG, 3, 0);
   gfx_end(osd_screen);
   osd_until = ms_now() + OSD_MS;
 }
@@ -623,15 +652,16 @@ static void show_text(str text, int ms) {
   int w, h;
   if (osd_screen == NULL || !gfx_begin(osd_screen, &w, &h))
     return;
-  ui_fill(0, 0, w, h, SCRIM);
+  ui_fill(0, 0, w, h, OSD_BG);
   int tw;
   text = ui_text_fit(BAR_TEXT, text, w - MARGIN * 2, &tw);
-  ui_text(BAR_TEXT, (w - tw) / 2, (h - ui_text_height(BAR_TEXT)) / 2, text, FG);
+  ui_text(BAR_TEXT, (w - tw) / 2, (h - ui_text_height(BAR_TEXT)) / 2, text, OSD_FG);
   gfx_end(osd_screen);
   osd_until = ms_now() + ms;
 }
 
-/* The overlay's lines, a box behind each; created on first use, as the OSD */
+/* The overlay's lines, a box behind each, against the window's edges in its corner; created on
+ * first use, as the OSD */
 static void show_perf(void) {
   if (!perf.configured)
     win_map(&perf);
@@ -642,21 +672,29 @@ static void show_perf(void) {
     return;
   str lines[PERF_METRICS];
   const size_t n = perf_sample(lines);
+  const int corner = perf_corner();
+  const bool right = corner == PERF_TOP_RIGHT || corner == PERF_BOTTOM_RIGHT;
+  const int top = corner >= PERF_BOTTOM_LEFT ? h - 4 - (int)n * PERF_LINE : 4;
   for (size_t i = 0; i < n; i++) {
-    const int y = 4 + (int)i * PERF_LINE;
-    ui_fill(0, y - 1, ui_text_width(PERF_TEXT, lines[i]) + 12, PERF_LINE, (gfx_color){0, 0, 0, 0xc0});
-    ui_text(PERF_TEXT, 6, y + (PERF_LINE - ui_text_height(PERF_TEXT)) / 2 - 1, lines[i], FG);
+    const int y = top + (int)i * PERF_LINE, bw = ui_text_width(PERF_TEXT, lines[i]) + 12, x = right ? w - bw : 0;
+    ui_fill(x, y - 1, bw, PERF_LINE, OSD_BG);
+    ui_text(PERF_TEXT, x + 6, y + (PERF_LINE - ui_text_height(PERF_TEXT)) / 2 - 1, lines[i], OSD_FG);
   }
   gfx_end(perf_screen);
 }
 
-/* The overlay on or off, its rows: under it (while on) each metric */
+/* The overlay on or off, its rows: under it (while on) its corner and each metric */
+enum { PERF_ROWS = PERF_METRICS + 2 };
 static size_t perf_rows(entry *rows) {
   static const int icons[PERF_METRICS] = {ICON_GAUGE,   ICON_CPU,        ICON_MICROCHIP, ICON_PLAY,
                                           ICON_LIBRARY, ICON_HARD_DRIVE, ICON_SUN};
+  static STRBUF(64) corner;
   size_t n = 0;
   rows[n++] = (entry){.label = S("Performance overlay"), .action = PERF, .icon = ICON_GAUGE, .category = -1,
                       .checked = perf_on()};
+  sb_set(corner, S("Corner  \u00b7  "), perf_corner_labels[perf_corner()]);
+  if (perf_on())
+    rows[n++] = (entry){.label = sb_str(corner), .action = PERF_CORNER, .icon = ICON_IMAGE, .depth = 1};
   for (int i = 0; perf_on() && i < PERF_METRICS; i++)
     rows[n++] = (entry){.label = perf_labels[i], .action = PERF, .icon = icons[i], .category = i,
                         .checked = perf_shows(i), .depth = 1};
@@ -812,8 +850,6 @@ static const entry *menu(nav *ui, const entry *entries, size_t count,
 
 /* Over its background (tiles), in `view` */
 static void tile(const app *a, ui_rect r, bool focused, ui_rect view) {
-  if (run_same(sb_str(a->exec), sb_str(a->arg), sb_str(a->dir)) != NULL)
-    ui_rounded(r.x + r.w - 16, r.y + 8, 8, 8, ACTIVE, 4, 0);
   const float ix = r.x + (r.w - ICON) / 2, iy = r.y + 8;
   const asset icon = assets_get(sb_str(a->icon), ICON);
   if (icon.slot == GFX_PLACEHOLDER) {
@@ -832,6 +868,11 @@ static void tile(const app *a, ui_rect r, bool focused, ui_rect view) {
                         .w = w, .h = h, .u1 = 1, .v1 = 1,
                         .color = 0xffffffff, .tex = icon.slot,
                         .radius = RADIUS - 2});
+  }
+  /* Over the icon's corner, ringed off it */
+  if (run_same(sb_str(a->exec), sb_str(a->arg), sb_str(a->dir)) != NULL) {
+    ui_rounded(r.x + r.w - 20, r.y + 4, 14, 14, TILE, 7, 0);
+    ui_rounded(r.x + r.w - 17, r.y + 7, 8, 8, ACTIVE, 4, 0);
   }
   const int ty = (int)(iy + ICON + (r.y + r.h - iy - ICON - ui_text_height(TILE_TEXT)) / 2);
   const float room = r.w - MARGIN;
@@ -910,7 +951,7 @@ static void settings(nav *ui, running *r, ui_rect view) {
   for (uint32_t i = 0; i < n; i++)
     rows += r->shm->options[i].category == settings_category;
   if (rows == 0) {
-    ui_text(ROW_TEXT, view.x + MARGIN * 2, view.y + MARGIN, S("No settings"), DIM);
+    ui_text(ROW_TEXT, view.x + MARGIN * 2, view.y + MARGIN, S("No settings"), MUTED);
     return;
   }
   const float offset = nav_scroll_begin(ui, nav_str("settings"), view, UI_VERTICAL,
@@ -951,7 +992,7 @@ static void settings(nav *ui, running *r, ui_rect view) {
     ui_text(ROW_TEXT, (int)row.x + MARGIN, y,
               ui_text_fit(ROW_TEXT, label, row.w - vw - MARGIN * 3, NULL), per_game ? PER_GAME : FG);
     ui_text(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, value,
-              capture.option == (int)i ? RING_TEXT : flags & NAV_FOCUSED ? FG : DIM);
+              capture.option == (int)i ? RING_TEXT : flags & NAV_FOCUSED ? FG : MUTED);
   }
   gfx_noclip();
   nav_scroll_end(ui);
@@ -987,7 +1028,7 @@ static bool power_page(nav *ui, ui_rect view, bool calibration) {
     const int vw = ui_text_width(ROW_TEXT, sb_str(value)), lx = (int)row.x + MARGIN * 2 + ICON_PX;
     ui_icon(icons[i], ICON_PX, (int)row.x + MARGIN, (int)row.y + ((int)row.h - ICON_PX) / 2, FG);
     ui_text(ROW_TEXT, lx, y, ui_text_fit(ROW_TEXT, labels[i], row.x + row.w - lx - vw - MARGIN * 2, NULL), FG);
-    ui_text(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, sb_str(value), flags & NAV_FOCUSED ? FG : DIM);
+    ui_text(ROW_TEXT, (int)(row.x + row.w) - MARGIN - vw, y, sb_str(value), flags & NAV_FOCUSED ? FG : MUTED);
   }
   gfx_noclip();
   nav_scroll_end(ui);
@@ -1029,7 +1070,7 @@ static const entry *dialog_box(nav *ui, int w, int h, str title, str text,
   ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2), ui_text_fit(ROW_TEXT, title, dw - MARGIN * 4, NULL), FG);
   for (size_t i = 0; i < n; i++)
     ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2 + line * ((title.n > 0) + i)),
-              ui_text_fit(ROW_TEXT, wrapped[i], tw, NULL), DIM);
+              ui_text_fit(ROW_TEXT, wrapped[i], tw, NULL), MUTED);
   const ui_rect view = {x + MARGIN, y + MARGIN + line * lines + MARGIN, dw - MARGIN * 2, list};
   return menu(ui, entries, count, view);
 }
@@ -1042,6 +1083,22 @@ static const entry *failure_dialog(nav *ui, int w, int h) {
                       COUNTOF(fail_sleep_entries));
   return dialog_box(ui, w, h, sb_str(failure.title), sb_str(failure.why), fail_launch_entries,
                     failure.key.n > 0 ? COUNTOF(fail_launch_entries) : 1);
+}
+
+/* Load state, Restart or Quit (confirming), asked about over the pause menu */
+static const entry *confirm_dialog(nav *ui, int w, int h) {
+  static entry rows[2];
+  static STRBUF(128) title;
+  if (confirming == LOAD_STATE)
+    sb_set(title, S("Load the saved state?"));
+  else
+    sb_set(title, confirming == QUIT ? S("Quit ") : S("Restart "), sb_str(front->label), S("?"));
+  rows[0] = (entry){.label = confirming == QUIT ? S("Quit") : confirming == RESTART ? S("Restart") : S("Load state"),
+                    .action = confirming, .icon = ICON_CHECK};
+  rows[1] = (entry){.label = S("Cancel"), .action = NOTHING, .icon = ICON_X};
+  return dialog_box(ui, w, h, sb_str(title),
+                    confirming == LOAD_STATE ? S("Play since it was saved is lost.") : S("Anything not saved is lost."),
+                    rows, COUNTOF(rows));
 }
 
 static void show_failure(nav *ui, int kind, str title, str why, str key) {
@@ -1388,7 +1445,7 @@ static size_t update_rows(entry *rows, str *said) {
 #define SLEEP_FAILED "/run/sleep-failed"
 
 /* Settings, Time and Debug: what each row does */
-enum { PAGE_MAX = 8 + PERF_METRICS + 1 };
+enum { PAGE_MAX = 8 + PERF_ROWS };
 static size_t page_rows(int kind, entry *rows) {
   static STRBUF(96) zone, when;
   size_t n = 0;
@@ -1890,7 +1947,7 @@ static void launch_path(nav *ui) {
       for (size_t j = 0; j < categories[i].count; j++) {
         const app *a = &categories[i].apps[j];
         if (a->exec.n > 0 && (str_eq(sb_str(a->arg), sb_str(path)) || str_eq(sb_str(a->dir), sb_str(path)))) {
-          start(ui, sb_str(a->name), sb_str(a->icon), sb_str(a->exec), sb_str(a->arg), sb_str(a->dir));
+          start(ui, sb_str(a->name), sb_str(a->icon), sb_str(a->exec), sb_str(a->arg), sb_str(a->dir), a->flags);
           return;
         }
       }
@@ -1924,7 +1981,13 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     save_page(*page);
     run_quit_all();
     return false;
-  case UI_VOLUME: show_volume(value); return true;
+  case UI_VOLUME: show_level(false, value); return true;
+  case UI_BRIGHTNESS:
+    /* Menu + a volume key: the app's hotkey, not a pause */
+    menu_combo |= menu_down;
+    power_step(POWER_BRIGHTNESS, value);
+    show_level(true, power_brightness());
+    return true;
   case UI_HASHED: rescan(*page); return true;
   case UI_LAUNCH: launch_path(ui); return true;
   case UI_RELOAD:
@@ -1979,30 +2042,26 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     }
     return true;
   }
-  /* Menu's release, which reaches the app's queue first */
-  if (!down) {
-    if (button == APPCTL_MENU && menu_down) {
-      menu_down = false;
-      if (!menu_combo && front != NULL && !front->quitting && !paused)
-        pause_front(ui);
-    }
+  /* The pad's Menu acts on its release, and only if nothing was pressed while it was held: Menu
+   * plus a button or a volume key is a hotkey (a key: on the press) */
+  if (button == APPCTL_MENU && pad) {
+    const bool tapped = !down && menu_down && !menu_combo;
+    menu_down = down;
+    menu_combo = false;
+    if (!tapped)
+      return true;
+  } else if (!down) {
     return true;
   }
-  /* Menu resumes on the press, pauses on the release (a key: the press); at
-   * home it brings back the last app */
+  /* Pauses the app, resumes it; at home the quick menu, as Start */
   if (button == APPCTL_MENU) {
     if (front != NULL && !front->quitting) {
-      if (paused) {
+      if (paused)
         resume_front();
-      } else if (pad) {
-        menu_down = true;
-        menu_combo = false;
-      } else {
+      else
         pause_front(ui);
-      }
       return true;
     }
-    /* At home: the quick menu, as Start */
     button = APPCTL_START;
   }
   /* A hotkey: the app's */
@@ -2025,8 +2084,18 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     }
     return true;
   }
+  if (button == APPCTL_B && confirming >= 0) {
+    confirming = -1;
+    nav_focus(ui, confirm_back);
+    return true;
+  }
   if (button == APPCTL_B && in_settings) {
     in_settings = false;
+    nav_focus(ui, front->list_focus);
+    return true;
+  }
+  if (button == APPCTL_B && settings_list) {
+    settings_list = false;
     nav_focus(ui, front->menu_focus);
     return true;
   }
@@ -2293,6 +2362,7 @@ int main(int argc, char **argv) {
   open_pad();
   power_init();
   perf_init();
+  perf.title = perf_titles[perf_corner()].p;
   power_use(HOME_KEY);
   clock_refresh();
   const int volume_keys = input_open(S("gpio-keys-volume"), 0);
@@ -2480,8 +2550,8 @@ int main(int argc, char **argv) {
       chosen = folders_screen(&ui, w, h, view, &st);
     } else if (paused) {
       STRBUF(128) title;
-      sb_set(title, sb_str(front->label), S(" \u00b7 "), category_names[settings_category]);
-      top_bar(w, in_settings ? sb_str(title) : sb_str(front->label), &st);
+      sb_set(title, sb_str(front->label), S(" \u00b7 "), in_settings ? category_names[settings_category] : S("Settings"));
+      top_bar(w, in_settings || settings_list ? sb_str(title) : sb_str(front->label), &st);
       if (in_settings) {
         /* The bottom row is the hint's */
         const ui_rect list = {view.x, view.y, view.w, view.h - ROW};
@@ -2489,7 +2559,7 @@ int main(int argc, char **argv) {
           NAV_SCOPE(&ui, nav_int(settings_category)) { calibrate = power_page(&ui, list, true); }
         else if (settings_category == DEBUG_PAGE)
           NAV_SCOPE(&ui, nav_int(settings_category)) {
-            static entry rows[PERF_METRICS + 1];
+            static entry rows[PERF_ROWS];
             settings_focus = power_focus = -1;
             chosen = menu(&ui, rows, perf_rows(rows), list);
           }
@@ -2506,23 +2576,34 @@ int main(int argc, char **argv) {
                                               ? S("A: find the lowest clocks for this frame rate")
                                               : S("");
         if (hint.n > 0)
-          ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, DIM);
+          ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), hint, MUTED);
+      } else if (settings_list) {
+        static entry items[COUNTOF(settings_entries)];
+        size_t n = 0;
+        for (size_t i = 0; i < COUNTOF(settings_entries); i++)
+          if (settings_entries[i].category >= POWER_PAGE ||
+              (run_controlled(front) && has_settings(front, settings_entries[i].category)))
+            items[n++] = settings_entries[i];
+        NAV_SCOPE(&ui, nav_str("settings list")) { chosen = menu(&ui, items, n, view); }
       } else {
         static entry items[COUNTOF(pause_entries)];
         size_t n = 0;
         for (size_t i = 0; i < COUNTOF(pause_entries); i++) {
-          const int a = pause_entries[i].action;
-          if (a == SETTINGS ? pause_entries[i].category >= POWER_PAGE ||
-                                  (run_controlled(front) && has_settings(front, pause_entries[i].category))
-              : a == SAVE_STATE || a == LOAD_STATE || a == RESTART ? run_controlled(front) && front->shm->slots > 0
-              : run_controlled(front) || a == RESUME || a == HOME || a == QUIT)
+          const int a = pause_entries[i].action == CONFIRM ? pause_entries[i].category : pause_entries[i].action;
+          if ((a != SAVE_STATE && a != LOAD_STATE && a != RESTART) || (run_controlled(front) && front->shm->slots > 0))
             items[n++] = pause_entries[i];
+          if (a == QUIT && (front->flags & APP_QUIT_NOW))
+            items[n - 1].action = QUIT;
         }
         /* The bottom row is the notice's */
         const ui_rect list = {view.x, view.y, view.w, view.h - (notice.n ? ROW : 0)};
+        nav_set_inert(&ui, power_menu.shown || confirming >= 0);
         NAV_SCOPE(&ui, nav_str("paused")) { chosen = menu(&ui, items, n, list); }
         if (notice.n > 0)
-          ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), sb_str(notice), DIM);
+          ui_text(ROW_TEXT, MARGIN * 2, h - MARGIN - ui_text_height(ROW_TEXT), sb_str(notice), MUTED);
+        nav_set_inert(&ui, power_menu.shown);
+        if (confirming >= 0)
+          NAV_SCOPE(&ui, nav_str("confirm")) { chosen = confirm_dialog(&ui, w, h); }
       }
     } else {
       top_bar(w, page_name(page), &st);
@@ -2557,10 +2638,14 @@ int main(int argc, char **argv) {
     animating = nav_end(&ui, RING, 2);
     if (!marquee_drawn)
       marquee_of = 0;
-    if (paused) {
+    /* Not a dialog's focus: it isn't there next time */
+    if (paused && confirming < 0 && !power_menu.shown) {
+      front->in_list = settings_list;
       front->in_settings = in_settings;
       front->settings_category = settings_category;
-      *(in_settings ? &front->settings_focus[settings_category] : &front->menu_focus) = ui.focus;
+      *(in_settings     ? &front->settings_focus[settings_category]
+        : settings_list ? &front->list_focus
+                        : &front->menu_focus) = ui.focus;
     }
     gfx_end(screen);
     static bool presented;
@@ -2577,9 +2662,24 @@ int main(int argc, char **argv) {
       power_calibrate();
       show_text(power_calibrating() ? power_progress() : S("No frame counter"), power_calibrating() ? INT_MAX / 2 : RESULT_MS);
     }
+    /* The question answered (Cancel: NOTHING), or the power options' over it */
+    if (chosen != NULL && confirming >= 0) {
+      confirming = -1;
+      nav_focus(&ui, confirm_back);
+    }
     int result = 0;
     switch (chosen ? chosen->action : -1) {
     case RESUME: resume_front(); break;
+    case CONFIRM:
+      confirming = chosen->category;
+      confirm_back = ui.focus;
+      nav_focus(&ui, 0);
+      break;
+    case SETTINGS_LIST:
+      settings_list = true;
+      /* Where it was left; none yet: the top */
+      nav_focus(&ui, front->list_focus);
+      break;
     case RESTART:
       run_request(front, APPCTL_RESET, 0);
       resume_front();
@@ -2606,7 +2706,7 @@ int main(int argc, char **argv) {
     case RUN_COMMAND:
       modal.kind = MODAL_NONE;
       nav_focus(&ui, modal.back);
-      start(&ui, chosen->label, S(""), chosen->command, S(""), S(""));
+      start(&ui, chosen->label, S(""), chosen->command, S(""), S(""), 0);
       break;
     case PICK_CORE: {
       app *a = picked_game(&categories[page - 1]);
@@ -2679,6 +2779,13 @@ int main(int argc, char **argv) {
     case SSH_EVERYWHERE: sysd(access(SSH_ALL, F_OK) == 0 ? S("ssh usb") : S("ssh all")); break;
     case DEEP_SLEEP: sysd(access(LIGHT_SLEEP, F_OK) == 0 ? S("sleep deep") : S("sleep light")); break;
     case LIGHT_MODE: sysd(ui_light ? S("theme dark") : S("theme light")); break;
+    /* The shell places it once, as it maps */
+    case PERF_CORNER:
+      perf_next_corner();
+      perf.title = perf_titles[perf_corner()].p;
+      win_unmap(&perf);
+      show_perf();
+      break;
     case PERF:
       perf_toggle(chosen->category);
       if (perf_on())
@@ -2721,7 +2828,7 @@ int main(int argc, char **argv) {
       const str dir = sb_str(modal.rom), id = str_at(dir, str_rfind(dir, '/') + 1);
       modal.kind = MODAL_NONE;
       nav_focus(&ui, modal.back);
-      start(&ui, S("Store"), S(""), S("store \"$1\""), id, S(""));
+      start(&ui, S("Store"), S(""), S("store \"$1\""), id, S(""), 0);
       break;
     }
     case LICENSES_OPEN:
@@ -2761,7 +2868,7 @@ int main(int argc, char **argv) {
     }
     if (picked != NULL && page == 0) {
       const running *r = running_of[picked - running_apps];
-      start(&ui, sb_str(r->label), sb_str(r->icon), sb_str(r->exec), sb_str(r->arg), sb_str(r->dir));
+      start(&ui, sb_str(r->label), sb_str(r->icon), sb_str(r->exec), sb_str(r->arg), sb_str(r->dir), r->flags);
     } else if (picked != NULL && picked->exec.n == 0) {
       STRBUF(96) why;
       const category *c = &categories[page - 1];
@@ -2769,7 +2876,7 @@ int main(int argc, char **argv) {
       show_failure(&ui, FAIL_LAUNCH, sb_str(picked->name), sb_str(why), S(""));
     } else if (picked != NULL) {
       start(&ui, sb_str(picked->name), sb_str(picked->icon), sb_str(picked->exec),
-            sb_str(picked->arg), sb_str(picked->dir));
+            sb_str(picked->arg), sb_str(picked->dir), picked->flags);
     }
   }
 }

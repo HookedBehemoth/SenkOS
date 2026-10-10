@@ -26,7 +26,7 @@
 #define FRAMES 2 /* in flight, per window */
 #define MAX_QUADS 4096
 #define MAX_SLOTS 256 /* PanVK: maxPerStageDescriptorSampledImages */
-#define MAX_TARGETS 2
+#define MAX_TARGETS 3 /* the launcher: its window, the OSD, the performance overlay */
 #define MAX_IMAGES 8 /* swapchain */
 
 /* quad.vert's Quad: a gfx_quad, or a part of a rounded one (gfx_push), with the

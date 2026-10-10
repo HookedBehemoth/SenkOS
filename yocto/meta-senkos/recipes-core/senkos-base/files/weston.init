@@ -53,7 +53,9 @@ ui() {
 		echo 0 > $c/ui/cgroup.procs
 		seatd -g seat </dev/null >/dev/null 2>&1 &
 		while [ ! -S /run/seatd.sock ]; do usleep 5000; done
-		su -p -s /bin/sh player -c "$0 session" &
+		# PipeWire's module-rt takes realtime itself (no rtkit, no bus): its threads at prio 88, nice
+		# -11. Only the session's limits: the launcher and the apps it starts get none.
+		(ulimit -r 95 -e 31 && exec su -p -s /bin/sh player -c "$0 session") &
 		while :; do
 			launcher
 			sleep 1

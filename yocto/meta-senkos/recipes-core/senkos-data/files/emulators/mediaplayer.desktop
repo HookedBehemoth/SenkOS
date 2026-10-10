@@ -5,3 +5,5 @@ Comment=Videos: GStreamer, hardware decoding where Cedrus can
 Exec=mediaplayer %f
 MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-m4v;video/x-msvideo;video/mp2t;
 Categories=AudioVideo;Player;
+# It resumes where it was left: nothing to lose
+X-SenkOS-AskQuit=false

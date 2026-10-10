@@ -15,8 +15,15 @@ static const str names[PERF_METRICS] = {S("fps"), S("cpu"), S("gpu"), S("vpu"), 
 const str perf_labels[PERF_METRICS] = {S("Frame rate"), S("CPU"),      S("GPU"),        S("Video decoder"),
                                        S("Memory"),     S("SD cards"), S("Temperature")};
 
+static const str corners[PERF_CORNERS] = {S("top-left"), S("top-right"), S("bottom-left"), S("bottom-right")};
+/* The kiosk shell's patch 0002 reads "right" and "bottom" in it */
+const str perf_titles[PERF_CORNERS] = {S("perf top-left"), S("perf top-right"), S("perf bottom-left"),
+                                       S("perf bottom-right")};
+const str perf_corner_labels[PERF_CORNERS] = {S("Top left"), S("Top right"), S("Bottom left"), S("Bottom right")};
+
 static bool on;
 static unsigned shown = (1u << PERF_METRICS) - 1;
+static int corner;
 static char gpu_freq[128], gpu_busy[128], vpu_busy[128];
 
 /* Since the last sample */
@@ -34,11 +41,15 @@ void perf_init(void) {
   if (text.n > 0) {
     on = str_eq(str_cut(&rest, ' '), S("on"));
     shown = 0;
-    for (str w; rest.n > 0;)
-      if ((w = str_trim(str_cut(&rest, ' '))).n > 0)
-        for (int i = 0; i < PERF_METRICS; i++)
-          if (str_eq(w, names[i]))
-            shown |= 1u << i;
+    for (str w; rest.n > 0;) {
+      w = str_trim(str_cut(&rest, ' '));
+      for (int i = 0; i < PERF_METRICS; i++)
+        if (str_eq(w, names[i]))
+          shown |= 1u << i;
+      for (int i = 0; i < PERF_CORNERS; i++)
+        if (str_eq(w, corners[i]))
+          corner = i;
+    }
   }
   free((char *)text.p);
   glob_t g;
@@ -59,11 +70,9 @@ void perf_init(void) {
 bool perf_on(void) { return on; }
 bool perf_shows(int metric) { return shown & 1u << metric; }
 
-void perf_toggle(int metric) {
-  if (metric < 0)
-    on = !on;
-  else
-    shown ^= 1u << metric;
+int perf_corner(void) { return corner; }
+
+static void save(void) {
   FILE *f = config_file("-perf", "w");
   if (f == NULL)
     return;
@@ -71,8 +80,21 @@ void perf_toggle(int metric) {
   for (int i = 0; i < PERF_METRICS; i++)
     if (perf_shows(i))
       str_fput(f, S(" "), names[i]);
-  fputc('\n', f);
+  str_fput(f, S(" "), corners[corner], S("\n"));
   fclose(f);
+}
+
+void perf_toggle(int metric) {
+  if (metric < 0)
+    on = !on;
+  else
+    shown ^= 1u << metric;
+  save();
+}
+
+void perf_next_corner(void) {
+  corner = (corner + 1) % PERF_CORNERS;
+  save();
 }
 
 static long long read_ll(const char *path) {

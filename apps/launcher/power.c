@@ -188,10 +188,14 @@ str power_value(int row) {
   case POWER_BRIGHTNESS:
     if (brightness_max <= 0)
       return S("None");
-    sb_fmt(out, "%ld%%", (brightness * 100 + brightness_max / 2) / brightness_max);
+    sb_fmt(out, "%d%%", power_brightness());
     break;
   }
   return sb_str(out);
+}
+
+int power_brightness(void) {
+  return brightness_max > 0 ? (int)((brightness * 100 + brightness_max / 2) / brightness_max) : -1;
 }
 
 void power_step(int row, int by) {

@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <unistd.h>
 
+#include "appctl.h"
+#include "pad.h"
 #include "util.h"
 #include "wake.h"
 
@@ -20,6 +22,8 @@ static struct {
   uint32_t sink;
   int sets; /* in flight: replies older than them are stale */
 } vol = {.sink = PA_INVALID_INDEX};
+/* The pad, for Menu held: its state, not its queue (pad_thread's) */
+static int pad = -1;
 
 static void volume_show(void) {
   win_wake(UI_VOLUME, vol.muted ? 0 : (int)((pa_cvolume_max(&vol.volume) * 100ull + PA_VOLUME_NORM / 2) / PA_VOLUME_NORM));
@@ -96,10 +100,15 @@ static void volume_key(pa_mainloop_api *api, pa_io_event *e, int fd, pa_io_event
   (void)api, (void)e, (void)f, (void)u;
   struct input_event ev;
   if (read(fd, &ev, sizeof(ev)) != sizeof(ev) || ev.type != EV_KEY || ev.value == 0 ||
-      (ev.code != KEY_VOLUMEUP && ev.code != KEY_VOLUMEDOWN) || vol.ctx == NULL ||
-      pa_context_get_state(vol.ctx) != PA_CONTEXT_READY || vol.volume.channels == 0)
+      (ev.code != KEY_VOLUMEUP && ev.code != KEY_VOLUMEDOWN))
     return;
   const int by = ev.code == KEY_VOLUMEUP ? 1 : -1;
+  if (pad >= 0 && pad_held(pad) & (1u << APPCTL_MENU)) {
+    win_wake(UI_BRIGHTNESS, by);
+    return;
+  }
+  if (vol.ctx == NULL || pa_context_get_state(vol.ctx) != PA_CONTEXT_READY || vol.volume.channels == 0)
+    return;
   const int step = (int)((pa_cvolume_max(&vol.volume) + VOLUME_STEP / 2) / VOLUME_STEP) + by;
   pa_cvolume_scale(&vol.volume, (pa_volume_t)(CLAMP(step, 0, 16) * VOLUME_STEP));
   pa_operation *o = pa_context_set_sink_volume_by_index(vol.ctx, vol.sink, &vol.volume, volume_set_done, NULL);
@@ -118,6 +127,7 @@ static void volume_key(pa_mainloop_api *api, pa_io_event *e, int fd, pa_io_event
 }
 
 void *volume_thread(void *keys) {
+  pad = pad_open(0);
   pa_mainloop *ml = pa_mainloop_new();
   vol.api = pa_mainloop_get_api(ml);
   vol.api->io_new(vol.api, (int)(intptr_t)keys, PA_IO_EVENT_INPUT, volume_key, NULL);

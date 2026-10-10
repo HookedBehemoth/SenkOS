@@ -6,7 +6,8 @@
  *   Each *.desktop (XDG desktop entry: Name, Exec, Path, Icon, Keywords,
  *   Categories) is an app; so is any other executable without a .desktop of
  *   the same name. Exec runs under sh -c, in Path or else the folder. Icon is
- *   a path, absolute or relative to the folder, extension optional. A folder
+ *   a path, absolute or relative to the folder, extension optional.
+ *   X-SenkOS-AskQuit=false: Quit in its pause menu doesn't ask first. A folder
  *   with a port.ini is a port (docs/ports.md), run by portrun; its cover or
  *   screenshot is the icon.
  * - Game systems: the .system files in apps/systems over the image's
@@ -23,7 +24,8 @@
  *   image's (EMULATORS): one of the same file name replaces the image's, or
  *   hides it (Hidden=true). One runs a system's games when its MimeType has
  *   the system's type; %f in Exec is the game ("$1"), Path its working
- *   directory (else the game's folder). By name, the first runs a game
+ *   directory (else the game's folder), X-SenkOS-AskQuit as an app's (a
+ *   player that resumes where it was left). By name, the first runs a game
  *   unless Select on it picked another, which is kept in
  *   $XDG_CONFIG_HOME/launcher-cores.
  * - Sources: folders on the other card added to a system; their games join
@@ -47,7 +49,10 @@ typedef struct {
   STRBUF(128) tags; /* Keywords then Categories, each ';'-terminated */
   int core;         /* into the category's cores */
   uint32_t match;   /* the pack's game picked for it by hand (its CRC), 0: none */
+  unsigned flags;   /* APP_*: its .desktop's, a game's its core's */
 } app;
+/* X-SenkOS-AskQuit=false */
+enum { APP_QUIT_NOW = 1 };
 
 /* An emulator or player, from its .desktop */
 enum { CORES_MAX = 8 };
@@ -55,6 +60,7 @@ typedef struct {
   STRBUF(64) name;
   STRBUF(512) exec; /* sh -c, with $1 = the ROM */
   STRBUF(256) dir;
+  unsigned flags; /* APP_* */
 } core;
 
 typedef struct {

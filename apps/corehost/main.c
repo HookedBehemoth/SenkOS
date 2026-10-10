@@ -16,9 +16,10 @@
  * paces by default: vsync, with the sound resampled to fit (audio_batch_).
  * Input from the built-in pad (pad.h) or the keyboard (win.h).
  *
- * Every game button and the hotkeys (fast forward, a toggle; rewind, held;
- * save and load state 0) are bindings: a button combo each, which the
- * launcher records. The hotkeys default to Menu + a shoulder button.
+ * Every game button and the hotkeys (fast forward, a toggle or held; rewind,
+ * held; save and load state 0) are bindings: a button combo each, which the
+ * launcher records. The hotkeys default to Menu + a shoulder button, and
+ * L2 or R2 held fast forwards where the game has no use for them.
  *
  * BIOS files and the like: next to the ROM, or in $COREHOST_SYSTEM.
  * Saves: in $COREHOST_SAVE/CORE, else next to the ROM: STEM.srm (save RAM),
@@ -71,8 +72,6 @@
 #include "util.h"
 #include "win.h"
 
-/* Frames run per frame shown while fast forwarding */
-#define FAST_SPEED 3
 
 static struct {
 #define SYM(name) __typeof__(name) *name
@@ -177,6 +176,9 @@ static const struct {
   unsigned keyboard; /* KEY_* */
 } bindings[] = {
     {"corehost_hotkey_fast", "Fast forward (toggle)", B(MENU) | B(R1), -1, 0},
+    /* Unbound where the game has L2 or R2 (publish_host) */
+    {"corehost_hotkey_fast_hold", "Fast forward (hold)", B(L2), -1, 0},
+    {"corehost_hotkey_fast_hold2", "Fast forward (hold, 2nd)", B(R2), -1, 0},
     {"corehost_hotkey_rewind", "Rewind (hold)", B(MENU) | B(L1), -1, 0},
     {"corehost_hotkey_save", "Save state", B(MENU) | B(R2), -1, 0},
     {"corehost_hotkey_load", "Load state", B(MENU) | B(L2), -1, 0},
@@ -208,18 +210,23 @@ static const struct {
     {"corehost_map_rstick_up", "Right stick up", 0, ANALOG_ID(1, 1, 0), 0},
     {"corehost_map_rstick_down", "Right stick down", 0, ANALOG_ID(1, 1, 1), 0},
 };
-enum { HOT_FAST, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, BINDINGS = COUNTOF(bindings) };
+enum { HOT_FAST, HOT_HOLD, HOT_HOLD2, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, BINDINGS = COUNTOF(bindings) };
 enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
 _Static_assert(BINDINGS <= 32, "active is a bit per binding");
 
 /* Our own options, after the core's: these choices, then the bindings */
-enum { HOST_SCALE, HOST_FILTER, HOST_CHOICES };
+enum { HOST_SCALE, HOST_FILTER, HOST_FAST, HOST_CHOICES };
 static const struct {
   const char *key, *label, *values;
+  int category;
+  unsigned def;
 } host_options[HOST_CHOICES] = {
-    {"corehost_scale", "Scaling", "Integer|Fit|Stretch"},
-    {"corehost_filter", "Filter", "Sharp|Smooth"},
+    {"corehost_scale", "Scaling", "Integer|Fit|Stretch", APPCTL_GRAPHICS, 0},
+    {"corehost_filter", "Filter", "Sharp|Smooth", APPCTL_GRAPHICS, 0},
+    /* Frames run per frame shown */
+    {"corehost_fast_speed", "Fast forward speed", "2x|3x|4x|6x|8x", APPCTL_SYSTEM, 1},
 };
+static const int fast_speeds[] = {2, 3, 4, 6, 8};
 static unsigned host_option_at; /* index of the first one in shm */
 /* Published once the game is loaded: the input descriptors are in by then */
 static bool host_published;
@@ -330,13 +337,15 @@ static void add_definition(const char *key, const char *desc, const char *catego
   publish();
 }
 
-/* Scaling and filter, then the bindings */
+/* Scaling, filter and fast forward speed, then the bindings */
 static void publish_host(void) {
   host_option_at = atomic_load(&shm->option_count);
   for (int i = 0; i < HOST_CHOICES; i++) {
     char desc[128];
     snprintf(desc, sizeof(desc), "%s; %s", host_options[i].label, host_options[i].values);
-    add_option(host_options[i].key, desc, APPCTL_GRAPHICS);
+    add_option(host_options[i].key, desc, host_options[i].category);
+    if (host_option_at + i < atomic_load(&shm->option_count))
+      atomic_store(&shm->options[host_option_at + i].value, host_options[i].def);
   }
   /* A pad without sticks: the core's left stick gets the D-pad, its D-pad
    * Menu + the D-pad */
@@ -373,6 +382,10 @@ static void publish_host(void) {
       def = dpad[id - ANALOG_ID(0, 0, 0)];
     else if (stick_on_dpad && id >= RETRO_DEVICE_ID_JOYPAD_UP && id <= RETRO_DEVICE_ID_JOYPAD_RIGHT)
       def |= B(MENU);
+    /* L2, R2 held: the game's own if it has them (none told: it may) */
+    const int shoulder = i == HOT_HOLD ? RETRO_DEVICE_ID_JOYPAD_L2 : RETRO_DEVICE_ID_JOYPAD_R2;
+    if ((i == HOT_HOLD || i == HOT_HOLD2) && (described == 0 || described >> shoulder & 1))
+      def = 0;
     atomic_store(&o->buttons, def);
     binding_at[i] = (int)atomic_load(&shm->option_count);
     publish();
@@ -2142,19 +2155,21 @@ int main(int argc, char **argv) {
         rewind_count = 0;
     }
     const bool rewinding = active & (1u << HOT_REWIND);
-    muted = fast || rewinding;
+    const bool fast_now = (fast || (active & (1u << HOT_HOLD | 1u << HOT_HOLD2))) && !rewinding;
+    muted = fast_now || rewinding;
 
     /* The overlay: what is going on, the last notice */
     int l = 0;
     memset(overlay, 0, sizeof(overlay));
     if (rewinding)
       snprintf(overlay[l++], sizeof(overlay[0]), "<< Rewind");
-    else if (fast)
+    else if (fast_now)
       snprintf(overlay[l++], sizeof(overlay[0]), ">> Fast forward");
     if (notice[0] && ms_now() < notice_until)
       snprintf(overlay[l++], sizeof(overlay[0]), "%s", notice);
 
-    for (int i = 0; i < (fast && !rewinding ? FAST_SPEED : 1); i++) {
+    const int speed = fast_now ? fast_speeds[host_value(HOST_FAST) % COUNTOF(fast_speeds)] : 1;
+    for (int i = 0; i < speed; i++) {
       if (rewinding)
         rewind_pop();
       else if (++frame % REWIND_EVERY == 0)
