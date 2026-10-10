@@ -313,7 +313,7 @@ int power_tick(uint64_t now, str *say) {
   }
   cal.measuring = false;
   /* Every second of five at the rate, a frame short at most (vsync's count
-   * wobbles by one). ponytail: one scene's load; a heavier one later can
+   * wobbles by one). One scene's load; a heavier one later can
    * still drop below it, and then the clocks are a step up by hand. */
   const bool held = cal.worst >= app_fps - 1.5;
   if (cal.stage == 0 && !held) {

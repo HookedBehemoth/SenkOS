@@ -10,7 +10,7 @@
  * Each line is a binding: what it presses, and the pad buttons that do (a
  * combo, appctl.h's bits), the line's button until the launcher changes it.
  * When two held combos overlap, the bigger one wins.
- * ponytail: buttons only, no analog sticks (the device has none) and none of
+ * Buttons only, no analog sticks (the device has none) and none of
  * gptokeyb's hotkeys or states.
  */
 #pragma once

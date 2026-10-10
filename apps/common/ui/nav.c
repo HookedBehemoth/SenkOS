@@ -35,7 +35,7 @@ static float ease(uint64_t started_at, uint64_t now, uint64_t duration) {
   return 1.0f - powf(2.0f, -10.0f * progress);
 }
 
-/* ponytail: linear scan of 64 slots, evicting the longest unseen. A hash table
+/* Linear scan of 64 slots, evicting the longest unseen. A hash table
  * if a screen ever holds more scopes than that. */
 static nav_state *state_for(nav *ui, nav_id id) {
   nav_state *oldest = &ui->states[0];

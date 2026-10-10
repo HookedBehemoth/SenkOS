@@ -20,5 +20,5 @@ typedef struct {
 static inline cfg_reader cfg_init(str text) { return (cfg_reader){.rest = text}; }
 cfg_event cfg_next(cfg_reader *reader);
 /* The next item of an array, empty ones skipped: false after the last.
- * ponytail: no "\;" escapes; add them when a value needs a ';'. */
+ * No "\;" escapes; add them when a value needs a ';'. */
 bool cfg_item(str *array, str *item);

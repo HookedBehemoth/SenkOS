@@ -104,7 +104,7 @@ static sized_font *font_for(int px) {
   for (size_t i = 0; i < size_count; i++)
     if (sizes[i].px == px)
       return &sizes[i];
-  /* ponytail: a fixed handful of sizes; a UI that animates font size would
+  /* A fixed handful of sizes; a UI that animates font size would
    * want eviction. */
   if (size_count == COUNTOF(sizes))
     return NULL;
@@ -135,7 +135,7 @@ bool ui_atlas_add(const uint8_t *coverage, int w, int h, int pitch, skyline_regi
   return true;
 }
 
-/* ponytail: linear search, fine for the few hundred glyphs of a Latin UI; a
+/* Linear search, fine for the few hundred glyphs of a Latin UI; a
  * hash when CJK text shows up. */
 static const glyph *glyph_for(sized_font *f, unsigned gid) {
   for (size_t i = 0; i < f->count; i++)
@@ -165,7 +165,7 @@ static const glyph *glyph_for(sized_font *f, unsigned gid) {
 }
 
 /* The whole atlas, as a new image: the old one may be in a frame still in
- * flight. ponytail: copies all of it for a few new glyphs; dirty rows into a
+ * flight. Copies all of it for a few new glyphs; dirty rows into a
  * persistent image if text changes every frame. */
 static bool upload(void) {
   if (!atlas.dirty && texture.image != VK_NULL_HANDLE)

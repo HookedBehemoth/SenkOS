@@ -877,7 +877,7 @@ gfx_target *gfx_target_create(win *window, bool translucent) {
 }
 
 /* Its index in clips: the last one again when the same.
- * ponytail: past MAX_CLIPS the last one is reused (clipped wrong); a frame has a few dozen. */
+ * Past MAX_CLIPS the last one is reused (clipped wrong); a frame has a few dozen. */
 static uint32_t add_clip(const float c[4]) {
   if (clip_count > 0 && (memcmp(clips[clip_count - 1], c, sizeof(clips[0])) == 0 || clip_count == MAX_CLIPS))
     return clip_count - 1;

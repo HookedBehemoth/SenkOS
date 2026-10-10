@@ -170,7 +170,7 @@ static uint32_t utf8_next(str *s) {
   return c;
 }
 
-/* ponytail: glyph by glyph, no shaping; titles in complex scripts would want
+/* Glyph by glyph, no shaping; titles in complex scripts would want
  * HarfBuzz like the launcher's ui.c */
 static int text_width(str s, int px) {
   FT_Set_Pixel_Sizes(face, 0, px);
@@ -440,7 +440,7 @@ static void mkdirs(char *p) {
 }
 
 /* One "SECONDS PATH" line per video, the latest last.
- * ponytail: rewritten whole each time; a few hundred lines is nothing */
+ * Rewritten whole each time; a few hundred lines is nothing */
 #define RESUME_MAX 500
 /* A line's seconds, and its file in `*file`; false for a broken line */
 static bool resume_line(str line, long *seconds, str *file) {
@@ -1105,7 +1105,7 @@ int main(int argc, char **argv) {
   uint64_t saved = ms_now();
   while (!quit) {
     struct pollfd fds[2] = {{pad_fd, POLLIN, 0}, {ctl, POLLIN, 0}};
-    /* ponytail: the GStreamer bus and the OSD's clock are polled at 50 Hz;
+    /* The GStreamer bus and the OSD's clock are polled at 50 Hz;
      * gst_bus_get_pollfd and a timer when idle wakeups matter */
     if (!win_wait(fds, 2, 20))
       break;

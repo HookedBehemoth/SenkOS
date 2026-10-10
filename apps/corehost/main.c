@@ -1637,7 +1637,7 @@ static bool environment(unsigned cmd, void *data) {
     return true;
   }
   case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
-    /* ponytail: a new rate or sample rate is taken on the next start */
+    /* A new rate or sample rate is taken on the next start */
     const struct retro_system_av_info *av = data;
     aspect = av->geometry.aspect_ratio;
     if (vk_on)
@@ -1788,7 +1788,7 @@ static int load_state(int slot) {
 }
 
 /* The last seconds, a whole state every REWIND_EVERY frames.
- * ponytail: plain states in a fixed budget (GBA: a few seconds); XOR against
+ * Plain states in a fixed budget (GBA: a few seconds); XOR against
  * the previous one and compress when longer rewinds matter. */
 #define REWIND_BUDGET (32u << 20)
 #define REWIND_EVERY 3

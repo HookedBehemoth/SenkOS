@@ -137,7 +137,7 @@ out:
 static uint8_t *decode_webp(const uint8_t *data, size_t size, int *w, int *h) {
   if (!WebPGetInfo(data, size, w, h) || (size_t)*w * *h > MAX_DECODE_PX)
     return NULL;
-  /* ponytail: full size, then shrunk; WebPDecoderConfig scales while
+  /* Full size, then shrunk; WebPDecoderConfig scales while
    * decoding if big WebPs show up */
   uint8_t *webp = WebPDecodeRGBA(data, size, w, h);
   if (webp == NULL)
@@ -152,7 +152,7 @@ static uint8_t *decode_webp(const uint8_t *data, size_t size, int *w, int *h) {
 static uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
 /* Uncompressed, 8 bits (a palette), 24 or 32; 32 with BI_BITFIELDS too, its
- * masks a byte each. ponytail: no RLE, no 1/4/16 bits; none of the art has
+ * masks a byte each. No RLE, no 1/4/16 bits; none of the art has
  * them. */
 static uint8_t *decode_bmp(const uint8_t *d, size_t n, int *w, int *h) {
   if (n < 54)
@@ -210,7 +210,7 @@ static uint8_t *decode_bmp(const uint8_t *d, size_t n, int *w, int *h) {
 }
 
 /* Thumbnails (assets.h): $XDG_CACHE_HOME/thumbnails/<hash of path, size, mtime and px>.webp.
- * ponytail: never cleaned; stale ones stay until the cache is cleared. */
+ * Never cleaned; stale ones stay until the cache is cleared. */
 static bool thumb_name(str path, int px, char *out, size_t size) {
   char p[PATH_MAX];
   struct stat st;
@@ -452,7 +452,7 @@ void assets_frame(void) {
     }
     const uint32_t s = free_slot();
     if (s == 0) {
-      /* ponytail: more images on screen than slots; asked for again, it
+      /* More images on screen than slots; asked for again, it
        * loads again. A texture atlas when a screen shows that many. */
       gfx_release(&arrived[i].image);
       e->state = NONE;
@@ -486,7 +486,7 @@ asset assets_get(str path, int px) {
   const asset none = {GFX_PLACEHOLDER, 1, 1};
   if (path.n == 0)
     return none;
-  /* ponytail: linear search, fine for a screenful a frame over a few
+  /* Linear search, fine for a screenful a frame over a few
    * hundred paths; a hash when there are thousands */
   entry *e = NULL;
   for (size_t i = 0; i < entry_count && e == NULL; i++)

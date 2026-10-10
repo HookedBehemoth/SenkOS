@@ -48,7 +48,7 @@ bool clock_refresh(void) {
   return true;
 }
 
-/* ponytail: zone.tab's ~420 names, kept for good once read (a few KB) */
+/* Zone.tab's ~420 names, kept for good once read (a few KB) */
 enum { ZONES_MAX = 640, REGIONS_MAX = 16 };
 static char *tab;
 static str zones[ZONES_MAX], regions[REGIONS_MAX];

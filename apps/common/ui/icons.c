@@ -21,7 +21,7 @@ typedef struct {
   skyline_region region;
 } cached;
 
-/* ponytail: linear search over every icon at every size drawn; a handful */
+/* Linear search over every icon at every size drawn; a handful */
 static cached cache[128];
 static size_t cache_count;
 static FT_Library library;
