@@ -6,9 +6,9 @@ inherit image
 # The machine's own packages (Wi-Fi driver and firmware: MACHINE_EXTRA_RRECOMMENDS)
 # Wi-Fi (senkos-base's wifi): wpa_supplicant, the regulatory database
 # downloadd, store: ports and system updates over the network (TLS: ca-certificates)
-# libsdl2: for what lives in /data (the bindless demo, SuperTuxKart, ports); our apps don't use it
+# libsdl2: for what lives in /data (ports); our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
-# openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (SuperTuxKart in /data and ports like it)
+# openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (ports in /data)
 # libbz2 ... opusfile: the ports' platform (docs/ports.md); the SDL2 family (SDL2_gfx our own), libmodplug and opusfile from meta-openembedded
 # libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
 # The libretro cores: run by corehost, as the emulators in senkos-data (senkos-base) say
@@ -87,6 +87,9 @@ IMAGE_INSTALL += "${@'gdb gdbserver strace perf trace-cmd' if d.getVar('SENKOS_D
 IMAGE_LINGUAS = ""
 # Weston is started by senkos-base (as player, via seatd; kiosk shell)
 BAD_RECOMMENDATIONS += "weston-init"
+# libdbus (ports, libpulse) recommends the daemon: no bus here, nothing talks to one. By the
+# package's name (debian renaming), not the "dbus" it provides: opkg matches that
+BAD_RECOMMENDATIONS += "dbus-1 lib32-dbus-1"
 # Bring-up only: passwordless root on the LCD, serial and USB (ssh) consoles. Remove before anything ships.
 IMAGE_FEATURES = "empty-root-password allow-empty-password allow-root-login"
 # Slots are squashfs (lz4): cheap to decompress for U-Boot (the kernel) and Linux alike.

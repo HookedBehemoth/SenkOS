@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Bindless rects
-Comment=1000 rects, textures picked per rect from a descriptor-indexed sampler array; Mesa's Vulkan HUD on top
-Exec=env VK_INSTANCE_LAYERS=VK_LAYER_MESA_overlay /data/bindless/bindless-vk > /var/log/bindless-vk.log 2>&1
-Icon=bindless-vk
-Keywords=gpu;vulkan;demo;
-Categories=Benchmark;
