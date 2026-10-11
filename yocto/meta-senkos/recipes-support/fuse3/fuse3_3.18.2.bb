@@ -1,6 +1,6 @@
-SUMMARY = "libfuse 3: the library squashfuse serves ports' layers with (portrun)"
-# Only the library: no fusermount3. portrun mounts /dev/fuse itself in the port's user
-# namespace and hands squashfuse the fd, so nothing setuid is needed.
+SUMMARY = "libfuse 3: the library squashfuse serves squashfs images with"
+# Only the library: no fusermount3. Whoever runs squashfuse mounts /dev/fuse itself in a user
+# namespace and hands it the fd, so nothing setuid is needed.
 LICENSE = "LGPL-2.1-only"
 LIC_FILES_CHKSUM = "file://LGPL2.txt;md5=4fbd65380cdd255951079008b364516c"
 SRC_URI = "https://github.com/libfuse/libfuse/releases/download/fuse-${PV}/fuse-${PV}.tar.gz"

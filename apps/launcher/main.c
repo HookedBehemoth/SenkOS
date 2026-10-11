@@ -5,15 +5,14 @@
  * (shutdown sends SIGTERM) is shown again at start.
  *
  * D-pad moves (left/right past the edge, or L1/R1, change page), A launches,
- * Start or Menu opens the quick menu (Store, Settings, Power, Sleep, Reboot, Power off), Select on a game picks
- * its core and its title and box art (any of its pack's games), on a port its readme or its page in the
- * store. The focused tile's or row's text scrolls when it doesn't fit. Power: home's clocks and the backlight
+ * Start or Menu opens the quick menu (Settings, Power, Sleep, Reboot, Power off), Select on a game picks
+ * its core and its title and box art (any of its pack's games). The focused tile's or row's text scrolls when it doesn't fit. Power: home's clocks and the backlight
  * (power.h). Settings: Storage, Wi-Fi, Time, Updates, Licenses. Wi-Fi: on or off, the networks
  * (wifi.h), a password typed on the on-screen keyboard (keyboard.h). Time (clock.h): the zone,
  * guessed or picked; NTP, or the date and time by hand. Updates: a newer system
  * from the server, downloaded into the other slot by downloadd (updates.h); once up, the
  * launcher tells sysd ("up"), which commits a slot on trial and turns Wi-Fi on if it was. "reload" on the FIFO (downloadd,
- * a port came or went) reads the page again. Storage: Libraries adds folders on the other card to systems
+ * a game pack came) reads the page again. Storage: Libraries adds folders on the other card to systems
  * (their games join the system's page while the card is in), and what a PC
  * gets over USB (`usb`: MTP or SMB). Licenses: what the image holds,
  * and each one's texts to scroll through (licenses.h).
@@ -33,7 +32,7 @@
  * A third, "perf", is the performance overlay (perf.h), in a corner; Settings > Debug and every
  * app's pause menu (Settings > Debug) toggle it, its metrics and its corner.
  *
- * `launcher launch PATH` (a port's folder, a ROM, an executable) starts that
+ * `launcher launch PATH` (an app's folder, a ROM, an executable) starts that
  * app as A on its tile does: through /run/launcher (a desktop: $XDG_RUNTIME_DIR/launcher), a FIFO the
  * running launcher reads. Only at home: the app owns the screen and the pad
  * until it exits or Menu pauses it.
@@ -95,9 +94,6 @@ enum { SPLASH_PX = 256 };
 enum { PERF_W = 200, PERF_TEXT = 14, PERF_LINE = 17 };
 enum { LICENSE_TEXT = 16 };
 
-/* portrun's state for each port (docs/ports.md) */
-#define PORT_STATE "/data/OS/saves/ports"
-
 /* The system's palette (ui.h) */
 #define BG ui_pal.bg
 #define FG ui_pal.fg
@@ -127,9 +123,9 @@ enum { LICENSE_TEXT = 16 };
 /* HEADER: a section's title, not a row to choose */
 enum { RUN_COMMAND, RESUME, RESTART, SAVE_STATE, LOAD_STATE, SETTINGS, HOME, QUIT, DISMISS, IGNORE, PICK_CORE,
        STORAGE, BROWSE, BROWSE_OPEN, TOGGLE_SYSTEM, POWER, LICENSES_OPEN, LICENSE_OPEN,
-       WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING, PORT_README, PORT_STORE,
+       WIFI, WIFI_PICK, UPDATES, UPDATE_CHECK, UPDATE_INSTALL, NOTHING,
        SYSTEM_SETTINGS, HOME_POWER, HEADER, ZONES, ZONE_AUTO, ZONE_REGION, ZONE_PICK, NTP, CLOCK, TIME, DEBUG, SSH, SSH_EVERYWHERE,
-       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, PERF, PERF_CORNER, MATCH, MATCH_SEARCH, MATCH_PICK, CONFIRM,
+       SLEEP_LIGHT, DEEP_SLEEP, LIGHT_MODE, PERF, PERF_CORNER, MATCH, MATCH_SEARCH, MATCH_PICK, CONFIRM, GET_PACK,
        SETTINGS_LIST };
 typedef struct {
   str label;
@@ -169,7 +165,6 @@ static const entry settings_entries[] = {
 static str button_names[APPCTL_BUTTONS], category_names[DEBUG_PAGE + 1];
 /* sysd does them: the launcher runs unprivileged */
 static const entry system_entries[] = {
-    {.label = S("Store"), .command = S("store"), .action = RUN_COMMAND, .icon = ICON_SHOPPING_BAG},
     {.label = S("Settings"), .action = SYSTEM_SETTINGS, .icon = ICON_COG},
     {.label = S("Power"), .action = HOME_POWER, .icon = ICON_ZAP},
     {.label = S("Sleep"), .command = S("suspend"), .action = POWER, .icon = ICON_MOON},
@@ -177,7 +172,7 @@ static const entry system_entries[] = {
     {.label = S("Power off"), .command = S("poweroff"), .action = POWER, .icon = ICON_POWER},
 };
 /* Sleep, Reboot, Power off: the power key held */
-static const entry *const power_entries = system_entries + 3;
+static const entry *const power_entries = system_entries + 2;
 enum { POWER_ENTRIES = 3 };
 /* Power's key at home (power.h): apps' are paths and commands */
 #define HOME_KEY S("home")
@@ -303,13 +298,12 @@ static struct {
 } failure;
 /* Over home: the quick menu, or Select on a game: which core runs it, its title and box art. Instead of home: Storage, Libraries, and a
  * folder's systems; Licenses, and one's texts. */
-enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_PORT, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS, MODAL_LICENSES,
-       MODAL_LICENSE, MODAL_WIFI, MODAL_KEYBOARD, MODAL_UPDATES, MODAL_README, MODAL_SETTINGS, MODAL_POWER,
+enum { MODAL_NONE, MODAL_MENU, MODAL_CORES, MODAL_STORAGE, MODAL_BROWSE, MODAL_SYSTEMS, MODAL_LICENSES,
+       MODAL_LICENSE, MODAL_WIFI, MODAL_KEYBOARD, MODAL_UPDATES, MODAL_SETTINGS, MODAL_POWER,
        MODAL_ZONES, MODAL_ZONE, MODAL_CLOCK, MODAL_TIME, MODAL_DEBUG, MODAL_MATCH };
 static struct {
   int kind;
-  STRBUF(512) rom; /* MODAL_CORES, MODAL_MATCH: the game's arg, as a rescan reorders; MODAL_PORT, MODAL_README: its folder */
-  STRBUF(64) name; /* MODAL_PORT, MODAL_README: the port's */
+  STRBUF(512) rom; /* MODAL_CORES, MODAL_MATCH: the game's arg, as a rescan reorders */
   nav_id back;
 } modal;
 /* The tile focused on the page, the row in the last menu; -1: none */
@@ -441,8 +435,7 @@ static void drop_backdrop(void) {
   gfx_release(&backdrop);
 }
 
-/* What a new app shows until its window takes the focus: a port's splash, else the app's icon,
- * over this line (none: not shown) */
+/* What a new app shows until its window takes the focus: its icon, over this line (none: not shown) */
 static str starting;
 /* The image to show for it */
 static STRBUF(600) starting_image;
@@ -462,7 +455,7 @@ static void go_home(nav *ui) {
   nav_focus(ui, home_focus);
 }
 
-/* Its power settings' key: the ROM, else the port's folder, else the command */
+/* Its power settings' key: the ROM, else the app's folder, else the command */
 static str power_key(const running *r) {
   return r->arg.n > 0 ? sb_str(r->arg) : r->dir.n > 0 ? sb_str(r->dir) : sb_str(r->exec);
 }
@@ -475,22 +468,6 @@ static void hand_over(nav *ui, running *r) {
   paused = settings_list = in_settings = false;
   set_listening(false);
   grab(false);
-}
-
-/* A port that runs its [Setup] or [Patch] first: portrun hasn't left its setup.done yet */
-static bool first_start(str dir) {
-  STRBUF(600) path;
-  sb_set(path, dir, S("/port.ini"));
-  const str text = str_read(fopen(path.p, "r"));
-  if (text.p == NULL)
-    return false;
-  bool setup = false;
-  cfg_reader r = cfg_init(text);
-  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;)
-    setup |= e == CFG_VALUE && (str_eq(r.section, S("Setup")) || str_eq(r.section, S("Patch")));
-  free((char *)text.p);
-  const str id = str_at(dir, str_rfind(dir, '/') + 1);
-  return setup && sb_set(path, S(PORT_STATE "/"), id, S("/setup.done")) && access(path.p, F_OK) != 0;
 }
 
 /* The same app again comes back instead of starting twice (two of a game
@@ -508,10 +485,8 @@ static void start(nav *ui, str label, str icon, str exec, str arg, str dir, unsi
     return;
   r->flags = flags;
   hand_over(ui, r);
-  starting = first_start(dir) ? S("Running initial setup\u2026") : S("Loading\u2026");
-  sb_set(starting_image, dir, S("/splash.png"));
-  if (dir.n == 0 || access(starting_image.p, F_OK) != 0)
-    sb_set(starting_image, icon);
+  starting = S("Loading\u2026");
+  sb_set(starting_image, icon);
 }
 
 /* Paused first, so the frame blurred is the one it stays on. Menu has been
@@ -1125,7 +1100,7 @@ static app *picked_game(category *c) {
 }
 
 /* Select on a game: its system's cores when there's a choice, the one it runs with checked;
- * its title and box art when its system has a pack */
+ * its title and box art when its system has a pack, or the pack's download when it isn't on the card */
 static const entry *game_dialog(nav *ui, int w, int h, category *c) {
   static entry rows[CORES_MAX + 1];
   const app *a = picked_game(c);
@@ -1137,9 +1112,15 @@ static const entry *game_dialog(nav *ui, int w, int h, category *c) {
   for (size_t i = 0; c->core_count > 1 && i < c->core_count; i++)
     rows[n++] = (entry){.label = sb_str(c->cores[i].name), .action = PICK_CORE, .icon = ICON_GAMEPAD_2,
                         .category = (int)i, .checked = (int)i == a->core};
-  if (c->pack.n > 0)
+  const bool have_pack = c->pack.n > 0 && access(apps_pack(c).p, F_OK) == 0;
+  if (have_pack)
     rows[n++] = (entry){.label = S("Title and box art"), .action = MATCH, .icon = ICON_IMAGE};
-  return dialog_box(ui, w, h, sb_str(a->name), c->core_count > 1 ? S("Run with") : S(""), rows, n);
+  else if (c->pack.n > 0)
+    rows[n++] = (entry){.label = S("Download box art"), .action = GET_PACK, .icon = ICON_DOWNLOAD};
+  const str text = c->core_count > 1 ? S("Run with")
+                   : c->pack.n > 0 && !have_pack ? S("This system's titles and box art aren't on the card.")
+                                                 : S("");
+  return dialog_box(ui, w, h, sb_str(a->name), text, rows, n);
 }
 
 /* MODAL_MATCH: the pack's games that the game (modal.rom) may be, for its title and box art;
@@ -1181,18 +1162,6 @@ static void match_open(nav *ui, size_t category) {
   match_find(ui, dot > 0 ? str_head(name, dot) : name);
 }
 
-/* Select on a port: its readme, its page in the store */
-static const entry *port_dialog(nav *ui, int w, int h) {
-  static entry rows[2];
-  size_t n = 0;
-  STRBUF(600) md;
-  sb_set(md, sb_str(modal.rom), S("/port.md"));
-  if (access(md.p, F_OK) == 0)
-    rows[n++] = (entry){.label = S("Readme"), .action = PORT_README, .icon = ICON_BOOK_OPEN};
-  rows[n++] = (entry){.label = S("Store page"), .action = PORT_STORE, .icon = ICON_SHOPPING_BAG};
-  return dialog_box(ui, w, h, sb_str(modal.name), S(""), rows, n);
-}
-
 /* Libraries: the card's partitions (where sdcard.rules mounts them)
  * and every source at the top, browse_dir "", then a folder's folders. B goes
  * up. */
@@ -1209,7 +1178,7 @@ static STRBUF(256) pick_path;
 static nav_id pick_back;
 
 /* A partition by its label (udev's links), else its name.
- * ponytail: udev writes a space in a label as \x20; shown as is. */
+ * Udev writes a space in a label as \x20; shown as is. */
 static str card_label(str dev) {
   static STRBUF(64) label;
   sb_set(label, dev);
@@ -1256,7 +1225,7 @@ static void browse_add(str path, str name) {
   }
 }
 
-/* ponytail: BROWSE_MAX rows; a folder with more wants a virtual list */
+/* BROWSE_MAX rows; a folder with more wants a virtual list */
 static void browse(nav *ui, str dir) {
   sb_set(browse_dir, dir);
   browse_count = 0;
@@ -1315,41 +1284,6 @@ static void license_screen(nav *ui, ui_rect view) {
     if (y >= view.y + view.h)
       break;
     ui_text(LICENSE_TEXT, (int)view.x + MARGIN * 2, (int)y, lines[i], FG);
-  }
-  gfx_noclip();
-  nav_scroll_end(ui);
-}
-
-/* MODAL_README: the port's port.md as text, wrapped to the width it was last shown at */
-static str readme_text;
-static ui_lines readme_lines;
-static float readme_width;
-
-static void readme_load(void) {
-  STRBUF(600) path;
-  sb_set(path, sb_str(modal.rom), S("/port.md"));
-  const str md = str_read(fopen(path.p, "r"));
-  free((char *)readme_text.p);
-  readme_text = md.p != NULL ? ui_markdown(md) : (str){0};
-  free((char *)md.p);
-  readme_width = 0;
-}
-
-static void readme_screen(nav *ui, ui_rect view) {
-  if (readme_width != view.w) {
-    readme_width = view.w;
-    readme_lines.count = 0;
-    ui_wrap_text(&readme_lines, readme_text, LICENSE_TEXT, view.w - MARGIN * 4);
-  }
-  const int line = ui_text_height(LICENSE_TEXT) + 2;
-  const float offset = nav_scroll_begin(ui, nav_str("readme"), view, UI_VERTICAL,
-                                        readme_lines.count * line + MARGIN * 2, 0, line);
-  gfx_clip(view.x, view.y, view.w, view.h);
-  for (size_t i = (size_t)MAX(0, (offset - MARGIN) / line); i < readme_lines.count; i++) {
-    const float y = view.y + MARGIN + i * line - offset;
-    if (y >= view.y + view.h)
-      break;
-    ui_text(LICENSE_TEXT, (int)view.x + MARGIN * 2, (int)y, readme_lines.lines[i], FG);
   }
   gfx_noclip();
   nav_scroll_end(ui);
@@ -1634,11 +1568,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
   } else if (modal.kind == MODAL_LICENSE) {
     top_bar(w, licenses[license_shown].name, st);
     license_screen(ui, list);
-    hint = S("Left, right: page");
-  } else if (modal.kind == MODAL_README) {
-    top_bar(w, sb_str(modal.name), st);
-    readme_screen(ui, list);
-    hint = S("Left, right: page");
+    hint = S("");
   } else if (modal.kind == MODAL_WIFI) {
     top_bar(w, S("Wi-Fi"), st);
     const bool on = wifi_on();
@@ -1730,7 +1660,7 @@ static const entry *folders_screen(nav *ui, int w, int h, ui_rect view, const st
   } else if (modal.kind == MODAL_POWER) {
     top_bar(w, S("Power"), st);
     NAV_SCOPE(ui, nav_str("home power")) { power_page(ui, list, false); }
-    hint = S("Left, right: change");
+    hint = S("");
   } else if (modal.kind == MODAL_ZONES) {
     top_bar(w, S("Time zone"), st);
     const str *regions;
@@ -1802,24 +1732,6 @@ static void turn_page(size_t *page, int by) {
 
 /* Reaped and forgotten; if it had the screen, home again. Ending badly
  * shows the dialog, unless the app is on the ignore list. */
-/* A port's [Port] Instructions (docs/ports.md), until the next call */
-static bool port_instructions(const char *ini, str *out) {
-  static STRBUF(640) text;
-  const str file = str_read(fopen(ini, "r"));
-  if (file.p == NULL)
-    return false;
-  sb_set(text, S(""));
-  cfg_reader r = cfg_init(file);
-  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;)
-    if (e == CFG_VALUE && str_eq(r.section, S("Port")) && str_eq(r.key, S("Instructions")))
-      sb_set(text, r.value);
-  free((char *)file.p);
-  if (text.n == 0)
-    sb_set(text, S("Its files aren't there yet: see its port.md."));
-  *out = sb_str(text);
-  return true;
-}
-
 static void app_exited(nav *ui, running *r, size_t *page) {
   const bool had_screen = r == front;
   if (had_screen && paused)
@@ -1830,18 +1742,12 @@ static void app_exited(nav *ui, running *r, size_t *page) {
   /* Tabs: no field has one. One line, for the ignore list. */
   sb_set(key, sb_str(r->dir), S("\t"), sb_str(r->exec), S("\t"), sb_str(r->arg));
   key.p[key.n = str_find(sb_str(key), '\n')] = '\0';
-  STRBUF(sizeof(r->dir.p) + 16) ini;
-  sb_set(ini, sb_str(r->dir), S("/port.ini"));
   str why;
   const bool ok = run_forget(r, &why);
   if (had_screen)
     go_home(ui);
   STRBUF(96) title;
-  if (str_eq(why, S("exited with status 3")) && port_instructions(ini.p, &why)) {
-    /* portrun: files it Needs aren't there. Always said, never ignored. */
-    sb_set(title, sb_str(label), S(" needs files"));
-    show_failure(ui, FAIL_LAUNCH, sb_str(title), why, S(""));
-  } else if (!ok && !ignored(sb_str(key))) {
+  if (!ok && !ignored(sb_str(key))) {
     sb_set(title, sb_str(label), S(" stopped"));
     show_failure(ui, FAIL_LAUNCH, sb_str(title), why, sb_str(key));
   }
@@ -1991,6 +1897,7 @@ static bool input(nav *ui, int why, int value, size_t *page) {
   case UI_HASHED: rescan(*page); return true;
   case UI_LAUNCH: launch_path(ui); return true;
   case UI_RELOAD:
+    romdb_retry();
     apps_cores();
     rescan(*page);
     return true;
@@ -2019,6 +1926,22 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     down = value & 1;
     pad = why == UI_BUTTON;
     break;
+  case UI_UPDATES: {
+    STRBUF(256) said = {0};
+    pthread_mutex_lock(&updates_lock);
+    const str news = sb_str(updates.pack_news);
+    if (str_eq(news, S("downloading")))
+      sb_set(said, S("Downloading box art"));
+    else if (str_eq(news, S("done")))
+      sb_set(said, S("Box art downloaded"));
+    else if (str_eq(news, S("failed")))
+      sb_set(said, S("No box art: "), without_url(sb_str(updates.pack_why)));
+    updates.pack_news.n = 0;
+    pthread_mutex_unlock(&updates_lock);
+    if (said.n > 0)
+      show_text(sb_str(said), RESULT_MS);
+    return true;
+  }
   case UI_CONFIGURED:
   case UI_DONE: ui_scheme(); return true;
   default: return true; /* UI_LOADED */
@@ -2141,7 +2064,7 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     return true;
   }
   /* Nothing to focus: the text scrolls, by lines or by pages */
-  if ((modal.kind == MODAL_LICENSE || (modal.kind == MODAL_README && button != APPCTL_B)) && !paused) {
+  if (modal.kind == MODAL_LICENSE && !paused) {
     const int page_lines = (window.h - BAR - ROW * 2) / (ui_text_height(LICENSE_TEXT) + 2);
     switch (button) {
     case APPCTL_UP: nav_step(ui, -1); break;
@@ -2208,21 +2131,6 @@ static bool input(nav *ui, int why, int value, size_t *page) {
     modal.back = ui->focus;
     nav_focus(ui, 0);
     return true;
-  }
-  /* Select on a port: its readme, its store page */
-  if (button == APPCTL_SELECT && !paused && !dialog && *page >= 1 && tiles_focus >= 0 &&
-      (size_t)tiles_focus < categories[*page - 1].count) {
-    const app *a = &categories[*page - 1].apps[tiles_focus];
-    STRBUF(600) ini;
-    sb_set(ini, sb_str(a->dir), S("/port.ini"));
-    if (a->dir.n > 0 && access(ini.p, F_OK) == 0) {
-      modal.kind = MODAL_PORT;
-      modal.back = ui->focus;
-      sb_set(modal.rom, sb_str(a->dir));
-      sb_set(modal.name, sb_str(a->name));
-      nav_focus(ui, 0);
-      return true;
-    }
   }
   /* Select on a game: which core runs it, when there's a choice; its title and box art */
   if (button == APPCTL_SELECT && !paused && !dialog && *page >= 1 && tiles_focus >= 0 &&
@@ -2622,8 +2530,6 @@ int main(int argc, char **argv) {
         NAV_SCOPE(&ui, nav_str("start")) {
           chosen = dialog_box(&ui, w, h, S(""), S(""), system_entries, COUNTOF(system_entries));
         }
-      if (modal.kind == MODAL_PORT)
-        NAV_SCOPE(&ui, nav_str("port")) { chosen = port_dialog(&ui, w, h); }
       if (modal.kind == MODAL_CORES && page >= 1)
         NAV_SCOPE(&ui, nav_str("cores")) { chosen = game_dialog(&ui, w, h, &categories[page - 1]); }
       nav_set_inert(&ui, power_menu.shown);
@@ -2717,6 +2623,12 @@ int main(int argc, char **argv) {
       break;
     }
     case MATCH: match_open(&ui, page - 1); break;
+    case GET_PACK:
+      if (page >= 1)
+        updates_pack(sb_str(categories[page - 1].pack));
+      modal.kind = MODAL_NONE;
+      nav_focus(&ui, modal.back);
+      break;
     /* From what was looked for last: the file's name, or what was typed */
     case MATCH_SEARCH:
       keyboard_open(sb_str(match.query));
@@ -2819,18 +2731,6 @@ int main(int argc, char **argv) {
       break;
     case UPDATE_CHECK: updates_check(); break;
     case UPDATE_INSTALL: updates_install(); break;
-    case PORT_README:
-      readme_load();
-      modal.kind = MODAL_README;
-      nav_forget(&ui, nav_str("readme"));
-      break;
-    case PORT_STORE: {
-      const str dir = sb_str(modal.rom), id = str_at(dir, str_rfind(dir, '/') + 1);
-      modal.kind = MODAL_NONE;
-      nav_focus(&ui, modal.back);
-      start(&ui, S("Store"), S(""), S("store \"$1\""), id, S(""), 0);
-      break;
-    }
     case LICENSES_OPEN:
       licenses_load();
       modal.kind = MODAL_LICENSES;

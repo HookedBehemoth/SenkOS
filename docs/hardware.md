@@ -11,7 +11,7 @@
 | Display | 3.5" 640x480 IPS, parallel RGB, initialised over SPI. Two panel revisions ("v2 panel" on newer units), strapped on PE6 ([straps.md](straps.md)) | `panel-mipi-dpi-spi`, init sequence built into the kernel; one dtb per panel |
 | HDMI | mini-HDMI | DW HDMI + HDMI audio |
 | Audio | SoC codec, speaker amp on Line Out, headphone jack | `H616 Audio Codec` |
-| Wi-Fi/BT | Realtek **RTL8821CS**, SDIO + BT over UART | `rtw88_8821cs`, `btrtl` (firmware built in) |
+| Wi-Fi/BT | Realtek **RTL8821CS**, SDIO + BT over UART | `rtl8821cs` (vendor), `btrtl` (firmware built in) |
 | Storage | No eMMC or SPI flash. TF1 boots, TF2 has card detect | TF1 `mmcblk0`, TF2 `mmcblk1` |
 | Lid | Hall sensor on a SoC GPIO | `SW_LID` (gpio-keys) |
 | Buttons | D-pad, A/B/X/Y, L1/R1/L2/R2, Select/Start/Menu, volume; no sticks | `gpio-keys-gamepad`, `gpio-keys-volume` |

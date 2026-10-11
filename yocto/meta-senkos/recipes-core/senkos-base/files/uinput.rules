@@ -1,2 +1,2 @@
-# portrun maps the pad to keys and mouse for ports ([Keys]) as the player, who is in input
+# Games mapping the pad to keys and mouse do it as the player, who is in input
 KERNEL=="uinput", GROUP="input", MODE="0660"

@@ -1,5 +1,5 @@
 SUMMARY = "SDL2 graphics primitives, rotozoomer, framerate control and image filters"
-DESCRIPTION = "Part of the ports' platform (docs/ports.md): binaries built against Debian's libSDL2_gfx-1.0.so.0."
+DESCRIPTION = "Part of the games' platform: binaries built against Debian's libSDL2_gfx-1.0.so.0."
 HOMEPAGE = "https://www.ferzkopp.net/wordpress/2016/01/02/sdl_gfx-sdl2_gfx/"
 SECTION = "libs"
 LICENSE = "Zlib"

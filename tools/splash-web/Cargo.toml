@@ -1,0 +1,18 @@
+[package]
+name = "senkos-splash-web"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lz4 = "1.28.1"
+zip = { version = "2.4", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

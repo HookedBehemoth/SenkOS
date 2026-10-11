@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup and files — SenkOS</title>
+<meta name="description" content="Install SenkOS and add ROMs, saves, emulators and apps.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+<p class="links"><a href="/">← SenkOS home</a></p>
+<h1>Setup and files</h1>
+<nav aria-label="On this page"><a href="#install">Install</a><a href="#files">Games &amp; saves</a><a href="#emulators">Systems &amp; emulators</a><a href="#apps">Native apps</a><a href="#splash">Splash screen</a></nav>
+
+<h2 id="install">Install</h2>
+<ol class="steps">
+  <li>Download the <a href="/download/rg35xx-sp">RG35XX SP image</a>.</li>
+  <li>Flash it to a microSD card with <a href="https://etcher.balena.io/">balenaEtcher</a> or <a href="https://www.raspberrypi.com/software/">Raspberry Pi Imager</a> on Windows, macOS or Linux. Select the downloaded image and your card. On Linux, you can also run:
+    <pre><code>gunzip -c senkos-image.wic.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync</code></pre>
+    Replace <code>/dev/sdX</code> with your SD card device.
+  </li>
+  <li>Put the card in <strong>TF1</strong> and boot the handheld.</li>
+</ol>
+
+<h2 id="files">Games and saves</h2>
+<p>Connect the running handheld to your computer by USB-C. On Windows, open <strong>RG35XX-SP → Main card</strong> in File Explorer (handheld: <strong>Settings → Storage → USB connection → MTP</strong>). On macOS or Linux, select <strong>SMB</strong> in Storage and connect to <code>smb://10.55.0.1/Main%20card</code>. In <strong>Main card</strong>, create a ROM folder if needed; GBA games go in <code>roms/gba/</code>.</p>
+<table class="file-table">
+  <thead><tr><th>Folder</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td><code>roms/&lt;system&gt;/</code></td><td>ROMs</td></tr>
+    <tr><td><code>OS/assets/emulator/</code></td><td>BIOS files</td></tr>
+    <tr><td><code>OS/saves/&lt;core&gt;/</code></td><td>Saves and save states</td></tr>
+  </tbody>
+</table>
+<p>To import a save, put a matching <code>.srm</code> or <code>.sav</code> next to the ROM before playing it. SenkOS reads that file and writes later changes to <code>OS/saves/&lt;core&gt;/</code>. Back up both locations if you imported a save.</p>
+
+<h2 id="emulators">Add systems and emulators</h2>
+<p>Built-in systems only need a ROM folder. To add an emulator, put a Linux ARM64 libretro core at <code>apps/emulators/my-core/my-core_libretro.so</code> and create <code>apps/emulators/my-core.desktop</code>:</p>
+<pre><code>[Desktop Entry]
+Type=Application
+Name=My GBA core
+Exec=corehost /data/apps/emulators/my-core/my-core_libretro.so %f
+MimeType=application/x-gba-rom;</code></pre>
+<p>This adds an emulator to Game Boy Advance. Press <strong>Select</strong> on a game to switch emulators.</p>
+
+<h3>Add a system</h3>
+<p>Create <code>apps/systems/example.system</code>:</p>
+<pre><code>[System]
+Name=Example Console
+Folder=roms/example
+Patterns=*.rom;*.zip;
+MimeType=application/x-example-rom;</code></pre>
+<p>Create <code>roms/example/</code> and an emulator entry like the one above, using <code>MimeType=application/x-example-rom;</code> in both files. Set <code>Exec</code> to a compatible core or native emulator; <code>%f</code> passes it the ROM. Restart after adding a system.</p>
+
+<h2 id="apps">Add a native app or game</h2>
+<p>Copy a Linux ARM64 program to <code>apps/applications/my-game/game</code> and create <code>apps/applications/my-game.desktop</code>:</p>
+<pre><code>[Desktop Entry]
+Type=Application
+Name=My Game
+Exec=/data/apps/applications/my-game/game
+Path=/data/apps/applications/my-game</code></pre>
+<p>It appears under <strong>Applications</strong>.</p>
+
+<h2 id="splash">Replace the splash screen</h2>
+<p>Choose an image and background color in the <a href="/splash.html">splash screen maker</a>. Power off the handheld and put its TF1 card in your computer. Extract the download onto the <strong>boot</strong> partition, then put the card back and boot.</p>
+
+<footer><a href="/">SenkOS home</a> · <a href="/releases">All releases</a> · <a href="https://github.com/HookedBehemoth/SenkOS">Source on GitHub</a></footer>
+</main>
+</body>
+</html>

@@ -29,8 +29,7 @@ fi
 # `ab suspend`-style callers must stop this first (SIGTERM = magic close).
 watchdog -T 16 -t 4 /dev/watchdog
 
-# Swap in compressed RAM, half of it: games that want more than the 1 GB (ports bring no swap of
-# their own, docs/ports.md)
+# Swap in compressed RAM, half of it: for games that want more than the 1 GB
 if [ -e /sys/block/zram0 ]; then
 	echo lz4 > /sys/block/zram0/comp_algorithm
 	echo $(($(sed -n 's/^MemTotal: *\([0-9]*\).*/\1/p' /proc/meminfo) / 2))K > /sys/block/zram0/disksize

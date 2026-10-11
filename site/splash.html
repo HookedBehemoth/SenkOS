@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splash screen maker — SenkOS</title>
+<meta name="description" content="Make a custom SenkOS boot splash from your image.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+<p class="links"><a href="/guide.html#splash">← Guide</a></p>
+<h1>Splash screen maker</h1>
+<p>Choose an image and background color. Preview it, then download the splash.</p>
+<form class="splash-form" id="splash-form">
+  <label for="splash-image">Image</label>
+  <input id="splash-image" name="image" type="file" accept="image/png,image/jpeg,image/webp" required>
+  <label for="splash-color">Background</label>
+  <input id="splash-color" name="color" type="color" value="#141418">
+  <button class="button" type="submit">Download splash</button>
+</form>
+<canvas id="splash-preview" width="640" height="480" hidden aria-label="Splash preview"></canvas>
+<p id="splash-status" role="status" aria-live="polite"></p>
+<p>Extract the download onto the <strong>boot</strong> partition of the TF1 card.</p>
+<footer><a href="/guide.html#splash">Guide</a> · <a href="/">SenkOS home</a></footer>
+</main>
+<script type="module" src="/splash.js"></script>
+</body>
+</html>

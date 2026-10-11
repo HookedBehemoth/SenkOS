@@ -48,7 +48,17 @@ static void line(str l) {
       updates.check = UPDATE_FAILED;
       sb_set(updates.notes, l);
     }
-  } else if (str_eq(what, S("job")) && str_eq(str_cut(&l, ' '), S("os"))) {
+    return;
+  }
+  if (!str_eq(what, S("job")))
+    return;
+  const str id = str_cut(&l, ' ');
+  if (id.n > 5 && memcmp(id.p, "pack:", 5) == 0) {
+    sb_set(updates.pack_news, str_cut(&l, ' '));
+    str_cut(&l, ' ');
+    str_cut(&l, ' ');
+    sb_set(updates.pack_why, l);
+  } else if (str_eq(id, S("os"))) {
     const str state = str_cut(&l, ' ');
     sb_set(updates.job_state, state);
     updates.done = strtoull(str_cut(&l, ' ').p, NULL, 10);
@@ -58,6 +68,16 @@ static void line(str l) {
                   : str_eq(state, S("failed")) || str_eq(state, S("canceled")) ? UPDATE_IDLE
                                                                                      : UPDATE_RUNNING;
   }
+}
+
+static void ask(const char *request, size_t n);
+
+/* Under updates_lock */
+static void ask_pack(void) {
+  STRBUF(128) request;
+  sb_set(request, S("pack "), sb_str(updates.pack), S("\n"));
+  ask(request.p, request.n);
+  updates.pack.n = 0;
 }
 
 static void *thread(void *arg) {
@@ -77,6 +97,8 @@ static void *thread(void *arg) {
     /* Asked before it was there */
     if (updates.check == UPDATE_CHECKING && write(fd, "check\n", 6) != 6)
       updates.check = UPDATE_FAILED;
+    if (updates.pack.n > 0)
+      ask_pack();
     pthread_mutex_unlock(&updates_lock);
     win_wake(UI_UPDATES, 0);
     char buf[2048];
@@ -130,5 +152,14 @@ void updates_install(void) {
   updates.job = UPDATE_RUNNING;
   sb_set(updates.job_state, S("queued"));
   ask("update\n", 7);
+  pthread_mutex_unlock(&updates_lock);
+}
+
+void updates_pack(str name) {
+  start();
+  pthread_mutex_lock(&updates_lock);
+  sb_set(updates.pack, name);
+  if (fd >= 0)
+    ask_pack();
   pthread_mutex_unlock(&updates_lock);
 }

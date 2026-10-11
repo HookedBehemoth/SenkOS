@@ -11,3 +11,5 @@ testdata/
 *.jpg
 *.png
 *.lz4
+__pycache__
+*.pyc

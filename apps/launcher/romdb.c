@@ -72,6 +72,16 @@ static const header *open_pack(str path, size_t *size) {
   return (const header *)p->map;
 }
 
+void romdb_retry(void) {
+  size_t n = 0;
+  for (size_t i = 0; i < pack_count; i++)
+    if (packs[i].map != NULL)
+      packs[n++] = packs[i];
+    else
+      free((char *)packs[i].path.p);
+  pack_count = n;
+}
+
 static int by_crc(const void *key, const void *element) {
   const uint32_t a = *(const uint32_t *)key, b = *(const uint32_t *)element;
   return a < b ? -1 : a > b;
@@ -138,7 +148,7 @@ static int by_score(const hit *x, const hit *y) {
   return x->score != y->score ? y->score - x->score : strcasecmp(x->title, y->title);
 }
 
-/* ponytail: every record scored, a few thousand words; an index if packs grow past ~100k */
+/* Every record scored, a few thousand words; an index if packs grow past ~100k */
 size_t romdb_search(str path, str query, uint32_t *crcs, size_t max) {
   size_t size;
   const header *h = open_pack(path, &size);
@@ -239,7 +249,7 @@ static rom *remember(str path) {
 }
 
 /* A zip's first file, from the central directory: nothing is inflated.
- * ponytail: the first entry only; multi-file zips would want the largest. */
+ * The first entry only; multi-file zips would want the largest. */
 static bool zip_crc(FILE *f, uint32_t *crc) {
   uint8_t tail[65536 + 22];
   if (fseek(f, 0, SEEK_END) != 0)

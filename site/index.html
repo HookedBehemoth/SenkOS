@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SenkOS</title>
+<meta name="description" content="A small, fast-booting OS for Anbernic handhelds.">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+<h1>Senk<span>OS</span></h1>
+<p class="lead">A fast Linux OS for RG35XX SP with emulators, native games and video playback.</p>
+<p class="links"><a href="/guide.html">Guide</a> · <a href="https://github.com/HookedBehemoth/SenkOS">GitHub</a> · <a href="https://discord.gg/JgN9gedHHQ">Discord</a></p>
+
+<h2>Download</h2>
+<div class="devices">
+  <div class="card device">
+    <h3>RG35XX SP</h3>
+    <a class="button" href="/download/rg35xx-sp">Download</a>
+    <p class="small"><a href="/releases">All releases</a></p>
+  </div>
+  <div class="card device soon">
+    <h3>Other devices</h3>
+    <p class="small">Coming soon.</p>
+  </div>
+</div>
+
+<h2>Screenshots</h2>
+<div class="shots">
+  <figure><img src="/shots/gba-dark.webp" alt="Game list with box art" width="640" height="480" loading="lazy"><figcaption>Game list</figcaption></figure>
+  <figure><img src="/shots/aos.webp" alt="Game running in an emulator" width="640" height="480" loading="lazy"><figcaption>Emulation</figcaption></figure>
+  <figure><img src="/shots/emu-settings.webp" alt="Emulator settings" width="640" height="480" loading="lazy"><figcaption>Emulator settings</figcaption></figure>
+  <figure><img src="/shots/bbb.webp" alt="Video in the media player" width="640" height="480" loading="lazy"><figcaption>Video player</figcaption></figure>
+  <figure><img src="/shots/menu.webp" alt="The quick menu" width="640" height="480" loading="lazy"><figcaption>The quick menu</figcaption></figure>
+  <figure><img src="/shots/settings.webp" alt="Settings, in light mode" width="640" height="480" loading="lazy"><figcaption>Settings, in light mode</figcaption></figure>
+</div>
+
+<h2>Features</h2>
+<ul class="features">
+  <li><strong>Systems:</strong>
+    <span class="system" title="mGBA" tabindex="0" aria-label="Game Boy Advance: mGBA">Game Boy Advance</span>,
+    <span class="system" title="Gambatte, mGBA" tabindex="0" aria-label="Game Boy: Gambatte, mGBA">Game Boy</span>,
+    <span class="system" title="Gambatte, mGBA" tabindex="0" aria-label="Game Boy Color: Gambatte, mGBA">Game Boy Color</span>,
+    <span class="system" title="FCEUmm" tabindex="0" aria-label="NES: FCEUmm">NES</span>,
+    <span class="system" title="Snes9x" tabindex="0" aria-label="SNES: Snes9x">SNES</span>,
+    <span class="system" title="Mupen64Plus-Next" tabindex="0" aria-label="Nintendo 64: Mupen64Plus-Next">Nintendo 64</span>,
+    <span class="system" title="Genesis Plus GX" tabindex="0" aria-label="Mega Drive: Genesis Plus GX">Mega Drive</span>,
+    <span class="system" title="Genesis Plus GX" tabindex="0" aria-label="Master System: Genesis Plus GX">Master System</span>,
+    <span class="system" title="Genesis Plus GX" tabindex="0" aria-label="Game Gear: Genesis Plus GX">Game Gear</span>,
+    <span class="system" title="Flycast, Flycast (Vulkan)" tabindex="0" aria-label="Dreamcast: Flycast, Flycast Vulkan">Dreamcast</span>,
+    <span class="system" title="Beetle PCE Fast" tabindex="0" aria-label="PC Engine: Beetle PCE Fast">PC Engine</span>,
+    <span class="system" title="PCSX ReARMed" tabindex="0" aria-label="PlayStation: PCSX ReARMed">PlayStation</span>,
+    <span class="system" title="PPSSPP, PPSSPP (Vulkan)" tabindex="0" aria-label="PSP: PPSSPP, PPSSPP Vulkan">PSP</span>,
+    <span class="system" title="FinalBurn Neo" tabindex="0" aria-label="Arcade: FinalBurn Neo">Arcade</span>,
+    <span class="system" title="Beetle NGP" tabindex="0" aria-label="Neo Geo Pocket: Beetle NGP">Neo Geo Pocket</span>,
+    <span class="system" title="Beetle WonderSwan" tabindex="0" aria-label="WonderSwan: Beetle WonderSwan">WonderSwan</span>,
+    <span class="system" title="Stella 2014" tabindex="0" aria-label="Atari 2600: Stella 2014">Atari 2600</span> and
+    <span class="system" title="Handy" tabindex="0" aria-label="Atari Lynx: Handy">Atari Lynx</span>.
+  </li>
+  <li><strong>Deep sleep:</strong> about 0.6% battery drain per hour, so it can last for days.</li>
+  <li><strong>Hardware video decoding</strong> for H.264, H.265, VP8, VP9 and MPEG-2.</li>
+  <li><a href="/packs">Box art packs</a> for game lists.</li>
+</ul>
+
+<h2>Credits</h2>
+<p>H700 board and suspend patches were adapted from <a href="https://github.com/ROCKNIX/distribution">ROCKNIX</a>; the suspend stub originated with <a href="https://github.com/kailashrs/H700_rocknix_enhancement">Kailash R S</a>. Cedrus video patches came from <a href="https://github.com/LibreELEC/LibreELEC.tv">LibreELEC</a>’s Allwinner work by Chen-Yu Tsai and Jernej Skrabec. Emulator cores come from <a href="https://github.com/libretro">libretro</a>.</p>
+
+<footer>SenkOS is not affiliated with Anbernic. Box art from <a href="https://github.com/libretro/libretro-thumbnails">libretro-thumbnails</a>,
+metadata from <a href="https://github.com/libretro/libretro-database">libretro-database</a>.
+<a href="https://peach.blender.org/">Big Buck Bunny</a> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</footer>
+</main>
+</body>
+</html>

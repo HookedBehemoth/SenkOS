@@ -1,4 +1,4 @@
-SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player, corehost, portrun, the store, downloadd, and common/ that they share"
+SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player, corehost, downloadd, and common/ that they share"
 # Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT. Listed so their
 # texts land in the image with ours (the launcher's Licenses screen).
 LICENSE = "AGPL-3.0-only & ISC & MIT"
@@ -16,7 +16,7 @@ inherit meson pkgconfig deploy
 # No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev).
 # common/ui: Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
 # launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys). mediaplayer: GStreamer.
-# downloadd: curl, zstd, OpenSSL's SHA-256. store: curl.
+# downloadd: curl, zstd, OpenSSL's SHA-256.
 # corehost: Vulkan, EGL (virtual/libgles2 for headers only, the functions come
 # from eglGetProcAddress), ALSA, zlib.
 DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
@@ -24,16 +24,11 @@ DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freet
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime
-PACKAGES =+ "launcher mediaplayer corehost portrun downloadd store"
+PACKAGES =+ "launcher mediaplayer corehost downloadd"
 FILES:launcher = "${bindir}/launcher"
-FILES:portrun = "${bindir}/portrun"
 FILES:downloadd = "${bindir}/downloadd"
-FILES:store = "${bindir}/store"
-# TLS: the CDN and the server
+# TLS: the server
 RDEPENDS:downloadd = "ca-certificates"
-RDEPENDS:store = "ca-certificates liberation-fonts"
-# The ports' layers (docs/ports.md)
-RDEPENDS:portrun = "squashfuse"
 FILES:mediaplayer = "${bindir}/mediaplayer"
 FILES:corehost = "${bindir}/corehost ${datadir}/corehost"
 # The image's fallback UI needs a font to find
@@ -49,7 +44,7 @@ RDEPENDS:mediaplayer = "liberation-fonts \
 
 # The bare binaries, for tools/deploy-launcher (and by hand) to copy to /data
 do_deploy() {
-    for app in launcher mediaplayer corehost portrun downloadd store; do
+    for app in launcher mediaplayer corehost downloadd; do
         install -m 0755 ${B}/$app/$app ${DEPLOYDIR}/$app
     done
 }

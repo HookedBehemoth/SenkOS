@@ -78,10 +78,6 @@ typedef struct {
 bool ui_wrap(ui_lines *out, str line, int px, float width);
 /* The same for each of the text's lines */
 bool ui_wrap_text(ui_lines *out, str text, int px, float width);
-/* A readme's Markdown as text to show (on the heap, free .p): headings, emphasis, code
- * marks, images and HTML go, links are their text, list items get bullets, table rows
- * their cells. */
-str ui_markdown(str md);
 
 /* The library's reasons to win_wake (win.h), then the app's own from
  * UI_WAKE_APP */

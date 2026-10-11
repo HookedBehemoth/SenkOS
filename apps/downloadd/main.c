@@ -1,38 +1,38 @@
 /*
- * downloadd: ports from the store and system updates, one at a time, for the
- * store and the launcher's Updates (root, started by senkos.init).
+ * downloadd: system updates and the launcher's game packs, one at a time (root, started by
+ * senkos.init).
  *
  * Clients talk lines over /run/downloadd.sock (root:player 0660):
  *
- *     install ID | remove ID | cancel ID      a port (install also updates it)
+ *     pack NAME                               a launcher game pack, a .system file's Pack
+ *                                             (job id "pack:NAME", its spaces as '_')
+ *     cancel ID                               a job
  *     check                                   is there a newer system?
  *     update                                  download it, write it to the other slot
  *
  * and every client hears about every job, all of them when it connects, and every check's answer:
  *
  *     job ID STATE DONE TOTAL [MESSAGE]       ID "os" for the system; STATE queued, downloading,
- *                                             installing, done, removed, failed, canceled;
+ *                                             installing, done, failed, canceled;
  *                                             DONE and TOTAL in bytes
  *     os available BUILD SIZE NOTES | os current | os failed MESSAGE
  *
- * A port is done when it's in /data/apps/ports/ID with its layers in /data/OS/layers; the
- * launcher then hears "reload" on its FIFO. The system update is done when the other slot holds
- * it, armed for the next boot (ab write, ab arm): rebooting finishes it, and the launcher commits
- * it once it's up.
+ * A pack is done when it's in /data/OS/assets/thumbnails; the launcher then hears "reload" on
+ * its FIFO. The system update is done when the other slot holds it, armed for the next boot
+ * (ab write, ab arm): rebooting finishes it, and the launcher commits it once it's up.
  *
  * The work is done by this same program run again, one process a job, which reports on stdout:
- * a port's as player (what it unpacks can't reach past the player's files), the system's as
- * root. The server and what's asked of it come from /etc/store ([Store] Server, Channel: root's,
- * /data/OS/overlay to change it), never from a client: a port is whatever the server says, and
- * the system image is checked against the hash it gives.
+ * a pack's as player, the system's as root. The server and what's asked of it come from
+ * /etc/updates ([Updates] Server, Channel: root's, /data/OS/overlay to change it), never from a
+ * client: the system image is checked against the hash the server gives.
  *
- *     downloadd port ID | remove ID | check | os      one job, by hand too
- *     downloadd zone                 the time zone this network's address is in, guessed by
- *                                    ipapi.co (for `clock`, which sets it unless one was chosen)
- *     downloadd send REQUEST...      a client: the request, then what's said until it's over
+ *     downloadd pack NAME | check | os      one job, by hand too
+ *     downloadd zone                        the time zone this network's address is in, guessed
+ *                                           by ipapi.co (for `clock`, which sets it unless one
+ *                                           was chosen)
+ *     downloadd send REQUEST...             a client: the request, then what's said until it's over
  */
 #include <curl/curl.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -57,11 +57,10 @@
 #include "str.h"
 #include "util.h"
 
-#define CONFIG "/etc/store"
+#define CONFIG "/etc/updates"
 #define BUILD "/etc/build"
 #define SOCKET "/run/downloadd.sock"
-#define PORTS "/data/apps/ports"
-#define LAYERS "/data/OS/layers"
+#define PACKS "/data/OS/assets/thumbnails"
 #define LAUNCHER_FIFO "/run/launcher"
 #define PLAYER "player"
 
@@ -69,12 +68,12 @@ static STRBUF(256) server;
 static STRBUF(32) channel;
 
 static void load_config(void) {
-  sb_set(server, S("https://store.invalid"));
+  sb_set(server, S("https://senkos.dev"));
   sb_set(channel, S("stable"));
   const str text = str_read(fopen(CONFIG, "r"));
   cfg_reader r = cfg_init(text);
   for (cfg_event e; (e = cfg_next(&r)) != CFG_END;) {
-    if (e != CFG_VALUE || !str_eq(r.section, S("Store")))
+    if (e != CFG_VALUE || !str_eq(r.section, S("Updates")))
       continue;
     if (str_eq(r.key, S("Server")))
       sb_set(server, r.value);
@@ -86,13 +85,12 @@ static void load_config(void) {
     server.p[--server.n] = '\0';
 }
 
-/* Ids and file names become paths: as the server allows them */
-static bool safe_name(str s) {
-  if (s.n == 0 || s.n > 64 || s.p[0] == '.')
+/* A pack's name is a file's: "Nintendo - Game Boy" is PACKS/Nintendo - Game Boy.pack */
+static bool safe_pack(str s) {
+  if (s.n == 0 || s.n > 80 || s.p[0] == '.')
     return false;
   for (size_t i = 0; i < s.n; i++)
-    if (!((s.p[i] >= 'a' && s.p[i] <= 'z') || (s.p[i] >= 'A' && s.p[i] <= 'Z') ||
-          (s.p[i] >= '0' && s.p[i] <= '9') || strchr("._-+", s.p[i]) != NULL))
+    if ((unsigned char)s.p[i] < ' ' || s.p[i] == '/' || s.p[i] == '[' || s.p[i] == ']')
       return false;
   return true;
 }
@@ -148,6 +146,7 @@ static CURL *new_curl(const char *url) {
 static str get(const char *url) {
   buffer b = {0};
   CURL *c = new_curl(url);
+  curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
   curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, to_buffer);
   curl_easy_setopt(c, CURLOPT_WRITEDATA, &b);
   const CURLcode rc = curl_easy_perform(c);
@@ -237,140 +236,59 @@ static int run(char *const argv[]) {
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-static void remove_tree(const char *path) {
-  if (access(path, F_OK) == 0)
-    run((char *[]){"rm", "-rf", (char *)path, NULL});
+/* mkdir -p: a new card, or one wiped, has none of the folders */
+static void make_dirs(const char *path) {
+  char p[PATH_MAX];
+  snprintf(p, sizeof(p), "%s", path);
+  for (char *s = p + 1; *s; s++)
+    if (*s == '/') {
+      *s = '\0';
+      mkdir(p, 0755);
+      *s = '/';
+    }
+  if (mkdir(p, 0755) != 0 && errno != EEXIST)
+    fail("%s: %s", p, strerror(errno));
 }
 
-enum { FILES_MAX = 16 };
 typedef struct {
-  STRBUF(96) name;
   STRBUF(512) url;
   STRBUF(65) sha256;
   uint64_t size;
-  STRBUF(96) layer;
 } file;
 
-/* /v1/ports/ID: [Port] and its layers' [File NAME] sections */
-static void install_port(str id) {
+/* /v1/packs: a "[NAME]" section a pack, Url, Sha256, Size */
+static void install_pack(str name) {
   STRBUF(512) url;
-  sb_set(url, sb_str(server), S("/v1/ports/"), id);
+  sb_set(url, sb_str(server), S("/v1/packs"));
   const str text = get(url.p);
-  file port = {0}, files[FILES_MAX];
-  size_t count = 0;
-  STRBUF(64) version = {0};
-  STRBUF(128) arches = {0};
-  uint64_t installed = 0;
+  file pack = {0};
   cfg_reader r = cfg_init(text);
   for (cfg_event e; (e = cfg_next(&r)) != CFG_END;) {
-    if (e == CFG_SECTION && r.section.n > 5 && memcmp(r.section.p, "File ", 5) == 0 && count < FILES_MAX) {
-      files[count] = (file){0};
-      sb_set(files[count].name, str_at(r.section, 5));
-      count++;
-      continue;
-    }
-    if (e != CFG_VALUE)
-      continue;
-    const bool in_port = str_eq(r.section, S("Port"));
-    file *f = in_port ? &port : count > 0 ? &files[count - 1] : NULL;
-    if (f == NULL)
+    if (e != CFG_VALUE || !str_eq(r.section, name))
       continue;
     if (str_eq(r.key, S("Url")))
-      sb_set(f->url, r.value);
+      sb_set(pack.url, r.value);
     else if (str_eq(r.key, S("Sha256")))
-      sb_set(f->sha256, r.value);
+      sb_set(pack.sha256, r.value);
     else if (str_eq(r.key, S("Size")))
-      f->size = strtoull(r.value.p, NULL, 10);
-    else if (str_eq(r.key, S("Layer")))
-      sb_set(f->layer, r.value);
-    else if (in_port && str_eq(r.key, S("Version")))
-      sb_set(version, r.value);
-    else if (in_port && str_eq(r.key, S("Arch")))
-      sb_set(arches, r.value);
-    else if (in_port && str_eq(r.key, S("InstalledSize")))
-      installed = strtoull(r.value.p, NULL, 10);
+      pack.size = strtoull(r.value.p, NULL, 10);
   }
-  if (port.url.n == 0 || port.sha256.n != 64)
-    fail("the server has no such port");
-  /* What portrun will run: the first of the port's that the handheld can */
-  str arch = S(""), list = sb_str(arches), item;
-  while (arch.n == 0 && cfg_item(&list, &item))
-    if (str_eq(item, S("aarch64")) || str_eq(item, S("armhf")))
-      arch = item;
-  if (arch.n == 0)
-    fail("not made for this handheld (%.*s)", (int)arches.n, arches.p);
-
-  /* The layer files it needs that aren't here yet: the .ini, the squashfs for that arch */
-  uint64_t total = port.size, need = port.size + installed;
-  bool wanted[FILES_MAX] = {0};
-  for (size_t i = 0; i < count; i++) {
-    file *f = &files[i];
-    STRBUF(128) ini, image;
-    sb_set(ini, sb_str(f->layer), S(".ini"));
-    sb_set(image, sb_str(f->layer), S("."), arch, S(".squashfs"));
-    if (!safe_name(sb_str(f->name)) || f->sha256.n != 64 ||
-        !(str_eq(sb_str(f->name), sb_str(ini)) || str_eq(sb_str(f->name), sb_str(image))))
-      continue;
-    STRBUF(256) path;
-    sb_set(path, S(LAYERS "/"), sb_str(f->name));
-    struct stat st;
-    /* Layers are named by their version: one of the same size is that one */
-    if (stat(path.p, &st) == 0 && (uint64_t)st.st_size == f->size)
-      continue;
-    wanted[i] = true;
-    total += f->size;
-    need += f->size;
-  }
+  if (pack.url.n == 0 || pack.sha256.n != 64)
+    fail("the server has no box art for %.*s", (int)name.n, name.p);
   struct statvfs fs;
-  if (statvfs(PORTS, &fs) == 0 && (uint64_t)fs.f_bavail * fs.f_frsize < need + (16 << 20))
-    fail("not enough space: %llu MB needed", (unsigned long long)(need >> 20) + 16);
-
+  make_dirs(PACKS);
+  if (statvfs(PACKS, &fs) == 0 && (uint64_t)fs.f_bavail * fs.f_frsize < pack.size + (16 << 20))
+    fail("not enough space: %llu MB needed", (unsigned long long)(pack.size >> 20) + 16);
+  STRBUF(256) part, path;
+  sb_set(part, S(PACKS "/."), name, S(".pack.part"));
+  sb_set(path, S(PACKS "/"), name, S(".pack"));
+  FILE *out = fopen(part.p, "w");
+  if (out == NULL)
+    fail("%s: %s", part.p, strerror(errno));
   uint64_t done = 0;
-  for (size_t i = 0; i < count; i++) {
-    if (!wanted[i])
-      continue;
-    STRBUF(256) part, path;
-    sb_set(part, S(LAYERS "/."), sb_str(files[i].name), S(".part"));
-    sb_set(path, S(LAYERS "/"), sb_str(files[i].name));
-    FILE *out = fopen(part.p, "w");
-    if (out == NULL)
-      fail("%s: %s", part.p, strerror(errno));
-    fetch(files[i].url.p, sb_str(files[i].sha256), false, out, &done, total);
-    if (fclose(out) != 0 || rename(part.p, path.p) != 0)
-      fail("%s: %s", path.p, strerror(errno));
-  }
-
-  /* Unpacked as it comes, into a folder of its own, then put in place */
-  STRBUF(256) staging, dest, cmd;
-  sb_set(staging, S(PORTS "/.store-"), id);
-  sb_set(dest, S(PORTS "/"), id);
-  remove_tree(staging.p);
-  if (mkdir(staging.p, 0755) != 0)
-    fail("%s: %s", staging.p, strerror(errno));
-  sb_set(cmd, S("tar x -C "), sb_str(staging));
-  FILE *tar = popen(cmd.p, "w");
-  if (tar == NULL)
-    fail("tar: %s", strerror(errno));
-  fetch(port.url.p, sb_str(port.sha256), true, tar, &done, total);
-  if (pclose(tar) != 0)
-    fail("the port's archive is broken");
-  printf("installing\n");
-  fflush(stdout);
-  STRBUF(256) marker;
-  sb_set(marker, sb_str(staging), S("/.store"));
-  FILE *m = fopen(marker.p, "w");
-  if (m != NULL) {
-    str_fput(m, S("[Store]\nVersion="), sb_str(version), S("\n"));
-    fclose(m);
-  }
-  if (rename(staging.p, dest.p) != 0) {
-    /* An update: over what's there, so the files the player brought stay */
-    sb_add(staging, S("/."));
-    if (run((char *[]){"cp", "-a", staging.p, dest.p, NULL}) != 0)
-      fail("can't put it in %s", dest.p);
-    staging.p[staging.n -= 2] = '\0';
-    remove_tree(staging.p);
-  }
+  fetch(pack.url.p, sb_str(pack.sha256), false, out, &done, pack.size);
+  if (fclose(out) != 0 || rename(part.p, path.p) != 0)
+    fail("%s: %s", path.p, strerror(errno));
   free((char *)text.p);
 }
 
@@ -458,20 +376,16 @@ static int job(int argc, char **argv) {
   load_config();
   curl_global_init(CURL_GLOBAL_DEFAULT);
   const str id = argc > 2 ? str_c(argv[2]) : S("");
-  if (argc == 3 && strcmp(argv[1], "port") == 0 && safe_name(id))
-    install_port(id);
-  else if (argc == 3 && strcmp(argv[1], "remove") == 0 && safe_name(id)) {
-    STRBUF(256) dest;
-    sb_set(dest, S(PORTS "/"), id);
-    remove_tree(dest.p);
-  } else if (argc == 2 && strcmp(argv[1], "check") == 0)
+  if (argc == 3 && strcmp(argv[1], "pack") == 0 && safe_pack(id))
+    install_pack(id);
+  else if (argc == 2 && strcmp(argv[1], "check") == 0)
     check();
   else if (argc == 2 && strcmp(argv[1], "os") == 0)
     update_os();
   else if (argc == 2 && strcmp(argv[1], "zone") == 0)
     zone();
   else {
-    fprintf(stderr, "usage: downloadd [port ID | remove ID | check | os | zone]\n");
+    fprintf(stderr, "usage: downloadd [pack NAME | check | os | zone]\n");
     return 2;
   }
   return 0;
@@ -479,13 +393,14 @@ static int job(int argc, char **argv) {
 
 /* ---- the daemon ---- */
 
-enum { INSTALL, REMOVE, OS, CHECK };
+enum { PACK, OS, CHECK };
 enum { QUEUED, DOWNLOADING, INSTALLING, DONE, FAILED, CANCELED };
 static const char *const state_words[] = {"queued", "downloading", "installing", "done", "failed", "canceled"};
 
 enum { TASKS_MAX = 64, CLIENTS_MAX = 16 };
 typedef struct {
-  STRBUF(68) id;
+  STRBUF(96) id;
+  STRBUF(96) arg; /* the job's: a pack's name */
   int kind, state;
   unsigned long long done, total;
   STRBUF(200) message;
@@ -516,8 +431,7 @@ static void tell_all(str line) {
 
 static str task_line(const task *t) {
   static STRBUF(400) line;
-  const char *word = t->state == DONE && t->kind == REMOVE ? "removed" : state_words[t->state];
-  sb_set(line, S("job "), sb_str(t->id), S(" "), str_c(word));
+  sb_set(line, S("job "), sb_str(t->id), S(" "), str_c(state_words[t->state]));
   sb_fmt(line, " %llu %llu", t->done, t->total);
   if (t->message.n > 0)
     sb_add(line, S(" "), sb_str(t->message));
@@ -527,13 +441,13 @@ static str task_line(const task *t) {
 
 static void changed(const task *t) { tell_all(task_line(t)); }
 
-/* The job's process: a port's as the player, the system's as root */
+/* The job's process: a pack's as the player, the system's as root */
 static bool start(task *t) {
   int p[2];
   if (pipe2(p, O_CLOEXEC) != 0)
     return false;
-  char *argv[4] = {self, t->kind == INSTALL ? "port" : t->kind == REMOVE ? "remove" : t->kind == OS ? "os" : "check",
-                   t->kind == INSTALL || t->kind == REMOVE ? t->id.p : NULL, NULL};
+  static const char *const verbs[] = {[PACK] = "pack", [OS] = "os", [CHECK] = "check"};
+  char *argv[4] = {self, (char *)verbs[t->kind], t->kind == PACK ? t->arg.p : NULL, NULL};
   const pid_t pid = fork();
   if (pid == 0) {
     dup2(p[1], STDOUT_FILENO);
@@ -570,7 +484,7 @@ static void next(void) {
     task *t = &tasks[i];
     if (t->state != QUEUED || t->id.n == 0)
       continue;
-    t->state = t->kind == REMOVE ? INSTALLING : DOWNLOADING;
+    t->state = DOWNLOADING;
     if (!start(t)) {
       t->state = FAILED;
       sb_set(t->message, S("can't start"));
@@ -589,32 +503,37 @@ static task *find(str id) {
 }
 
 /* A new job, or the finished one of the same id again */
-static void queue(str id, int kind) {
+static bool queue(str id, int kind, str arg) {
   task *t = find(id);
   if (t != NULL && (t->state == QUEUED || t->pid > 0)) {
     changed(t);
-    return;
+    return true;
   }
   for (size_t i = 0; t == NULL && i < TASKS_MAX; i++)
     if (tasks[i].id.n == 0 || (tasks[i].state >= DONE && tasks[i].pid == 0))
       t = &tasks[i];
   if (t == NULL)
-    return;
+    return false;
   *t = (task){.kind = kind, .state = QUEUED, .out = -1};
   sb_set(t->id, id);
+  sb_set(t->arg, arg);
   changed(t);
   next();
+  return true;
 }
 
 static void request(int fd, str line) {
   const str verb = str_cut(&line, ' ');
   const str id = str_trim(line);
-  if (str_eq(verb, S("install")) && safe_name(id))
-    queue(id, INSTALL);
-  else if (str_eq(verb, S("remove")) && safe_name(id))
-    queue(id, REMOVE);
-  else if (str_eq(verb, S("update")))
-    queue(S("os"), OS);
+  if (str_eq(verb, S("pack")) && safe_pack(id)) {
+    STRBUF(96) job;
+    sb_set(job, S("pack:"), id);
+    for (size_t i = 0; i < job.n; i++)
+      if (job.p[i] == ' ')
+        job.p[i] = '_';
+    queue(sb_str(job), PACK, id);
+  } else if (str_eq(verb, S("update")))
+    queue(S("os"), OS, S(""));
   else if (str_eq(verb, S("cancel"))) {
     task *t = find(id);
     if (t != NULL && t->pid > 0)
@@ -631,7 +550,7 @@ static void request(int fd, str line) {
     tell(fd, S("error unknown request\n"));
 }
 
-/* The launcher's FIFO: a port came or went */
+/* The launcher's FIFO: a pack came */
 static void reload_launcher(void) {
   const int fd = open(LAUNCHER_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
   if (fd >= 0) {
@@ -679,7 +598,7 @@ static void finished(task *t) {
   if (ok && t->kind == OS)
     sb_set(t->message, S("restart to finish"));
   changed(t);
-  if (ok && (t->kind == INSTALL || t->kind == REMOVE))
+  if (ok && t->kind == PACK)
     reload_launcher();
   next();
 }
@@ -776,7 +695,7 @@ static int daemon_main(void) {
   }
 }
 
-/* `send install ID`: until that job ends; `send check`: until the answer */
+/* `send pack NAME`: until that job ends; `send check`: until the answer */
 static int client(int argc, char **argv) {
   STRBUF(256) request;
   request.n = 0;
@@ -784,8 +703,15 @@ static int client(int argc, char **argv) {
     sb_add(request, i > 2 ? S(" ") : S(""), str_c(argv[i]));
   sb_add(request, S("\n"));
   const str verb = str_head(sb_str(request), str_find(sb_str(request), ' '));
-  STRBUF(80) id;
+  STRBUF(96) id;
   sb_set(id, argc > 3 ? str_c(argv[3]) : S("os"));
+  /* A pack's job: "pack:" and its name, the spaces as '_' */
+  if (strcmp(argv[2], "pack") == 0) {
+    sb_set(id, S("pack:"), str_trim(str_head(str_at(sb_str(request), 5), request.n - 6)));
+    for (size_t i = 0; i < id.n; i++)
+      if (id.p[i] == ' ')
+        id.p[i] = '_';
+  }
   const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   struct sockaddr_un addr = {.sun_family = AF_UNIX, .sun_path = SOCKET};
   if (fd < 0 || connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
@@ -810,7 +736,7 @@ static int client(int argc, char **argv) {
     if (str_eq(state, S("queued")) || str_eq(state, S("downloading")) || str_eq(state, S("installing")))
       asked = true;
     else if (asked || str_eq(verb, S("cancel")))
-      return str_eq(state, S("done")) || str_eq(state, S("removed")) || str_eq(state, S("canceled")) ? 0 : 1;
+      return str_eq(state, S("done")) || str_eq(state, S("canceled")) ? 0 : 1;
   }
   return 1;
 }

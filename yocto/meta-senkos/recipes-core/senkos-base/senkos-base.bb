@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://90ntp file://store file://clock"
+SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
@@ -28,10 +28,9 @@ do_install() {
     install -Dm0755 ${S}/wifi ${D}${sbindir}/wifi
     install -Dm0755 ${S}/clock ${D}${sbindir}/clock
     install -Dm0755 ${S}/90ntp ${D}${sysconfdir}/udhcpc.d/90ntp
-    install -Dm0644 ${S}/store ${D}${sysconfdir}/store
+    install -Dm0644 ${S}/updates ${D}${sysconfdir}/updates
     # udev would load it at boot, by the card's alias, Wi-Fi off or not: `wifi on` loads it by name
-    install -d ${D}${sysconfdir}/modprobe.d
-    echo "blacklist rtw88_8821cs" > ${D}${sysconfdir}/modprobe.d/wifi.conf
+    install -Dm0644 ${S}/wifi.conf ${D}${sysconfdir}/modprobe.d/wifi.conf
     install -Dm0755 ${S}/data-init.init ${D}${sysconfdir}/init.d/data-init
     install -Dm0644 ${S}/udhcpd.conf ${D}${sysconfdir}/udhcpd.conf
     install -Dm0644 ${S}/pipewire.conf ${D}${sysconfdir}/pipewire/pipewire.conf.d/10-senkos.conf

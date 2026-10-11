@@ -1,5 +1,5 @@
 #!/bin/sh
-# Wi-Fi: the RTL8821CS on SDIO, its driver (rtw88) a module loaded when Wi-Fi is turned on.
+# Wi-Fi: the RTL8821CS on SDIO, its vendor driver (rtl8821cs) a module loaded when Wi-Fi is turned on.
 # The launcher's Wi-Fi settings: sysd runs `wifi on|off` on "wifi on|off", and
 # the networks go through wpa_supplicant's control socket, /run/wpa_supplicant/wlan0 (group
 # shell: the launcher's, not the apps'). Saved in /data/OS/wifi, root's alone (0700): wpa_supplicant.conf, the networks (its
@@ -18,7 +18,7 @@ up() {
 		printf 'ctrl_interface=DIR=%s GROUP=shell\nupdate_config=1\n' $run > $d/wpa_supplicant.conf
 	sed -i 's/ GROUP=player$/ GROUP=shell/' $d/wpa_supplicant.conf
 	chmod 0600 $d/wpa_supplicant.conf
-	modprobe rtw88_8821cs || return 1
+	modprobe rtl8821cs || return 1
 	i=0
 	until [ -d /sys/class/net/wlan0 ]; do
 		[ $i -ge 50 ] && { echo "wifi: no wlan0" >&2; return 1; }

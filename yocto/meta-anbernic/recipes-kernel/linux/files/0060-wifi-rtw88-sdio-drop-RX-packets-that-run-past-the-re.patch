@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sat, 10 Oct 2026 18:40:07 +0200
+Subject: [PATCH] wifi: rtw88: sdio: drop RX packets that run past the read
+ buffer
+
+rtw_sdio_rxfifo_recv() trusts the RX descriptor's packet length. On the
+RTL8821CS a descriptor sometimes claims more than the RX FIFO held
+(seen: 1554 bytes in a 256 byte read), and skb_put() then BUGs in the
+SDIO IRQ thread, which takes Wi-Fi down for good:
+
+  skbuff: skb_over_panic: ... len:1554 put:1554 ... tail:0x652 end:0x140
+  kernel BUG at net/core/skbuff.c:214!
+  Call trace:
+   skb_put+0x5c/0x60
+   rtw_sdio_rx_skb+0x50/0xe0 [rtw88_sdio]
+   rtw_sdio_rxfifo_recv+0x244/0x2a8 [rtw88_sdio]
+
+Check the length against what was read and drop the rest of the read
+instead.
+
+Upstream-Status: Pending
+---
+ drivers/net/wireless/realtek/rtw88/sdio.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw88/sdio.c b/drivers/net/wireless/realtek/rtw88/sdio.c
+index 5b40d74b1..fec03664a 100644
+--- a/drivers/net/wireless/realtek/rtw88/sdio.c
++++ b/drivers/net/wireless/realtek/rtw88/sdio.c
+@@ -1008,6 +1008,18 @@ static void rtw_sdio_rxfifo_recv(struct rtw_dev *rtwdev, u32 rx_len)
+ 		curr_pkt_len = ALIGN(pkt_offset + pkt_stat.pkt_len,
+ 				     RTW_SDIO_DATA_PTR_ALIGN);
+ 
++		/* The descriptor may claim more than the FIFO held (a partial
++		 * or corrupted entry): skb_put() would BUG and take the SDIO
++		 * IRQ thread with it, so drop what is left of this read.
++		 */
++		if (pkt_offset + pkt_stat.pkt_len > rx_len) {
++			dev_warn_ratelimited(rtwdev->dev,
++					     "RX packet of %u bytes at offset %u past the %u read\n",
++					     pkt_stat.pkt_len, pkt_offset, rx_len);
++			dev_kfree_skb_any(skb);
++			return;
++		}
++
+ 		if ((curr_pkt_len + pkt_desc_sz) >= rx_len) {
+ 			/* Use the original skb (with it's adjusted offset)
+ 			 * when processing the last (or even the only) entry to
+-- 
+2.56.0
+

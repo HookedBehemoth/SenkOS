@@ -1,0 +1,5 @@
+# The update server, for downloadd (apps/downloadd): /v1/os, /v1/packs.
+# Root's: what it names is trusted with system updates. /data/OS/overlay/etc/updates for another.
+[Updates]
+Server=https://senkos.dev
+Channel=stable

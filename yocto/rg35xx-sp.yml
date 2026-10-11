@@ -22,7 +22,7 @@ repos:
     branch: wrynose
     layers:
       meta:
-  # The ports' platform (docs/ports.md): the SDL2 family, libmodplug, opusfile; PipeWire
+  # The games' platform: the SDL2 family, libmodplug, opusfile; PipeWire
   # (meta-python: meta-multimedia needs it)
   meta-openembedded:
     url: https://git.openembedded.org/meta-openembedded

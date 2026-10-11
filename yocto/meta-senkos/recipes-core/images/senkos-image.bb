@@ -5,11 +5,11 @@ inherit image
 
 # The machine's own packages (Wi-Fi driver and firmware: MACHINE_EXTRA_RRECOMMENDS)
 # Wi-Fi (senkos-base's wifi): wpa_supplicant, the regulatory database
-# downloadd, store: ports and system updates over the network (TLS: ca-certificates)
-# libsdl2: for what lives in /data (ports); our apps don't use it
+# downloadd: system updates and game packs over the network (TLS: ca-certificates)
+# libsdl2: for what lives in /data; our apps don't use it
 # libasound, libpng, libzstd: emulator runtime (SDL dlopens libasound); GLES is in libglvnd, zlib/lzma come anyway
-# openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (ports in /data)
-# libbz2 ... opusfile: the ports' platform (docs/ports.md); the SDL2 family (SDL2_gfx our own), libmodplug and opusfile from meta-openembedded
+# openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (games in /data)
+# libbz2 ... opusfile: the games' platform; the SDL2 family (SDL2_gfx our own), libmodplug and opusfile from meta-openembedded
 # libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
 # The libretro cores: run by corehost, as the emulators in senkos-data (senkos-base) say
 IMAGE_INSTALL = " \
@@ -24,8 +24,8 @@ IMAGE_INSTALL = " \
     ${MACHINE_EXTRA_RDEPENDS} ${MACHINE_EXTRA_RRECOMMENDS} \
     senkos-base \
     sysd \
-    downloadd store \
-    wpa-supplicant wpa-supplicant-cli wireless-regdb-static \
+    downloadd \
+    wpa-supplicant wpa-supplicant-cli wireless-regdb-static iw \
     ca-certificates \
     tzdata \
     kmscube \
@@ -47,7 +47,6 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-good-matroska \
     gstreamer1.0-plugins-base-videoconvertscale \
     mediaplayer \
-    portrun \
     weston-xwayland \
     pipewire \
     pipewire-pulse \
@@ -71,7 +70,7 @@ IMAGE_INSTALL = " \
     libretro-beetle-pce-fast libretro-pcsx-rearmed libretro-fbneo libretro-beetle-ngp libretro-beetle-wswan \
     libretro-stella2014 libretro-handy libretro-mupen64plus-next libretro-flycast libretro-ppsspp \
 "
-# The rest of the ports' platform (docs/ports.md), and all of it again for armhf (multilib, senkos.conf)
+# The rest of the games' platform (binaries built on Debian), and all of it again for armhf (multilib, senkos.conf)
 PORTS_PLATFORM = "libstdc++ libgcc zlib libgallium libegl-mesa libglvnd mesa-vulkan-drivers vulkan-loader \
     wayland libxkbcommon libudev libsdl2 libsdl2-image libsdl2-mixer \
     libsdl2-ttf libsdl2-net libsdl2-gfx libasound libpulse libpulse-simple openal-soft libxmu libxpm libxxf86dga libglu \
@@ -255,7 +254,7 @@ python senkos_licenses () {
 
 # Card layout (senkos.wks.in): wic is the whole card; squashfs-lz4 is one A/B slot (also what
 # `tools/ota` flashes)
-IMAGE_FSTYPES = "wic.zst wic.bmap squashfs-lz4"
+IMAGE_FSTYPES = "wic.gz wic.bmap squashfs-lz4"
 IMAGE_TYPEDEP:wic += "squashfs-lz4"
 # High compression costs build time only: lz4 decompresses as fast either way
 EXTRA_IMAGECMD:squashfs-lz4 = "-Xhc"

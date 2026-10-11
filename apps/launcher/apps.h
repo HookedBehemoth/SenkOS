@@ -2,14 +2,12 @@
  * What the launcher offers, by category, from folders under the data root
  * ($LAUNCHER_DATA, /data by default):
  *
- * - Ports, applications, benchmarks: apps/{ports,applications,benchmarks}.
+ * - Applications, benchmarks: apps/{applications,benchmarks}.
  *   Each *.desktop (XDG desktop entry: Name, Exec, Path, Icon, Keywords,
  *   Categories) is an app; so is any other executable without a .desktop of
  *   the same name. Exec runs under sh -c, in Path or else the folder. Icon is
  *   a path, absolute or relative to the folder, extension optional.
- *   X-SenkOS-AskQuit=false: Quit in its pause menu doesn't ask first. A folder
- *   with a port.ini is a port (docs/ports.md), run by portrun; its cover or
- *   screenshot is the icon.
+ *   X-SenkOS-AskQuit=false: Quit in its pause menu doesn't ask first.
  * - Game systems: the .system files in apps/systems over the image's
  *   (SYSTEMS, apps.c), the way emulators are below. [System] Name, Folder
  *   (its page's, under the data root), Aliases (what other OSes call such a
@@ -99,7 +97,7 @@ void apps_set_match(app *a, uint32_t crc);
 /* The system's game pack, "" for none; until the next call */
 str apps_pack(const category *c);
 /* Kept in $XDG_CONFIG_HOME/launcher-folders, a line "category's folder\tpath"
- * each ("apps/ports\t/run/media/mmcblk1p2/ports": ports on the second card).
+ * each ("roms/gba\t/run/media/mmcblk1p2/gba": GBA games on the second card).
  * A folder may be a source of more than one system. */
 enum { SOURCES_MAX = 64 };
 typedef struct {

@@ -48,6 +48,8 @@ void romdb_init(void);
 /* The ROM's CRC if known; else false, and it is computed in the background */
 bool romdb_crc(str path, const struct stat *st, uint32_t *crc);
 bool romdb_find(str pack, uint32_t crc, romdb_game *out);
+/* Packs found missing are looked for again (one was downloaded) */
+void romdb_retry(void);
 /* What else the ROM may be, for picking by hand: the pack's titles sharing the most words
  * with `query` (a file name, or what was typed; a word typed may be the start of one), best
  * first, a CRC each, one per title. How many, up to `max`. */

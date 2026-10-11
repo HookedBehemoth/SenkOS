@@ -1,5 +1,5 @@
 SUMMARY = "XFree86-DGA: XFree86 Direct Graphics Access extension library"
-DESCRIPTION = "Part of the ports' platform (docs/ports.md): binaries built on Debian link libXxf86dga.so.1."
+DESCRIPTION = "Part of the games' platform: binaries built on Debian link libXxf86dga.so.1."
 
 require recipes-graphics/xorg-lib/xorg-lib-common.inc
 

@@ -15,7 +15,7 @@ cd yocto
 runs out of metadata space under Yocto's many small files.
 
 Output in `build/tmp/deploy/images/rg35xx-sp/`:
-- `senkos-image-rg35xx-sp.rootfs.wic.zst` (+ `.wic.bmap`): a whole card
+- `senkos-image-rg35xx-sp.rootfs.wic.gz` (+ `.wic.bmap`): a whole card
 - `senkos-image-rg35xx-sp.rootfs.squashfs-lz4`: one slot, what `tools/ota` flashes
 
 ## Layers
@@ -54,7 +54,7 @@ recipes-emulators/, recipes-games/ libretro cores (in the image)
 ## Flashing a card
 
 ```
-sudo bmaptool copy …/senkos-image-rg35xx-sp.rootfs.wic.zst /dev/sdX
+sudo bmaptool copy …/senkos-image-rg35xx-sp.rootfs.wic.gz /dev/sdX
 ```
 Put it in **TF1**. The first boot creates `/data` from the rest of the card. After that, update over USB
 ([dev-workflow.md](dev-workflow.md)).

@@ -72,6 +72,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0057-backlight-pwm_bl-start-the-LED-at-a-tenth-when-lit-f.patch \
     file://0058-drm-panfrost-expose-the-GPU-s-busy-time-in-sysfs.patch \
     file://0059-media-cedrus-expose-the-engine-s-busy-time-in-sysfs.patch \
+    file://0060-wifi-rtw88-sdio-drop-RX-packets-that-run-past-the-re.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 

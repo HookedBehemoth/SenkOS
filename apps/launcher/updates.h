@@ -2,7 +2,8 @@
  * System updates, through downloadd (apps/downloadd): asks whether the server
  * has a newer build than /etc/build, then has it downloaded into the other
  * slot. A thread keeps the connection and wakes the loop (UI_UPDATES) on
- * every line; the screen reads the state under updates_lock.
+ * every line; the screen reads the state under updates_lock. Also a system's
+ * box art pack, asked for by Select on one of its games.
  */
 #pragma once
 
@@ -23,6 +24,9 @@ typedef struct {
   unsigned long long done, total;
   STRBUF(200) job_message;
   bool connected;
+  STRBUF(96) pack;         /* the pack asked for, until it's sent */
+  STRBUF(32) pack_news;    /* a pack's job's latest state, for a toast; taken by the loop */
+  STRBUF(200) pack_why;    /* and why it failed */
 } update_state;
 
 extern update_state updates;
@@ -31,5 +35,7 @@ extern pthread_mutex_t updates_lock;
 /* The thread, once; each call asks again */
 void updates_check(void);
 void updates_install(void);
+/* A .system file's Pack from the server into OS/assets/thumbnails ("reload" when it's there) */
+void updates_pack(str name);
 /* This build, /etc/build's */
 str updates_build(void);
