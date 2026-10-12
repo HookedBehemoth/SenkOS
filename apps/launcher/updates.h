@@ -1,10 +1,4 @@
-/*
- * System updates, through downloadd (apps/downloadd): asks whether the server
- * has a newer build than /etc/build, then has it downloaded into the other
- * slot. A thread keeps the connection and wakes the loop (UI_UPDATES) on
- * every line; the screen reads the state under updates_lock. Also a system's
- * box art pack, asked for by Select on one of its games.
- */
+/* Update service state and commands. */
 #pragma once
 
 #include <pthread.h>
@@ -39,3 +33,4 @@ void updates_install(void);
 void updates_pack(str name);
 /* This build, /etc/build's */
 str updates_build(void);
+str updates_reason(str why);

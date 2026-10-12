@@ -17,6 +17,15 @@ update_state updates;
 pthread_mutex_t updates_lock = PTHREAD_MUTEX_INITIALIZER;
 static int fd = -1;
 
+str updates_reason(str why) {
+  const size_t scheme = str_find(why, ':');
+  if (scheme + 2 < why.n && why.p[scheme + 1] == '/' && why.p[scheme + 2] == '/')
+    for (size_t i = scheme + 3; i + 1 < why.n; i++)
+      if (why.p[i] == ':' && why.p[i + 1] == ' ')
+        return str_at(why, i + 2);
+  return why;
+}
+
 str updates_build(void) {
   static STRBUF(32) build;
   if (build.n == 0) {

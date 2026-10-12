@@ -1,26 +1,11 @@
-/*
- * The apps the launcher started and that haven't exited: on screen, under
- * the pause screen, or minimized (Home) and paused in the background.
- *
- * Each gets a control channel (appctl.h). One that takes it (corehost) is
- * paused and resumed through it and has save states and options; any other
- * is stopped with SIGSTOP. They die with the launcher: SIGTERM by
- * PR_SET_PDEATHSIG, and corehost also quits when its socket closes. Nothing
- * is adopted when the launcher starts again.
- *
- * On the handheld weston.init starts the launcher as root, and it becomes shell at once
- * (run_drop_root): sysd answers shell (and root) alone, Wi-Fi's control socket and the apps'
- * cgroup are shell's, so the apps, the player's, can't reach them. It keeps CAP_SETUID and CAP_SETGID to start each app as
- * the player and CAP_KILL to pause and stop them; the app drops them all before it runs. The apps
- * get the environment the launcher was started with; the launcher its own runtime dir, settings
- * and caches (shell's home, /data/OS/launcher), and Weston's socket by its path.
- */
+/* Tracks launched apps and their control channels. */
 #pragma once
 
 #include <stdbool.h>
 #include <sys/types.h>
 
 #include "appctl.h"
+#include "screen.h"
 #include "str.h"
 
 #define RUNNING_MAX 8
@@ -37,11 +22,7 @@ typedef struct {
   unsigned flags; /* APP_* (apps.h) */
   /* SIGTERM sent, exit not seen yet */
   bool quitting;
-  /* Where its pause screen was left, for the next pause: in Settings' list, in a category or
-   * neither, and the focus (a nav_id) in the menu, the list and each category */
-  bool in_list, in_settings;
-  int settings_category; /* appctl's: which of the settings */
-  uint32_t menu_focus, list_focus, settings_focus[APPCTL_CATEGORIES + 2]; /* and the Power and Debug pages (main.c) */
+  screen_stack screens;
 } running;
 
 extern running runs[RUNNING_MAX];

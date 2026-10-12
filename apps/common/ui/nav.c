@@ -1,7 +1,48 @@
 #include "nav.h"
 
 #include <math.h>
+#include <stdalign.h>
+#include <stdlib.h>
 #include <string.h>
+
+void *nav_frame_alloc(nav *ui, size_t bytes) {
+  const size_t align = alignof(max_align_t);
+  const size_t at = (ui->frame_used + align - 1) & ~(align - 1);
+  if (at > NAV_FRAME_BYTES || bytes > NAV_FRAME_BYTES - at)
+    abort();
+  void *memory = ui->frame_memory.data + at;
+  memset(memory, 0, bytes);
+  ui->frame_used = at + bytes;
+  return memory;
+}
+
+void nav_defer(nav *ui, nav_action run, const void *data, size_t bytes) {
+  if (ui->deferred_count == NAV_DEFERRED)
+    abort();
+  void *copy = nav_frame_alloc(ui, bytes);
+  memcpy(copy, data, bytes);
+  ui->deferred[ui->deferred_count++] = (typeof(ui->deferred[0])){run, copy};
+}
+
+void nav_run_deferred(nav *ui) {
+  for (size_t i = 0; i < ui->deferred_count; i++)
+    ui->deferred[i].run(ui, ui->deferred[i].data);
+  ui->deferred_count = 0;
+}
+
+void nav_set_owner(nav *ui, uint32_t owner) { ui->owner = owner; }
+
+void nav_visit_owner(nav *ui, uint32_t owner) {
+  ui->owner = owner;
+  if (ui->visible_count < NAV_OWNERS)
+    ui->visible_owners[ui->visible_count++] = owner;
+}
+
+void nav_forget_owner(nav *ui, uint32_t owner) {
+  for (size_t i = 0; i < NAV_STATES; i++)
+    if (ui->states[i].id != 0 && ui->states[i].owner == owner)
+      memset(&ui->states[i], 0, sizeof(ui->states[i]));
+}
 
 static nav_id combine(nav_id seed, nav_id local) {
   const nav_id id =
@@ -40,20 +81,21 @@ static float ease(uint64_t started_at, uint64_t now, uint64_t duration) {
 static nav_state *state_for(nav *ui, nav_id id) {
   nav_state *oldest = &ui->states[0];
   for (size_t i = 0; i < NAV_STATES; i++) {
-    if (ui->states[i].id == id)
+    if (ui->states[i].id == id && ui->states[i].owner == ui->owner)
       return &ui->states[i];
-    if (ui->states[i].seen < oldest->seen)
+    if (ui->states[i].id == 0 || ui->states[i].seen < oldest->seen)
       oldest = &ui->states[i];
   }
   memset(oldest, 0, sizeof(*oldest));
   oldest->id = id;
+  oldest->owner = ui->owner;
   return oldest;
 }
 
 static const nav_item_record *shown(const nav *ui, nav_id id) {
-  for (size_t i = 0; i < ui->count[ui->current]; i++)
-    if (ui->items[ui->current][i].id == id)
-      return &ui->items[ui->current][i];
+  for (size_t i = 0; i < ui->count; i++)
+    if (ui->items[i].id == id)
+      return &ui->items[i];
   return NULL;
 }
 
@@ -93,10 +135,10 @@ static bool score(ui_rect from, ui_rect to, nav_dir where, float *out) {
 
 /* The item nearest `from` that way, `skip` aside */
 static const nav_item_record *nearest(const nav *ui, ui_rect from, const nav_item_record *skip, nav_dir where) {
-  const nav_item_record *items = ui->items[ui->current];
+  const nav_item_record *items = ui->items;
   const nav_item_record *best = NULL;
   float best_score = INFINITY;
-  for (size_t i = 0; i < ui->count[ui->current]; i++) {
+  for (size_t i = 0; i < ui->count; i++) {
     float s;
     if (&items[i] != skip && score(from, items[i].rect, where, &s) && s < best_score) {
       best = &items[i];
@@ -107,10 +149,10 @@ static const nav_item_record *nearest(const nav *ui, ui_rect from, const nav_ite
 }
 
 bool nav_move(nav *ui, nav_dir where) {
-  const nav_item_record *items = ui->items[ui->current];
+  const nav_item_record *items = ui->items;
   const nav_item_record *from = shown(ui, ui->focus);
   if (from == NULL) {
-    if (ui->count[ui->current] == 0)
+    if (ui->count == 0)
       return false;
     ui->focus = items[0].id;
     ui->reveal = true;
@@ -125,13 +167,13 @@ bool nav_move(nav *ui, nav_dir where) {
 }
 
 void nav_wrap_around(nav *ui, nav_dir where) {
-  const nav_item_record *items = ui->items[ui->current];
+  const nav_item_record *items = ui->items;
   const nav_item_record *from = shown(ui, ui->focus);
   if (from == NULL)
     return;
   /* The focus's rect moved past the far side of everything, then the nearest that way */
   ui_rect r = from->rect;
-  for (size_t i = 0; i < ui->count[ui->current]; i++) {
+  for (size_t i = 0; i < ui->count; i++) {
     const ui_rect o = items[i].rect;
     if (where == NAV_RIGHT)
       r.x = fminf(r.x, o.x - r.w - 1);
@@ -150,16 +192,15 @@ void nav_wrap_around(nav *ui, nav_dir where) {
 }
 
 void nav_wrap(nav *ui, nav_dir where) {
-  const size_t n = ui->count[ui->current];
+  const size_t n = ui->count;
   if (n == 0)
     return;
-  ui->focus = ui->items[ui->current][where == NAV_UP || where == NAV_LEFT ? n - 1 : 0].id;
+  ui->focus = ui->items[where == NAV_UP || where == NAV_LEFT ? n - 1 : 0].id;
   ui->reveal = true;
 }
 
 void nav_activate(nav *ui) {
   ui->activated = ui->focus;
-  ui->clicked = false;
 }
 void nav_focus(nav *ui, nav_id id) {
   ui->focus = id;
@@ -167,53 +208,23 @@ void nav_focus(nav *ui, nav_id id) {
   /* Another screen, or one opened over this: the ring starts there rather than flying over */
   ui->ring_frame = 0;
 }
-void nav_wheel(nav *ui, float delta) { ui->wheel += delta; }
 void nav_step(nav *ui, int steps) { ui->steps += steps; }
-void nav_pointer_leave(nav *ui) { ui->pointer_present = false; }
-
-static const nav_item_record *under_pointer(const nav *ui) {
-  if (!ui->pointer_present)
-    return NULL;
-  /* Last declared is drawn on top. */
-  for (size_t i = ui->count[ui->current]; i-- > 0;) {
-    const nav_item_record *item = &ui->items[ui->current][i];
-    if (ui_contains(item->rect, ui->pointer_x, ui->pointer_y) &&
-        ui_contains(item->clip, ui->pointer_x, ui->pointer_y))
-      return item;
-  }
-  return NULL;
-}
-
-void nav_pointer(nav *ui, float x, float y) {
-  ui->pointer_x = x;
-  ui->pointer_y = y;
-  ui->pointer_present = true;
-  const nav_item_record *item = under_pointer(ui);
-  if (item != NULL)
-    ui->focus = item->id;
-}
-
-void nav_click(nav *ui) {
-  const nav_item_record *item = under_pointer(ui);
-  if (item != NULL) {
-    ui->focus = ui->activated = item->id;
-    ui->clicked = true;
-  }
-}
-
 void nav_begin(nav *ui, ui_context *ctx, uint64_t now) {
+  if (ui->deferred_count != 0)
+    abort();
+  ui->frame_used = 0;
+  ui->owner = 0;
+  ui->visible_count = 0;
   ui->ctx = ctx;
   ui->fill = (nav_fill_record){0};
   ui->now = now;
   ui->frame++;
-  ui->current ^= 1;
-  ui->count[ui->current] = 0;
+  ui->count = 0;
   ui->depth = 0;
   ui->scroll_depth = 0;
   ui->inert = false;
   ui->want_default = false;
   ui->default_id = 0;
-  ui->wheel_across = NULL;
 }
 
 /* Scopes deeper than NAV_DEPTH share the deepest one's ids. */
@@ -280,34 +291,19 @@ void nav_scroll_end(nav *ui) {
   ui->fill = (nav_fill_record){0};
   nav_scroll_frame *scroll = &ui->scrolls[--ui->scroll_depth];
   const float limit = scroll_limit(scroll);
-  /* Regions end innermost first, so the first to take the wheel or a step
-   * is the innermost. The wheel wants the pointer over the region, unless
-   * there is no pointer at all (a scripted wheel). */
-  const bool under = !ui->pointer_present ||
-                     ui_contains(scroll->view, ui->pointer_x, ui->pointer_y);
-  if (!scroll->inert && scroll->axis == UI_VERTICAL) {
-    if (ui->wheel != 0 && under) {
-      scroll_to(ui, scroll->state,
-                fminf(fmaxf(scroll->state->target + ui->wheel, 0), limit));
-      ui->wheel = 0;
-    }
-    if (ui->steps != 0 && scroll->step > 0) {
-      scroll_to(
-          ui, scroll->state,
-          fminf(fmaxf(scroll->state->target + ui->steps * scroll->step, 0),
-                limit));
-      ui->steps = 0;
-    }
-  } else if (!scroll->inert && under && ui->wheel_across == NULL) {
-    ui->wheel_across = scroll->state;
-    ui->wheel_across_limit = limit;
+  if (!scroll->inert && scroll->axis == UI_VERTICAL &&
+      ui->steps != 0 && scroll->step > 0) {
+    scroll_to(ui, scroll->state,
+              fminf(fmaxf(scroll->state->target + ui->steps * scroll->step,
+                          0), limit));
+    ui->steps = 0;
   }
   nav_pop(ui);
 }
 
 void nav_forget(nav *ui, nav_id id) {
   for (size_t i = 0; i < NAV_STATES; i++)
-    if (ui->states[i].id == id)
+    if (ui->states[i].id == id && ui->states[i].owner == ui->owner)
       memset(&ui->states[i], 0, sizeof(ui->states[i]));
 }
 
@@ -333,9 +329,9 @@ static void reveal(nav *ui, const nav_scroll_frame *scroll, ui_rect rect) {
 }
 
 unsigned nav_item(nav *ui, nav_id id, ui_rect rect, ui_rect clip) {
-  if (ui->inert || ui->count[ui->current] == NAV_ITEMS)
+  if (ui->inert || ui->count == NAV_ITEMS)
     return 0;
-  nav_item_record *item = &ui->items[ui->current][ui->count[ui->current]++];
+  nav_item_record *item = &ui->items[ui->count++];
   *item = (nav_item_record){
       .id = scoped(ui, id),
       .rect = rect,
@@ -349,12 +345,8 @@ unsigned nav_item(nav *ui, nav_id id, ui_rect rect, ui_rect clip) {
   }
 
   unsigned flags = 0;
-  if (ui->pointer_present &&
-      ui_contains(rect, ui->pointer_x, ui->pointer_y) &&
-      ui_contains(clip, ui->pointer_x, ui->pointer_y))
-    flags |= NAV_HOVERED;
   if (item->id == ui->activated) {
-    flags |= NAV_ACTIVATED | (ui->clicked ? NAV_CLICKED : 0);
+    flags |= NAV_ACTIVATED;
     ui->activated = 0;
     ui->acted = true;
   }
@@ -369,9 +361,9 @@ unsigned nav_item(nav *ui, nav_id id, ui_rect rect, ui_rect clip) {
 
 void nav_ring(nav *ui, ui_rect ring, float radius) {
   /* An inert nav_item recorded nothing: the last record is another's */
-  if (ui->inert || ui->count[ui->current] == 0)
+  if (ui->inert || ui->count == 0)
     return;
-  nav_item_record *item = &ui->items[ui->current][ui->count[ui->current] - 1];
+  nav_item_record *item = &ui->items[ui->count - 1];
   item->ring = ring;
   item->radius = radius;
 }
@@ -387,11 +379,11 @@ void nav_default(nav *ui) { ui->want_default = true; }
  * the first item wholly in view - not merely the first declared, which in a
  * virtual list is the half-hidden row above the viewport. */
 static const nav_item_record *fallback(nav *ui) {
-  const nav_item_record *items = ui->items[ui->current];
+  const nav_item_record *items = ui->items;
   const nav_item_record *chosen = shown(ui, ui->default_id);
   if (chosen != NULL)
     return chosen;
-  for (size_t i = 0; i < ui->count[ui->current]; i++) {
+  for (size_t i = 0; i < ui->count; i++) {
     const ui_rect r = items[i].rect, c = items[i].clip;
     if (r.x >= c.x && r.y >= c.y && r.x + r.w <= c.x + c.w &&
         r.y + r.h <= c.y + c.h)
@@ -409,11 +401,8 @@ bool nav_end(nav *ui, gfx_color color, float width) {
   /* A reveal waits for its item: a screen still loading declares nothing. */
   if (focused != NULL)
     ui->reveal = false;
-  /* The focused item went away: a new screen, or the list changed under it.
-   * The fallback takes over next frame; only a default is scrolled to, as
-   * anything else is on screen already and the wheel may be what moved the
-   * old focus off it. */
-  if (focused == NULL && ui->count[ui->current] > 0) {
+  /* Choose a visible item when the focused item disappears. */
+  if (focused == NULL && ui->count > 0) {
     ui->focus = fallback(ui)->id;
     ui->reveal = ui->focus == ui->default_id;
     running = true;
@@ -444,14 +433,19 @@ bool nav_end(nav *ui, gfx_color color, float width) {
                 color, width, focused->radius);
     ui->ctx->mask = outer;
   }
-  if (ui->wheel != 0 && ui->wheel_across != NULL)
-    scroll_to(ui, ui->wheel_across,
-              fminf(fmaxf(ui->wheel_across->target + ui->wheel, 0),
-                    ui->wheel_across_limit));
   for (size_t i = 0; i < NAV_STATES; i++)
     running |= ui->states[i].seen == ui->frame && ui->states[i].started_at != 0;
+  for (size_t i = 0; i < NAV_STATES; i++) {
+    nav_state *state = &ui->states[i];
+    if (state->id == 0 || ui->frame - state->seen <= 2)
+      continue;
+    bool visible = state->owner == 0;
+    for (size_t j = 0; j < ui->visible_count; j++)
+      visible |= ui->visible_owners[j] == state->owner;
+    if (visible)
+      memset(state, 0, sizeof(*state));
+  }
   ui->activated = 0;
-  ui->wheel = 0;
   ui->steps = 0;
   return running;
 }

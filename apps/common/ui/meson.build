@@ -19,7 +19,7 @@ ui_deps = [
   meson.get_compiler('c').find_library('m'),
 ]
 ui_dep = declare_dependency(
-  link_with: static_library('ui', 'assets.c', 'gfx.c', 'icons.c', 'nav.c', 'skyline.c', 'text.c', 'ui.c',
+  link_with: static_library('ui', 'assets.c', 'gfx.c', 'icons.c', 'nav.c', 'screen.c', 'skyline.c', 'text.c', 'ui.c',
     shaders, dependencies: ui_deps),
   include_directories: include_directories('.'),
   dependencies: ui_deps)

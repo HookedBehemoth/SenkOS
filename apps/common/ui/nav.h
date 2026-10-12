@@ -1,27 +1,8 @@
-/*
- * Focus, spatial navigation and scrolling for immediate-mode screens.
- *
- * A screen is a function of the app's data, run every frame. It lays things out
- * itself (ui_stack, ui_virtual_list, arithmetic) and tells nav which
- * rectangles are selectable; nav answers with flags. Nothing is registered, so
- * nothing has to be unregistered, and there are no callbacks:
- *
- *     unsigned f = nav_item(ui, nav_str(card->id), rect, clip);
- *     if (f & NAV_ACTIVATED) chosen = card;
- *
- * What nav keeps, keyed by id, is the state a screen should not have to: which
- * item has focus and every scroll region's animated offset. Moving picks the
- * nearest item that way, from where the focus is now; nothing remembers where
- * a row was left. A carousel is a horizontal scroll region with items in it; a
- * grid is a vertical one with rows of items. Neither is a type.
- *
- * Input is resolved against the rectangles of the frame on screen, at the time
- * of the event, so a key press moves the focus before the next frame is built
- * and nav_move can say whether anything was there.
- */
+/* Focus, activation, and scrolling for immediate-mode screens. */
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "ui.h"
@@ -31,17 +12,19 @@ typedef enum { NAV_UP, NAV_DOWN, NAV_LEFT, NAV_RIGHT } nav_dir;
 
 enum {
   NAV_FOCUSED = 1,
-  /* Enter on the focused item, or a click on this one. Reported once. */
   NAV_ACTIVATED = 2,
-  NAV_HOVERED = 4,
-  /* With NAV_ACTIVATED: it was the pointer, at pointer_x/pointer_y. */
-  NAV_CLICKED = 8,
 };
 
-/* A season's episodes are declared whole, so a default can be off screen. */
+/* Bounds for one frame and its retained navigation state. */
 #define NAV_ITEMS 1024
 #define NAV_STATES 64
 #define NAV_DEPTH 6
+#define NAV_OWNERS 8
+#define NAV_FRAME_BYTES (128 * 1024)
+#define NAV_DEFERRED 16
+
+typedef struct nav nav;
+typedef void (*nav_action)(nav *ui, void *data);
 
 /* A focus fill (nav_fill): a quad reserved under a list's items */
 typedef struct {
@@ -60,6 +43,7 @@ typedef struct {
 
 typedef struct {
   nav_id id;
+  uint32_t owner;
   uint64_t seen, appeared;
   /* A scroll region's offset, easing from `from` to `target`. */
   float from, target, value;
@@ -74,42 +58,45 @@ typedef struct {
   bool inert;
 } nav_scroll_frame;
 
-typedef struct {
+struct nav {
   nav_id focus;
   /* The item a new screen starts on, when it declares one. */
   bool want_default;
   nav_id default_id;
   /* Set by nav_move, cleared by nav_end: scroll regions bring the focus into
-   * view. Pointer focus and the wheel leave it alone. */
+   * view. */
   bool reveal;
   nav_id activated;
-  bool clicked;
   /* An activation was delivered this frame: whatever it did to the screen
    * wants a frame of its own. */
   bool acted;
-  float pointer_x, pointer_y, wheel;
   int steps;
-  /* The innermost row under the pointer, which the wheel scrolls when no
-   * list under it runs vertically. */
-  nav_state *wheel_across;
-  float wheel_across_limit;
-  bool pointer_present;
   bool animate;
   bool inert;
   uint64_t duration, now, frame;
   ui_context *ctx;
 
-  /* This frame's items, and the previous frame's, which input resolves
-   * against. */
-  nav_item_record items[2][NAV_ITEMS];
-  size_t count[2];
-  uint8_t current;
+  nav_item_record items[NAV_ITEMS];
+  size_t count;
 
   nav_id scopes[NAV_DEPTH];
   uint8_t depth;
   nav_scroll_frame scrolls[NAV_DEPTH];
   uint8_t scroll_depth;
   nav_state states[NAV_STATES];
+  uint32_t owner;
+  uint32_t visible_owners[NAV_OWNERS];
+  uint8_t visible_count;
+  union {
+    max_align_t align;
+    unsigned char data[NAV_FRAME_BYTES];
+  } frame_memory;
+  size_t frame_used;
+  struct {
+    nav_action run;
+    void *data;
+  } deferred[NAV_DEFERRED];
+  size_t deferred_count;
 
   /* The focus ring, eased from where it was drawn to the live target, so a
    * scrolling list carries it along. */
@@ -117,7 +104,16 @@ typedef struct {
   nav_id ring_owner;
   ui_rect ring_from, ring_drawn;
   uint64_t ring_started_at, ring_frame;
-} nav;
+};
+
+/* Frame data stays alive through nav_run_deferred, then resets at nav_begin. */
+void *nav_frame_alloc(nav *ui, size_t bytes);
+#define NAV_FRAME(ui, type, count) ((type *)nav_frame_alloc(ui, sizeof(type) * (count)))
+void nav_defer(nav *ui, nav_action run, const void *data, size_t bytes);
+void nav_run_deferred(nav *ui);
+void nav_set_owner(nav *ui, uint32_t owner);
+void nav_visit_owner(nav *ui, uint32_t owner);
+void nav_forget_owner(nav *ui, uint32_t owner);
 
 nav_id nav_str(const char *text);
 nav_id nav_int(uint64_t value);
@@ -135,12 +131,6 @@ void nav_wrap(nav *ui, nav_dir where);
 /* Round to the far side, in the same row or column: what a grid that goes round does */
 void nav_wrap_around(nav *ui, nav_dir where);
 void nav_activate(nav *ui);
-void nav_pointer(nav *ui, float x, float y);
-void nav_pointer_leave(nav *ui);
-void nav_click(nav *ui);
-/* Scrolls the innermost list under the pointer; a row only when no vertical
- * list is under it. */
-void nav_wheel(nav *ui, float delta);
 /* Scrolls the innermost vertical list that has a step by that many steps:
  * what Up and Down do over text with nothing in it to focus. */
 void nav_step(nav *ui, int steps);
@@ -176,8 +166,7 @@ void nav_ring(nav *ui, ui_rect ring, float radius);
 /* After nav_scroll_begin, before its items: their focus is also a fill under them, `radius`
  * round, that moves with the ring rather than ahead of it. Until nav_scroll_end, or the frame's end. */
 void nav_fill(nav *ui, gfx_color color, float radius);
-/* Items declared while set are drawn by the caller but cannot take focus, and
- * scroll regions begun while set ignore the wheel: what sits behind a modal. */
+/* Items behind a modal cannot take focus or scroll. */
 void nav_set_inert(nav *ui, bool inert);
 /* Draws the focus ring. True while something is still animating, or when an
  * activation this frame may have changed what the next one shows. */

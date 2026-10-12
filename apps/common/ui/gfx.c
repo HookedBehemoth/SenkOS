@@ -956,6 +956,8 @@ void gfx_set(uint32_t at, gfx_quad q) {
 }
 
 bool gfx_begin(gfx_target *t, int *w, int *h) {
+  if (building != NULL)
+    return false;
   /* Unmapped: nothing may be attached until it's configured again */
   if (!t->window->configured)
     return false;

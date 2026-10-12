@@ -8,7 +8,7 @@ capture_protocol = [
     command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@']),
 ]
 
-executable('launcher', 'main.c', 'apps.c', 'capture.c', 'licenses.c', 'perf.c', 'power.c', 'romdb.c', 'running.c', 'sysd.c', 'clock.c', 'keyboard.c', 'keys.c', 'updates.c', 'watch.c', 'wifi.c', capture_protocol,
+executable('launcher', 'main.c', 'state.c', 'home_state.c', 'pad_input.c', 'session.c', 'osd.c', 'control.c', 'input.c', 'widgets.c', 'scr_home.c', 'scr_pause.c', 'scr_licenses.c', 'scr_updates.c', 'scr_wifi.c', 'scr_storage.c', 'scr_settings.c', 'apps.c', 'capture.c', 'licenses.c', 'perf.c', 'power.c', 'romdb.c', 'running.c', 'sysd.c', 'clock.c', 'keyboard.c', 'keys.c', 'updates.c', 'watch.c', 'wifi.c', capture_protocol,
   dependencies: [
     common_dep,
     ui_dep,
