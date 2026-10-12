@@ -2,20 +2,20 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock"
+SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://sdcard-mount file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
 
-# Weston and the apps the launcher starts run as player: uid 1000, as files tar'ed in from a
-# host usually are. HOME is /data. seat: seatd's socket (seatd's recipe makes the group too).
+# Weston and the apps the launcher starts run as player. Its ID is in files/passwd, matching
+# files tar'ed in from a host. HOME is /data. seat: seatd's socket (seatd's recipe makes the group too).
 # The launcher runs as shell (weston.init): what only it may do (sysd's requests, Wi-Fi's
 # control socket) the apps can't. In the player's group for Weston's socket and the player's
 # files; input for the pad, audio for the mixer.
 USERADD_PACKAGES = "${PN}"
 GROUPADD_PARAM:${PN} = "-r seat"
-USERADD_PARAM:${PN} = "-u 1000 -U -d /data -M -s /bin/sh -G video,input,audio,seat player; \
-                       -u 1001 -U -d /data/OS/launcher -M -s /bin/false -G player,video,input,audio shell"
+USERADD_PARAM:${PN} = "-U -d /data -M -s /bin/sh -G video,input,audio,seat player; \
+                       -U -d /data/OS/launcher -M -s /bin/false -G player,video,input,audio shell"
 
 do_install() {
     install -Dm0755 ${S}/senkos.init ${D}${sysconfdir}/init.d/senkos
@@ -40,6 +40,7 @@ do_install() {
     install -Dm0755 ${S}/weston.init ${D}${sysconfdir}/init.d/weston
     install -Dm0644 ${S}/weston.ini ${D}${sysconfdir}/xdg/weston/weston.ini
     install -Dm0644 ${S}/sdcard.rules ${D}${sysconfdir}/udev/rules.d/90-sdcard.rules
+    install -Dm0755 ${S}/sdcard-mount ${D}${sbindir}/sdcard-mount
     install -Dm0644 ${S}/usb-gadget.rules ${D}${sysconfdir}/udev/rules.d/90-usb-gadget.rules
     install -Dm0644 ${S}/uinput.rules ${D}${sysconfdir}/udev/rules.d/90-uinput.rules
     install -Dm0644 ${S}/wake.rules ${D}${sysconfdir}/udev/rules.d/90-wake.rules

@@ -1,0 +1,14 @@
+#!/bin/sh
+dev=$1
+dir=/run/media/$dev
+mountpoint -q "$dir" && exit 0
+
+player_uid=$(id -u player) || exit 1
+player_gid=$(id -g player) || exit 1
+case $ID_FS_TYPE in
+	vfat|exfat) opts="noatime,uid=$player_uid,gid=$player_gid" ;;
+	*) opts="noatime,X-mount.idmap=u:0:$player_uid:1 g:0:$player_gid:1" ;;
+esac
+
+mkdir -p "$dir"
+mount -o "$opts" "/dev/$dev" "$dir" || rmdir "$dir"

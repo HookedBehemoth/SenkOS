@@ -1,0 +1,15 @@
+# IDs from the existing image, plus groups declared by build dependencies and recommendations.
+# Format: name:password:gid:members
+audio::29:
+messagebus::990:
+weston::991:
+pulse::992:
+render::993:
+wayland::994:
+avahi-autoipd::995:
+weston-launch::996:
+pipewire::997:
+seat::998:
+avahi::999:
+player::1000:
+shell::1001:

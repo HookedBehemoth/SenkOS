@@ -1,10 +1,6 @@
 # TF2 (mmc1 alias; TF1 = mmcblk0 is the system card): mount any filesystem on it at /run/media/<dev>.
-# Its owners aren't ours (games save next to the ROM): everything is the player's (uid 1000).
-# FAT and exFAT have none; anything else is idmapped (util-linux mount), the card's root
-# (another OS writes as root) shown as the player and the player's writes stored as root.
-ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_TYPE}=="vfat|exfat", ENV{SDCARD_OPTS}=",uid=1000,gid=1000"
-ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_TYPE}!="vfat|exfat", ENV{SDCARD_OPTS}=",X-mount.idmap=b:0:1000:1"
-ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_USAGE}=="filesystem", RUN+="/bin/sh -c 'mountpoint -q /run/media/%k || { mkdir -p /run/media/%k && mount -o noatime$env{SDCARD_OPTS} /dev/%k /run/media/%k || rmdir /run/media/%k; }'"
+# FAT and exFAT use the player's IDs; other filesystems map the card's root owner to the player.
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/sbin/sdcard-mount %k"
 # MTP and SMB (`usb`) have the mounted partitions: again with what's mounted now
 ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk1*", ENV{ID_FS_USAGE}=="filesystem", RUN+="/bin/sh -c '/usr/sbin/usb cards </dev/null >/dev/null 2>&1 &'"
 ACTION=="remove", SUBSYSTEM=="block", KERNEL=="mmcblk1*", RUN+="/bin/sh -c 'umount -l /run/media/%k && rmdir /run/media/%k'"

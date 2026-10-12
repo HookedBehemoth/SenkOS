@@ -1,5 +1,5 @@
 # Wayland clients (ssh sessions included) talk to the Weston started by /etc/init.d/weston (as player)
-export XDG_RUNTIME_DIR=/run/user/1000
+export XDG_RUNTIME_DIR=/run/user/$(id -u player)
 export WAYLAND_DISPLAY=wayland-0
 # SDL2 passes over Wayland unless asked by name when the compositor has no decorations (Weston)
 export SDL_VIDEODRIVER=wayland

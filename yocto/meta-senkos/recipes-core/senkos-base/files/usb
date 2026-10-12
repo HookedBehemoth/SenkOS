@@ -72,13 +72,15 @@ mtp_cards() {
 
 mtp_start() {
 	pidof umtprd >/dev/null && return
+	player_uid=$(id -u player) || return
+	player_gid=$(id -g player) || return
 	mkdir -p $ffs
 	mountpoint -q $ffs || mount -t functionfs mtp $ffs
 	cat > /run/umtprd.conf <<-EOF
 		loop_on_disconnect 1
 		storage "/data" "Main card" "rw"
-		default_uid 1000
-		default_gid 1000
+		default_uid $player_uid
+		default_gid $player_gid
 		show_hidden_files 0
 		manufacturer "SenkOS"
 		product "RG35XX-SP"
