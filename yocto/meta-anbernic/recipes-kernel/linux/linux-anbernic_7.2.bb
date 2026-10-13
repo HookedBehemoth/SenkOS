@@ -75,6 +75,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0060-wifi-rtw88-sdio-drop-RX-packets-that-run-past-the-re.patch \
     file://0061-input-axp20x-pek-the-AXP717-s-power-key-timings.patch \
     file://0062-arm64-dts-allwinner-rg35xx-sp-add-the-rumble-motor.patch \
+    file://0063-drm-sun4i-latch-DE33-register-writes-at-vblank.patch \
 "
 SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 

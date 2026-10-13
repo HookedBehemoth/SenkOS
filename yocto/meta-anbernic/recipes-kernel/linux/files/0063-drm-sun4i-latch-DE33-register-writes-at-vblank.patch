@@ -1,0 +1,374 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Tue, 13 Oct 2026 23:00:00 +0200
+Subject: [PATCH] drm/sun4i: latch DE33 register writes at vblank
+
+The DE33 has no global double buffer register: plane and blender
+registers take effect as they are written. A commit lands mid-scanout
+(Weston commits about 7 ms before the vblank), so a change in the plane
+layout shows half applied for one refresh, a horizontal band (the
+launcher's pause screen mapping above a game with the performance
+overlay on a plane).
+
+Queue the writes of the planes and mixer regmaps from the CRTC's
+atomic_begin to the mixer's commit and write them out from the TCON's
+vblank interrupt, as the BSP does (RCQ, or writes at vsync). The flip
+event is taken after the commit, so the vblank that sends it is the one
+that latched the registers. Without an event or with the CRTC off the
+queue goes out at once. Reads see queued values (read-modify-write).
+
+The queue is the display engine's, shared by both mixers: with the LCD
+and HDMI both on, one mixer's commit sends out what the other queued.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/sun4i/sun4i_crtc.c    |  32 +++-----
+ drivers/gpu/drm/sun4i/sun50i_planes.c | 140 +++++++++++++++++++++++++++++++++-
+ drivers/gpu/drm/sun4i/sun50i_planes.h |  25 ++++++
+ drivers/gpu/drm/sun4i/sun8i_mixer.c   |  35 +++++++--
+ 4 files changed, 206 insertions(+), 26 deletions(-)
+
+diff --git a/drivers/gpu/drm/sun4i/sun4i_crtc.c b/drivers/gpu/drm/sun4i/sun4i_crtc.c
+index c2f7f69ba..846036cd2 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_crtc.c
++++ b/drivers/gpu/drm/sun4i/sun4i_crtc.c
+@@ -66,18 +66,7 @@ static void sun4i_crtc_atomic_begin(struct drm_crtc *crtc,
+ 	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
+ 									 crtc);
+ 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
+-	struct drm_device *dev = crtc->dev;
+ 	struct sunxi_engine *engine = scrtc->engine;
+-	unsigned long flags;
+-
+-	if (crtc->state->event) {
+-		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
+-
+-		spin_lock_irqsave(&dev->event_lock, flags);
+-		scrtc->event = crtc->state->event;
+-		spin_unlock_irqrestore(&dev->event_lock, flags);
+-		crtc->state->event = NULL;
+-	}
+ 
+ 	if (engine->ops->atomic_begin)
+ 		engine->ops->atomic_begin(engine, old_state);
+@@ -87,21 +76,24 @@ static void sun4i_crtc_atomic_flush(struct drm_crtc *crtc,
+ 				    struct drm_atomic_commit *state)
+ {
+ 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
+-	struct drm_pending_vblank_event *event = crtc->state->event;
++	struct drm_device *dev = crtc->dev;
++	unsigned long flags;
+ 
+ 	DRM_DEBUG_DRIVER("Committing plane changes\n");
+ 
+ 	sunxi_engine_commit(scrtc->engine, crtc, state);
+ 
+-	if (event) {
+-		crtc->state->event = NULL;
++	/*
++	 * Taken after the commit: the vblank that sends it is the one that
++	 * latches the registers (the DE33 writes them out then)
++	 */
++	if (crtc->state->event) {
++		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
+ 
+-		spin_lock_irq(&crtc->dev->event_lock);
+-		if (drm_crtc_vblank_get(crtc) == 0)
+-			drm_crtc_arm_vblank_event(crtc, event);
+-		else
+-			drm_crtc_send_vblank_event(crtc, event);
+-		spin_unlock_irq(&crtc->dev->event_lock);
++		spin_lock_irqsave(&dev->event_lock, flags);
++		scrtc->event = crtc->state->event;
++		spin_unlock_irqrestore(&dev->event_lock, flags);
++		crtc->state->event = NULL;
+ 	}
+ }
+ 
+diff --git a/drivers/gpu/drm/sun4i/sun50i_planes.c b/drivers/gpu/drm/sun4i/sun50i_planes.c
+index 8837fe4af..066eb77a7 100644
+--- a/drivers/gpu/drm/sun4i/sun50i_planes.c
++++ b/drivers/gpu/drm/sun4i/sun50i_planes.c
+@@ -122,6 +122,142 @@ void sun50i_planes_restore(struct device *dev)
+ }
+ EXPORT_SYMBOL(sun50i_planes_restore);
+ 
++/* Called with the lock held */
++static void sun50i_planes_flush(struct sun50i_planes *planes)
++{
++	unsigned int i;
++
++	for (i = 0; i < planes->count; i++)
++		writel(planes->queue[i].val, planes->queue[i].addr);
++	planes->count = 0;
++	planes->ready = false;
++}
++
++struct sun50i_planes_regs {
++	struct sun50i_planes	*planes;
++	void __iomem		*base;
++	struct regmap_config	config;
++};
++
++static int sun50i_planes_reg_write(void *context, unsigned int reg,
++				   unsigned int val)
++{
++	struct sun50i_planes_regs *regs = context;
++	struct sun50i_planes *planes = regs->planes;
++	void __iomem *addr = regs->base + reg;
++	unsigned long flags;
++	unsigned int i;
++
++	spin_lock_irqsave(&planes->lock, flags);
++	if (!planes->holding) {
++		writel(val, addr);
++		goto out;
++	}
++	for (i = 0; i < planes->count; i++)
++		if (planes->queue[i].addr == addr) {
++			planes->queue[i].val = val;
++			goto out;
++		}
++	if (planes->count == QUEUE_SIZE) {
++		WARN_ONCE(1, "DE33 register queue full\n");
++		sun50i_planes_flush(planes);
++	}
++	planes->queue[planes->count++] = (struct sun50i_planes_write){ addr, val };
++out:
++	spin_unlock_irqrestore(&planes->lock, flags);
++	return 0;
++}
++
++/* What was last written, queued or not */
++static int sun50i_planes_reg_read(void *context, unsigned int reg,
++				  unsigned int *val)
++{
++	struct sun50i_planes_regs *regs = context;
++	struct sun50i_planes *planes = regs->planes;
++	void __iomem *addr = regs->base + reg;
++	unsigned long flags;
++	unsigned int i;
++
++	spin_lock_irqsave(&planes->lock, flags);
++	*val = readl(addr);
++	for (i = 0; i < planes->count; i++)
++		if (planes->queue[i].addr == addr)
++			*val = planes->queue[i].val;
++	spin_unlock_irqrestore(&planes->lock, flags);
++	return 0;
++}
++
++static struct regmap *sun50i_planes_queued_regmap(struct sun50i_planes *planes,
++						  struct device *dev,
++						  void __iomem *base,
++						  const struct regmap_config *config)
++{
++	struct sun50i_planes_regs *regs;
++
++	regs = devm_kzalloc(dev, sizeof(*regs), GFP_KERNEL);
++	if (!regs)
++		return ERR_PTR(-ENOMEM);
++
++	regs->planes = planes;
++	regs->base = base;
++	regs->config = *config;
++	regs->config.reg_read = sun50i_planes_reg_read;
++	regs->config.reg_write = sun50i_planes_reg_write;
++	return devm_regmap_init(dev, NULL, regs, &regs->config);
++}
++
++/* A mixer's registers, queued with the planes' */
++struct regmap *sun50i_planes_regmap(struct device *planes_dev,
++				    struct device *dev, void __iomem *base,
++				    const struct regmap_config *config)
++{
++	return sun50i_planes_queued_regmap(dev_get_drvdata(planes_dev), dev,
++					   base, config);
++}
++EXPORT_SYMBOL(sun50i_planes_regmap);
++
++/* A commit starts: what's still queued goes out first */
++void sun50i_planes_hold(struct device *dev)
++{
++	struct sun50i_planes *planes = dev_get_drvdata(dev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&planes->lock, flags);
++	sun50i_planes_flush(planes);
++	planes->holding = true;
++	spin_unlock_irqrestore(&planes->lock, flags);
++}
++EXPORT_SYMBOL(sun50i_planes_hold);
++
++/* The commit is complete: written at the next vblank, or now */
++void sun50i_planes_release(struct device *dev, bool now)
++{
++	struct sun50i_planes *planes = dev_get_drvdata(dev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&planes->lock, flags);
++	planes->holding = false;
++	if (now)
++		sun50i_planes_flush(planes);
++	else
++		planes->ready = true;
++	spin_unlock_irqrestore(&planes->lock, flags);
++}
++EXPORT_SYMBOL(sun50i_planes_release);
++
++/* From the vblank interrupt */
++void sun50i_planes_latch(struct device *dev)
++{
++	struct sun50i_planes *planes = dev_get_drvdata(dev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&planes->lock, flags);
++	if (planes->ready)
++		sun50i_planes_flush(planes);
++	spin_unlock_irqrestore(&planes->lock, flags);
++}
++EXPORT_SYMBOL(sun50i_planes_latch);
++
+ static const struct regmap_config sun50i_planes_regmap_config = {
+ 	.name		= "planes",
+ 	.reg_bits	= 32,
+@@ -154,7 +290,9 @@ static int sun50i_planes_probe(struct platform_device *pdev)
+ 	if (IS_ERR(regs))
+ 		return PTR_ERR(regs);
+ 
+-	planes->regs = devm_regmap_init_mmio(dev, regs, &sun50i_planes_regmap_config);
++	spin_lock_init(&planes->lock);
++	planes->regs = sun50i_planes_queued_regmap(planes, dev, regs,
++						   &sun50i_planes_regmap_config);
+ 	if (IS_ERR(planes->regs))
+ 		return PTR_ERR(planes->regs);
+ 
+diff --git a/drivers/gpu/drm/sun4i/sun50i_planes.h b/drivers/gpu/drm/sun4i/sun50i_planes.h
+index 2373f529b..e367b8235 100644
+--- a/drivers/gpu/drm/sun4i/sun50i_planes.h
++++ b/drivers/gpu/drm/sun4i/sun50i_planes.h
+@@ -15,6 +15,8 @@
+ #define SUNXI_DE33_DE_PORT12CHN_MUX_REG	0x2c
+ 
+ #define MAX_DISP	2
++/* Register writes of one commit, held for the vblank */
++#define QUEUE_SIZE	512
+ #define MAX_CHANNELS	8
+ #define UI_PLANE_OFFSET	6
+ 
+@@ -28,10 +30,27 @@ struct sun50i_planes_quirks {
+ 	struct sun8i_layer_cfg	cfg;
+ };
+ 
++struct sun50i_planes_write {
++	void __iomem	*addr;
++	u32		val;
++};
++
+ struct sun50i_planes {
+ 	struct regmap				*regs;
+ 	struct regmap				*mapping;
+ 	const struct sun50i_planes_quirks	*quirks;
++
++	/*
++	 * The DE33 has no double buffering: a register takes effect as it is
++	 * written, mid-scanout. Between hold and release the writes of the
++	 * planes and mixer regmaps are queued; latch, from the vblank
++	 * interrupt, writes them out together.
++	 */
++	spinlock_t				lock;
++	bool					holding;
++	bool					ready;
++	unsigned int				count;
++	struct sun50i_planes_write		queue[QUEUE_SIZE];
+ };
+ 
+ extern const struct of_device_id sun50i_planes_of_table[];
+@@ -40,5 +59,11 @@ struct drm_plane **
+ sun50i_planes_setup(struct device *dev, struct drm_device *drm,
+ 		    unsigned int mixer);
+ void sun50i_planes_restore(struct device *dev);
++struct regmap *sun50i_planes_regmap(struct device *planes_dev,
++				    struct device *dev, void __iomem *base,
++				    const struct regmap_config *config);
++void sun50i_planes_hold(struct device *dev);
++void sun50i_planes_release(struct device *dev, bool now);
++void sun50i_planes_latch(struct device *dev);
+ 
+ #endif /* _SUN50I_PLANES_H_ */
+diff --git a/drivers/gpu/drm/sun4i/sun8i_mixer.c b/drivers/gpu/drm/sun4i/sun8i_mixer.c
+index f6d9626a3..f093a0c07 100644
+--- a/drivers/gpu/drm/sun4i/sun8i_mixer.c
++++ b/drivers/gpu/drm/sun4i/sun8i_mixer.c
+@@ -311,6 +311,21 @@ static void sun8i_mixer_commit(struct sunxi_engine *engine,
+ 	if (mixer->cfg->de_type != SUN8I_MIXER_DE33)
+ 		regmap_write(engine->regs, SUN8I_MIXER_GLOBAL_DBUFF,
+ 			     SUN8I_MIXER_GLOBAL_DBUFF_ENABLE);
++	else
++		/* No vblank to wait for without an event or with the CRTC off */
++		sun50i_planes_release(mixer->planes_dev,
++				      !crtc->state->active || !crtc->state->event);
++}
++
++static void sun50i_mixer_atomic_begin(struct sunxi_engine *engine,
++				      struct drm_crtc_state *old_state)
++{
++	sun50i_planes_hold(engine_to_sun8i_mixer(engine)->planes_dev);
++}
++
++static void sun50i_mixer_vblank(struct sunxi_engine *engine)
++{
++	sun50i_planes_latch(engine_to_sun8i_mixer(engine)->planes_dev);
+ }
+ 
+ static struct drm_plane **sun8i_layers_init(struct drm_device *drm,
+@@ -498,7 +513,9 @@ static const struct sunxi_engine_ops sun8i_engine_ops = {
+ };
+ 
+ static const struct sunxi_engine_ops sun50i_engine_ops = {
++	.atomic_begin	= sun50i_mixer_atomic_begin,
+ 	.commit		= sun8i_mixer_commit,
++	.vblank_quirk	= sun50i_mixer_vblank,
+ 	.layers_init	= sun50i_layers_init,
+ 	.mode_set	= sun8i_mixer_mode_set,
+ };
+@@ -587,7 +604,7 @@ static int sun8i_mixer_bind(struct device *dev, struct device *master,
+ 	struct drm_device *drm = data;
+ 	struct sun4i_drv *drv = drm->dev_private;
+ 	struct sun8i_mixer *mixer;
+-	void __iomem *regs;
++	void __iomem *regs, *base;
+ 	int i, ret;
+ 
+ 	/*
+@@ -644,11 +661,11 @@ static int sun8i_mixer_bind(struct device *dev, struct device *master,
+ 	else
+ 		mixer->engine.ops = &sun8i_engine_ops;
+ 
+-	regs = devm_platform_ioremap_resource(pdev, 0);
+-	if (IS_ERR(regs))
+-		return PTR_ERR(regs);
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
+ 
+-	mixer->engine.regs = devm_regmap_init_mmio(dev, regs,
++	mixer->engine.regs = devm_regmap_init_mmio(dev, base,
+ 						   &sun8i_mixer_regmap_config);
+ 	if (IS_ERR(mixer->engine.regs)) {
+ 		dev_err(dev, "Couldn't create the mixer regmap\n");
+@@ -735,6 +752,14 @@ static int sun8i_mixer_bind(struct device *dev, struct device *master,
+ 		}
+ 
+ 		mixer->planes_dev = &pdev->dev;
++
++		/* Written at the vblank, with the planes */
++		mixer->engine.regs = sun50i_planes_regmap(mixer->planes_dev, dev,
++							  base, &sun8i_mixer_regmap_config);
++		if (IS_ERR(mixer->engine.regs)) {
++			ret = PTR_ERR(mixer->engine.regs);
++			goto err_disable_mod_clk;
++		}
+ 	}
+ 
+ 	list_add_tail(&mixer->engine.list, &drv->engine_list);
