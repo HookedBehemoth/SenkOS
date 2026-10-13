@@ -1,4 +1,4 @@
-SUMMARY = "Weston module: counts the frames shown, for the launcher's power calibration"
+SUMMARY = "Weston module: counts the frames shown (power calibration), switches the refresh rate"
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 SRC_URI = "file://frames.c"

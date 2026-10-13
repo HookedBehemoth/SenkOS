@@ -5,11 +5,13 @@
  *
  * An app's clocks come from the kernel's tables, set whenever it comes on
  * screen: the CPU's a cap (Auto: the highest), the GPU's pinned (Auto: its
- * governor's choice). At home everything goes back to Auto. sysd writes them, the launcher runs unprivileged. Kept
- * a line an app in $XDG_CONFIG_HOME/launcher-power: "CPU_KHZ GPU_HZ FPS KEY", 0 for Auto.
+ * governor's choice). At home everything goes back to Auto. sysd writes them, the launcher runs unprivileged.
+ * The display's refresh rate too, one of its modes' (Auto: the one Weston
+ * started with), switched by Weston's frames.so. Kept a line an app in
+ * $XDG_CONFIG_HOME/launcher-power: "CPU_KHZ GPU_HZ FPS REFRESH_MHZ KEY", 0 for Auto.
  *
  * Calibration finds the lowest clocks that still hold the app's frame rate
- * (FPS, 30 to 60): from the highest, the CPU's a step at a time while every
+ * (FPS, 30 to the refresh rate): from the highest, the CPU's a step at a time while every
  * second of five holds it, then the GPU's the same way, and keeps the last
  * that held. Frames are what the display shows (Weston's frames.so
  * module), whoever draws them. The result is set once, like a manual choice.
@@ -22,7 +24,7 @@
 #include "str.h"
 
 /* The page's rows */
-enum { POWER_CALIBRATE, POWER_CPU, POWER_GPU, POWER_BRIGHTNESS, POWER_ROWS };
+enum { POWER_CALIBRATE, POWER_CPU, POWER_GPU, POWER_REFRESH, POWER_BRIGHTNESS, POWER_ROWS };
 
 /* The tables, and the saved brightness set */
 void power_init(void);
@@ -30,7 +32,7 @@ void power_init(void);
 void power_apply(void);
 /* `key`'s clocks (an app's: its ROM, folder or command) set; "": home, Auto */
 void power_use(str key);
-/* A row's value as shown: "60 fps", "Auto", "1008 MHz", "50%" */
+/* A row's value as shown: "60 fps", "Auto", "1008 MHz", "120 Hz", "50%" */
 str power_value(int row);
 /* Left or right on a row: set and saved */
 void power_step(int row, int by);

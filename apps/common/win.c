@@ -16,6 +16,7 @@ struct wl_compositor *win_compositor;
 struct wl_subcompositor *win_subcompositor;
 struct wl_shm *win_shm;
 int win_refresh_mhz;
+int win_refreshes_mhz[WIN_REFRESHES_MAX], win_refresh_count;
 static struct xdg_wm_base *wm_base;
 static struct wl_output *output;
 static struct wl_seat *seat;
@@ -184,16 +185,41 @@ static void seat_caps(void *data, struct wl_seat *s, uint32_t caps) {
 static void seat_name(void *data, struct wl_seat *s, const char *name) { (void)data, (void)s, (void)name; }
 static const struct wl_seat_listener seat_listener = {seat_caps, seat_name};
 
+/* Every mode at bind, then the current one again on each switch */
+static struct {
+  int w, h, mhz;
+} modes[16];
+static int mode_count, current_w, current_h;
+
 static void output_mode(void *data, struct wl_output *o, uint32_t flags, int32_t w, int32_t h, int32_t refresh) {
-  (void)data, (void)o, (void)w, (void)h;
-  if (flags & WL_OUTPUT_MODE_CURRENT)
+  (void)data, (void)o;
+  if (flags & WL_OUTPUT_MODE_CURRENT) {
     win_refresh_mhz = refresh;
+    current_w = w;
+    current_h = h;
+  }
+  for (int i = 0; i < mode_count; i++)
+    if (modes[i].w == w && modes[i].h == h && modes[i].mhz == refresh)
+      return;
+  if (mode_count < (int)COUNTOF(modes))
+    modes[mode_count++] = (typeof(modes[0])){w, h, refresh};
 }
 static void output_geometry(void *data, struct wl_output *o, int32_t x, int32_t y, int32_t pw, int32_t ph,
                             int32_t subpixel, const char *make, const char *model, int32_t transform) {
   (void)data, (void)o, (void)x, (void)y, (void)pw, (void)ph, (void)subpixel, (void)make, (void)model, (void)transform;
 }
-static void output_done(void *data, struct wl_output *o) { (void)data, (void)o; }
+static void output_done(void *data, struct wl_output *o) {
+  (void)data, (void)o;
+  win_refresh_count = 0;
+  for (int i = 0; i < mode_count; i++) {
+    if (modes[i].w != current_w || modes[i].h != current_h || win_refresh_count == WIN_REFRESHES_MAX)
+      continue;
+    int at = win_refresh_count++;
+    for (; at > 0 && win_refreshes_mhz[at - 1] > modes[i].mhz; at--)
+      win_refreshes_mhz[at] = win_refreshes_mhz[at - 1];
+    win_refreshes_mhz[at] = modes[i].mhz;
+  }
+}
 static void output_scale(void *data, struct wl_output *o, int32_t factor) { (void)data, (void)o, (void)factor; }
 static const struct wl_output_listener output_listener = {
     .geometry = output_geometry, .mode = output_mode, .done = output_done, .scale = output_scale};

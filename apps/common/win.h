@@ -26,6 +26,9 @@ extern struct wl_subcompositor *win_subcompositor;
 extern struct wl_shm *win_shm;
 /* The output's refresh rate in mHz, 0 when it didn't say */
 extern int win_refresh_mhz;
+/* The rates of its modes at the current size, ascending */
+#define WIN_REFRESHES_MAX 8
+extern int win_refreshes_mhz[WIN_REFRESHES_MAX], win_refresh_count;
 
 /* What woke the loop: ours, then the app's own from WIN_WAKE_APP */
 enum {

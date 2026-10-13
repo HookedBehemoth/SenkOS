@@ -1,4 +1,4 @@
-SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player, corehost, downloadd, and common/ that they share"
+SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player, corehost, downloadd, refreshtest, and common/ that they share"
 # Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT. Listed so their
 # texts land in the image with ours (the launcher's Licenses screen).
 LICENSE = "AGPL-3.0-only & ISC & MIT"
@@ -24,9 +24,11 @@ DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freet
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime
-PACKAGES =+ "launcher mediaplayer corehost downloadd"
+PACKAGES =+ "launcher mediaplayer corehost downloadd refreshtest"
 FILES:launcher = "${bindir}/launcher"
 FILES:downloadd = "${bindir}/downloadd"
+# A test pattern, not in the image: copied to /data/apps/benchmarks to try a refresh rate
+FILES:refreshtest = "${bindir}/refreshtest"
 # TLS: the server
 RDEPENDS:downloadd = "ca-certificates"
 FILES:mediaplayer = "${bindir}/mediaplayer"

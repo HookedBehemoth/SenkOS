@@ -319,9 +319,10 @@ int launcher_power_focus = -1;
 
 bool launcher_power_page(nav *ui, ui_rect view, bool calibration) {
   static const str labels[POWER_ROWS] = {S("Automatic calibration"), S("CPU"),
-                                         S("GPU"), S("Brightness")};
+                                         S("GPU"), S("Refresh rate"),
+                                         S("Brightness")};
   static const int icons[POWER_ROWS] = {ICON_GAUGE, ICON_CPU, ICON_MICROCHIP,
-                                        ICON_SUN};
+                                        ICON_MONITOR, ICON_SUN};
   bool calibrate = false;
   launcher_power_focus = -1;
   const int first = calibration ? 0 : POWER_CPU;

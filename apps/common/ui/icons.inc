@@ -24,6 +24,7 @@ enum {
   ICON_LIBRARY,
   ICON_LOCK,
   ICON_MICROCHIP,
+  ICON_MONITOR,
   ICON_MOON,
   ICON_NETWORK,
   ICON_PLAY,
@@ -319,6 +320,16 @@ static const float icon_microchip[] = {
     10.288f, 3.381f, 10.062f, 2.495f, ICON_CUBIC, 9.994f, 2.227f, 9.776f,
     2.0f, 9.500f, 2.0f, ICON_CLOSE, ICON_END,
 };
+static const float icon_monitor[] = {
+    ICON_MOVE, 4.0f, 3.0f, ICON_LINE, 20.0f, 3.0f, ICON_CUBIC, 21.105f,
+    3.0f, 22.0f, 3.895f, 22.0f, 5.0f, ICON_LINE, 22.0f, 15.0f,
+    ICON_CUBIC, 22.0f, 16.105f, 21.105f, 17.0f, 20.0f, 17.0f, ICON_LINE,
+    4.0f, 17.0f, ICON_CUBIC, 2.895f, 17.0f, 2.0f, 16.105f, 2.0f,
+    15.0f, ICON_LINE, 2.0f, 5.0f, ICON_CUBIC, 2.0f, 3.895f, 2.895f,
+    3.0f, 4.0f, 3.0f, ICON_CLOSE, ICON_MOVE, 8.0f, 21.0f, ICON_LINE,
+    16.0f, 21.0f, ICON_MOVE, 12.0f, 17.0f, ICON_LINE, 12.0f, 21.0f,
+    ICON_END,
+};
 static const float icon_moon[] = {
     ICON_MOVE, 12.0f, 3.0f, ICON_CUBIC, 9.515f, 5.485f, 9.515f, 9.515f,
     12.0f, 12.0f, ICON_CUBIC, 14.485f, 14.485f, 18.515f, 14.485f, 21.0f,
@@ -591,6 +602,7 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_library,
     icon_lock,
     icon_microchip,
+    icon_monitor,
     icon_moon,
     icon_network,
     icon_play,

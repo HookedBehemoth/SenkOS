@@ -553,6 +553,25 @@ static int64_t ns_now(void) {
 #define RATE_CONTROL 0.005
 static unsigned swaps = 1; /* presents a frame: 2 for a 30 fps core at 60 Hz */
 static double in_rate;     /* the core's samples per second of ours */
+static int64_t refresh_ns;
+static int paced_mhz = -1; /* the refresh rate pace() last saw */
+
+/* Swaps per frame and the stretch, as RetroArch picks them (its
+ * audio_max_timing_skew): the refresh rate's nearest multiple of the
+ * core's, if it is close. Again whenever the display's rate changes. */
+static void pace(double sample_rate) {
+  paced_mhz = win_refresh_mhz;
+  const double refresh = win_refresh_mhz > 0 ? win_refresh_mhz / 1000.0 : fps;
+  refresh_ns = (int64_t)(1e9 / refresh);
+  swaps = (unsigned)CLAMP((int)(refresh / fps + 0.5), 1, 4);
+  const double target = refresh / swaps;
+  const bool stretched = fabs(1 - fps / target) <= MAX_SKEW;
+  if (!stretched)
+    swaps = 1;
+  in_rate = sample_rate * (stretched ? target / fps : 1);
+  fprintf(stderr, "corehost: %.3f fps at %.3f Hz: %u swap%s a frame, %s\n", fps, refresh, swaps,
+          swaps > 1 ? "s" : "", stretched ? "sound stretched to fit" : "paced by the sound");
+}
 static snd_pcm_uframes_t audio_buffer;
 
 /* The core's sound at `step` of its frames per one of ours, linearly;
@@ -2179,19 +2198,7 @@ int main(int argc, char **argv) {
     if (!vk_init())
       return 1;
   }
-  /* Swaps per frame and the stretch, as RetroArch picks them (its
-   * audio_max_timing_skew): the refresh rate's nearest multiple of the
-   * core's, if it is close */
-  const double refresh = win_refresh_mhz > 0 ? win_refresh_mhz / 1000.0 : fps;
-  const int64_t refresh_ns = (int64_t)(1e9 / refresh);
-  swaps = (unsigned)CLAMP((int)(refresh / fps + 0.5), 1, 4);
-  const double target = refresh / swaps;
-  const bool stretched = fabs(1 - fps / target) <= MAX_SKEW;
-  if (!stretched)
-    swaps = 1;
-  in_rate = av.timing.sample_rate * (stretched ? target / fps : 1);
-  fprintf(stderr, "corehost: %.3f fps at %.3f Hz: %u swap%s a frame, %s\n", fps, refresh, swaps,
-          swaps > 1 ? "s" : "", stretched ? "sound stretched to fit" : "paced by the sound");
+  pace(av.timing.sample_rate);
   /* 64 ms of sound in the device, as RetroArch has it */
   if (snd_pcm_open(&audio, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0 ||
       snd_pcm_set_params(audio, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 2, OUT_RATE, 1, 64000) < 0) {
@@ -2221,6 +2228,9 @@ int main(int argc, char **argv) {
     restart = false;
     if (paused || !running)
       continue;
+    /* The launcher switched the display's rate (its Power page) */
+    if (win_refresh_mhz != paced_mhz)
+      pace(av.timing.sample_rate);
 
     /* Hotkeys on the press: toggles and one-shots */
     static uint32_t was;

@@ -179,8 +179,10 @@ files there but can't rename or delete root's.
 - **Settings:** the app's categories with options (System, Graphics, Audio, Input; Left/Right change one), then Power
   and Debug. Power ([power.h](../apps/launcher/power.h)): CPU and GPU clocks (Auto, or a step of the kernel's
   tables: the CPU's a cap, the GPU's pinned; per ROM, app folder or command in `launcher-power`, set while the app has
-  the screen, Auto at home), the backlight (also Menu + volume keys anywhere), and Automatic calibration: pick a frame
-  rate (30 to 60), and back in the app the CPU's clock goes down a step while every second of five holds it, then the
+  the screen, Auto at home), the refresh rate (Auto, or one of the panel's modes: 60, 120 Hz; switched by `frames.so`
+  through the `$XDG_RUNTIME_DIR/refresh` FIFO, corehost re-paces to it; whether the panel shows every frame:
+  [refreshtest](../apps/refreshtest/main.c), copied to `/data/apps/benchmarks`), the backlight (also Menu + volume keys
+  anywhere), and Automatic calibration: pick a frame rate (30 to the refresh rate), and back in the app the CPU's clock goes down a step while every second of five holds it, then the
   GPU's, keeping the last that held (about a minute). Frames are counted by Weston's `frames.so`
   (`$XDG_RUNTIME_DIR/frames`, bumped at each repaint's latch), so any app can be calibrated; sysd sets the clocks.
   Debug: the performance overlay ([perf.h](../apps/launcher/perf.h)), its corner and lines: fps, CPU load and clock,
