@@ -54,6 +54,10 @@ connection, shell or root only by `SO_PEERCRED`). Its reply comes once the reque
 launcher shows a refusal on the OSD. Requests map to commands in a table (`cmds`), run without a shell; the
 scripts check their own arguments.
 
+Settings › Debug › Hold power to turn on (Left/Right: 128 ms, 512 ms, 1 s or 2 s) is kept by sysd in `OS/config/power-on-ms`;
+`save-settings` writes it into the AXP717 (register `0x26`, the pek driver's `startup` attribute, kernel patch 0061),
+which keeps it while off.
+
 The brightness survives reboots in `/uboot/brightness.txt`, written by `save-settings` at shutdown and before suspend
 (only when changed). U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054 makes
 pwm-backlight honour it without a levels table), so the panel lights at that level. The LED driver stays dark started

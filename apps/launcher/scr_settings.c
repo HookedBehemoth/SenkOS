@@ -27,6 +27,53 @@ static time_t wall_time(void) {
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
 #define LIGHT_SLEEP "/data/OS/config/light-sleep"
+/* sysd's; the PMU gets it at shutdown (save-settings) */
+#define POWER_ON_MS "/data/OS/config/power-on-ms"
+#define PMU_POWER_ON "/sys/bus/platform/devices/axp717-pek/startup"
+
+/* The power key's hold to turn on: the PMU's four (the AXP717's ONLEVEL) */
+static const int power_on_times[] = {128, 512, 1000, 2000};
+static const str power_on_labels[] = {S("128 ms"), S("512 ms"), S("1 s"),
+                                      S("2 s")};
+
+static int read_ms(const char *path) {
+  int ms = 0;
+  FILE *f = fopen(path, "r");
+  if (f != NULL) {
+    if (fscanf(f, "%d", &ms) != 1)
+      ms = 0;
+    fclose(f);
+  }
+  return ms;
+}
+
+/* The index in use, -1 until read */
+static int power_on_at = -1;
+
+/* The one chosen, else the PMU's, else its reset value (1 s) */
+static int power_on(void) {
+  if (power_on_at >= 0)
+    return power_on_at;
+  power_on_at = 2;
+  int ms = read_ms(POWER_ON_MS);
+  if (ms == 0)
+    ms = read_ms(PMU_POWER_ON);
+  for (int i = 0; i < (int)COUNTOF(power_on_times); i++)
+    if (power_on_times[i] == ms)
+      power_on_at = i;
+  return power_on_at;
+}
+
+static str power_on_value(void) { return power_on_labels[power_on()]; }
+
+static void power_on_step(int by) {
+  const int count = COUNTOF(power_on_times);
+  power_on_at = (power_on() + by + count) % count;
+  STRBUF(32) request;
+  request.n = 0;
+  sb_fmt(request, "power-on %d", power_on_times[power_on_at]);
+  sysd(sb_str(request));
+}
 
 enum { PAGE_MAX = 8 + PERF_ROWS };
 typedef STRBUF(96) page_label;
@@ -77,6 +124,10 @@ static size_t page_rows(const ui_screen_def *kind, entry *rows,
                         .action = DEEP_SLEEP,
                         .icon = ICON_MOON,
                         .checked = access(LIGHT_SLEEP, F_OK) != 0};
+    rows[n++] = (entry){.label = S("Hold power to turn on"),
+                        .action = POWER_ON,
+                        .icon = ICON_POWER,
+                        .value = power_on_value()};
     n += launcher_perf_rows(rows + n);
   } else {
     rows[n++] = (entry){
@@ -327,6 +378,18 @@ static bool power_button(ui_screen *screen, nav *ui, int button) {
   return true;
 }
 
+static bool debug_button(ui_screen *screen, nav *ui, int button) {
+  entry rows[PAGE_MAX];
+  page_label labels[2];
+  (void)ui;
+  if (menu_focus < 0 || (button != APPCTL_LEFT && button != APPCTL_RIGHT) ||
+      (size_t)menu_focus >= page_rows(screen->def, rows, labels) ||
+      rows[menu_focus].action != POWER_ON)
+    return false;
+  power_on_step(button == APPCTL_LEFT ? -1 : 1);
+  return true;
+}
+
 static void choose_settings(nav *ui, void *choice) {
   launcher_state *state = &launcher;
   const entry *chosen = choice;
@@ -421,6 +484,9 @@ static void choose_debug(nav *ui, void *choice) {
   case DEEP_SLEEP:
     sysd(access(LIGHT_SLEEP, F_OK) == 0 ? S("sleep deep") : S("sleep light"));
     break;
+  case POWER_ON:
+    power_on_step(1);
+    break;
   case PERF_CORNER:
     launcher_perf_action(PERF_CORNER, 0);
     break;
@@ -460,4 +526,7 @@ const ui_screen_def clock_screen = {.name = "clock",
 const ui_screen_def time_screen = {
     .name = "time", .frame = page_frame, .title_text = S("Time")};
 const ui_screen_def debug_screen = {
-    .name = "debug", .frame = page_frame, .title_text = S("Debug")};
+    .name = "debug",
+    .frame = page_frame,
+    .button = debug_button,
+    .title_text = S("Debug")};

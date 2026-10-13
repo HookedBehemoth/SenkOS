@@ -108,8 +108,14 @@ const entry *menu(nav *ui, const entry *entries, size_t count, ui_rect view) {
               FG);
       x += ICON_PX + MARGIN;
     }
-    const float room =
-        r.x + r.w - x - MARGIN - (entries[i].checked ? ICON_PX + MARGIN : 0);
+    STRBUF(64) value;
+    value.n = 0;
+    if (entries[i].value.n > 0)
+      sb_set(value, S("\u2039 "), entries[i].value, S(" \u203a"));
+    const int vw = value.n > 0 ? ui_text_width(ROW_TEXT, sb_str(value)) : 0;
+    const float room = r.x + r.w - x - MARGIN -
+                       (entries[i].checked ? ICON_PX + MARGIN : 0) -
+                       (vw > 0 ? vw + MARGIN : 0);
     const int ty = (int)r.y + ((int)r.h - ui_text_height(ROW_TEXT)) / 2;
     if ((flags & NAV_FOCUSED) &&
         ui_text_width(ROW_TEXT, entries[i].label) > room)
@@ -120,6 +126,9 @@ const entry *menu(nav *ui, const entry *entries, size_t count, ui_rect view) {
     if (entries[i].checked)
       ui_icon(ICON_CHECK, ICON_PX, (int)(r.x + r.w) - MARGIN - ICON_PX,
               (int)r.y + ((int)r.h - ICON_PX) / 2, FG);
+    if (vw > 0)
+      ui_text(ROW_TEXT, (int)(r.x + r.w) - MARGIN - vw, ty, sb_str(value),
+              flags & NAV_FOCUSED ? FG : MUTED);
   }
   gfx_noclip();
   nav_scroll_end(ui);

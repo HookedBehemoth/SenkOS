@@ -41,6 +41,7 @@
 #define SSH_ALL "/data/OS/dropbear/everywhere"
 #define LIGHT_SLEEP "/data/OS/config/light-sleep"
 #define LIGHT_MODE "/uboot/light"
+#define POWER_ON_MS "/data/OS/config/power-on-ms"
 /* The power key held this long is the launcher's (POWER_HOLD_MS) */
 #define HOLD_S 1.0
 #define ARGV(...) ((const char *const[]){__VA_ARGS__, NULL})
@@ -78,6 +79,8 @@ static const struct cmd {
 	/* The UI's colors and the boot splash (boot.cmd): light while LIGHT_MODE is there */
 	{"theme light", NULL, {ARGV("touch", LIGHT_MODE)}},
 	{"theme dark", NULL, {ARGV("rm", "-f", LIGHT_MODE)}},
+	/* The power key's hold to turn on, the PMU's at shutdown (save-settings) */
+	{"power-on", "128 512 1000 2000", {ARGV("sh", "-c", "echo $0 > " POWER_ON_MS)}},
 };
 
 /* What runs for a client, which waits for the reply */

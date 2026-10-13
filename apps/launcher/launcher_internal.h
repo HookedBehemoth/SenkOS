@@ -100,6 +100,7 @@ enum {
   SLEEP_LIGHT,
   DEEP_SLEEP,
   LIGHT_MODE,
+  POWER_ON,
   PERF,
   PERF_CORNER,
   MATCH,
@@ -120,6 +121,8 @@ typedef struct {
   intptr_t arg;
   bool checked;
   int depth;
+  /* Shown on the right as "‹ value ›": Left and Right change it */
+  str value;
 } entry;
 
 typedef struct {

@@ -1,4 +1,8 @@
 #!/bin/sh
+# The power key's hold to turn on (Settings), into the PMU, which keeps it while off
+read -r ms < /data/OS/config/power-on-ms 2>/dev/null &&
+	echo "$ms" > /sys/bus/platform/devices/axp717-pek/startup
+
 # Brightness for the next boot (boot.cmd), only written when changed
 f=/uboot/brightness.txt
 read -r b < /sys/class/backlight/backlight/brightness || exit 0
