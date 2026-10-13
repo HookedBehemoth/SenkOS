@@ -500,8 +500,12 @@ static void publish_and_load(void) {
 
 static void sw_frame(const void *data, unsigned w, unsigned h, size_t pitch);
 
+/* Fast forward's frames but the last aren't shown: the core is told
+ * (GET_AUDIO_VIDEO_ENABLE), and what it sends anyway goes */
+static bool unseen;
+
 static void video(const void *data, unsigned w, unsigned h, size_t pitch) {
-  if (data == NULL) /* a dupe: the last frame stays */
+  if (data == NULL || unseen) /* a dupe: the last frame stays */
     return;
   if (hw_on) {
     /* In the fbo; anything else from a GL core isn't shown */
@@ -1130,7 +1134,7 @@ static bool sw_resize(unsigned w, unsigned h, VkDeviceSize size) {
 }
 
 /* Into the staging buffer of the frame it will be presented with, once the
- * GPU is done with that one; a few times for one present when fast */
+ * GPU is done with that one */
 static void sw_frame(const void *data, unsigned w, unsigned h, size_t pitch) {
   if (vk.device == VK_NULL_HANDLE || w == 0 || h == 0)
     return;
@@ -1493,6 +1497,10 @@ static bool environment(unsigned cmd, void *data) {
     }
   case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
     ((struct retro_log_callback *)data)->log = logf_;
+    return true;
+  case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
+    if (data != NULL)
+      *(int *)data = (unseen ? 0 : 1) | (muted ? 0 : 2);
     return true;
   case RETRO_ENVIRONMENT_GET_CAN_DUPE:
   case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
@@ -2174,6 +2182,7 @@ int main(int argc, char **argv) {
         rewind_pop();
       else if (++frame % REWIND_EVERY == 0)
         rewind_push();
+      unseen = i + 1 < speed;
       core.retro_run();
     }
     if (atomic_exchange(&redescribed, false)) {

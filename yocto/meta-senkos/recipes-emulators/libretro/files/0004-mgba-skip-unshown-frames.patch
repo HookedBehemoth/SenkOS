@@ -1,0 +1,27 @@
+Subject: [PATCH] Don't draw frames the frontend won't show
+
+GET_AUDIO_VIDEO_ENABLE without video (corehost's fast forward: all frames
+of a present but the last): one frame of mGBA's own frameskip, no
+scanlines drawn and no finishFrame. Only the renderer is skipped; what the
+game sees (VCOUNT, DISPSTAT, IRQs, DMA) runs as before.
+
+Upstream-Status: Pending
+---
+diff -ru a/src/platform/libretro/libretro.c b/src/platform/libretro/libretro.c
+--- a/src/platform/libretro/libretro.c	2026-10-13 20:08:24.245050779 +0200
++++ b/src/platform/libretro/libretro.c	2026-10-13 20:08:24.256320949 +0200
+@@ -612,6 +612,14 @@
+ 		}
+ 	}
+ 
++#ifdef M_CORE_GBA
++	/* A frame the frontend won't show (fast forward): not drawn, as mGBA's frameskip does it */
++	int avEnable = 3;
++	if (core->platform(core) == mPLATFORM_GBA &&
++	    environCallback(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &avEnable) && !(avEnable & 1)) {
++		((struct GBA*) core->board)->video.frameskipCounter = 1;
++	}
++#endif
+ 	core->runFrame(core);
+ 	unsigned width, height;
+ 	core->desiredVideoDimensions(core, &width, &height);
