@@ -6,3 +6,4 @@ Patterns=*.iso;*.cso;*.pbp;*.chd;
 MimeType=application/x-psp-rom;
 Pack=Sony - PlayStation Portable
 Order=130
+Emulator=ppsspp-vulkan.desktop

@@ -13,7 +13,8 @@
  *   (its page's, under the data root), Aliases (what other OSes call such a
  *   folder: "n64;n64dd;"), Patterns (its games: "*.n64;*.zip;"), MimeType
  *   (what its emulators take), Pack (the game pack's name in
- *   OS/assets/thumbnails, romdb.h), Order (of the pages; then by name).
+ *   OS/assets/thumbnails, romdb.h), Order (of the pages; then by name), Emulator (the .desktop
+ *   file name of the one that runs its games unless Select picked another).
  *   Every file in the folder matching Patterns is a game. Its title and box art come from the system's game
  *   pack by CRC, once that is known, or from the pack's game picked for it by hand (Select:
  *   kept in $XDG_CONFIG_HOME/launcher-matches); an image of the same name next to the ROM
@@ -23,8 +24,8 @@
  *   hides it (Hidden=true). One runs a system's games when its MimeType has
  *   the system's type; %f in Exec is the game ("$1"), Path its working
  *   directory (else the game's folder), X-SenkOS-AskQuit as an app's (a
- *   player that resumes where it was left). By name, the first runs a game
- *   unless Select on it picked another, which is kept in
+ *   player that resumes where it was left). The system's Emulator, else the
+ *   first by name, runs a game unless Select on it picked another, which is kept in
  *   $XDG_CONFIG_HOME/launcher-cores.
  * - Sources: folders on the other card added to a system; their games join
  *   its page while the folder is there.
@@ -56,6 +57,7 @@ enum { APP_QUIT_NOW = 1 };
 enum { CORES_MAX = 8 };
 typedef struct {
   STRBUF(64) name;
+  STRBUF(64) file; /* the .desktop's file name */
   STRBUF(512) exec; /* sh -c, with $1 = the ROM */
   STRBUF(256) dir;
   unsigned flags; /* APP_* */
@@ -64,8 +66,8 @@ typedef struct {
 typedef struct {
   str name;
   str folder; /* under the data root */
-  /* Game systems, from a .system: Aliases, Patterns, MimeType, Pack, Order */
-  str names, roms, mimes, pack;
+  /* Game systems, from a .system: Aliases, Patterns, MimeType, Pack, Order, Emulator */
+  str names, roms, mimes, pack, emulator;
   int order;
   /* Those that run its games, found by apps_cores */
   core cores[CORES_MAX];

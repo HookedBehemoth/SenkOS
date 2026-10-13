@@ -400,6 +400,7 @@ static void add_core(const char *path, void *ctx) {
         continue;
       core *k = &c->cores[c->core_count++];
       sb_set(k->name, sb_str(e.name));
+      sb_set(k->file, str_c(strrchr(path, '/') + 1));
       sb_set(k->exec, sb_str(e.exec));
       sb_set(k->dir, sb_str(e.dir));
       k->flags = e.flags;
@@ -428,6 +429,7 @@ static void add_system(const char *path, void *ctx) {
                  : str_eq(r.key, S("Patterns")) ? &c->roms
                  : str_eq(r.key, S("MimeType")) ? &c->mimes
                  : str_eq(r.key, S("Pack"))     ? &c->pack
+                 : str_eq(r.key, S("Emulator")) ? &c->emulator
                                                 : NULL;
     if (field != NULL)
       *field = str_dup(r.value);
@@ -459,8 +461,17 @@ void apps_cores(void) {
   for (size_t i = 0; i < category_count; i++)
     categories[i].core_count = 0;
   layered("apps/emulators", EMULATORS, S(".desktop"), add_core, NULL);
-  for (size_t i = 0; i < category_count; i++)
-    qsort(categories[i].cores, categories[i].core_count, sizeof(core), by_core_name);
+  for (size_t i = 0; i < category_count; i++) {
+    category *c = &categories[i];
+    qsort(c->cores, c->core_count, sizeof(core), by_core_name);
+    /* The system's Emulator first */
+    for (size_t j = 1; j < c->core_count; j++)
+      if (str_eq(sb_str(c->cores[j].file), c->emulator)) {
+        const core k = c->cores[j];
+        memmove(&c->cores[1], &c->cores[0], j * sizeof(core));
+        c->cores[0] = k;
+      }
+  }
 }
 
 /* The category's folder, then its sources */

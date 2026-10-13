@@ -6,3 +6,4 @@ Patterns=*.gba;*.zip;
 MimeType=application/x-gba-rom;
 Pack=Nintendo - Game Boy Advance
 Order=10
+Emulator=mgba.desktop

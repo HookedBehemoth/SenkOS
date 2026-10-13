@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=gpSP
+Comment=Game Boy Advance
+Exec=corehost /usr/lib64/libretro/gpsp_libretro.so %f
+MimeType=application/x-gba-rom;
+Categories=Game;Emulator;
