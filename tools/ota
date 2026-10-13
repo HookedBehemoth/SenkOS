@@ -9,7 +9,7 @@ img=${1:-/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp/senkos
 from=$(./ssh 'sed -n "s/.* ab=\([ab]\).*/\1/p" /proc/cmdline')
 echo "booted slot: $from, flashing $(readlink -f "$img")"
 ./ssh -C 'ab flash' < "$img"
-./ssh rm -r /data/OS/overlay
+./ssh rm -rf /data/OS/overlay
 ./ssh reboot || true
 sleep 5
 for i in $(seq 300); do

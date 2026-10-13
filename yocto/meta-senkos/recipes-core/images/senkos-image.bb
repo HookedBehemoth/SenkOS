@@ -68,7 +68,7 @@ IMAGE_INSTALL = " \
     libgomp \
     libretro-fceumm libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx \
     libretro-beetle-pce-fast libretro-pcsx-rearmed libretro-fbneo libretro-beetle-ngp libretro-beetle-wswan \
-    libretro-stella2014 libretro-handy libretro-gpsp libretro-mupen64plus-next libretro-flycast libretro-ppsspp \
+    libretro-stella2014 libretro-handy libretro-gpsp libretro-freej2me libretro-mupen64plus-next libretro-flycast libretro-ppsspp \
 "
 # The rest of the games' platform (binaries built on Debian), and all of it again for armhf (multilib, senkos.conf)
 PORTS_PLATFORM = "libstdc++ libgcc zlib libgallium libegl-mesa libglvnd mesa-vulkan-drivers vulkan-loader \

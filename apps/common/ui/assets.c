@@ -23,6 +23,7 @@
 
 
 #include "gfx.h"
+#include "jar.h"
 #include "ui.h"
 
 /* The whole process; past HIGH, evict down to LOW */
@@ -61,10 +62,12 @@ static struct {
 } done[MAX_ENTRIES];
 static int done_count;
 
-/* A file, or "pack:<offset>:<length>:<path>": part of one (romdb.h) */
+/* A file, "pack:<offset>:<length>:<path>": part of one (romdb.h), or "jar:<path>": a J2ME jar's icon */
 static uint8_t *read_file(const char *key, size_t *size) {
   unsigned long at = 0, length = 0;
   int skip = 0;
+  if (strncmp(key, "jar:", 4) == 0)
+    return jar_icon(key + 4, size);
   if (strncmp(key, "pack:", 5) == 0 &&
       sscanf(key, "pack:%lu:%lu:%n", &at, &length, &skip) != 2)
     return NULL;

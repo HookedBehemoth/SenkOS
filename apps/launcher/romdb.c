@@ -12,6 +12,7 @@
 
 #include <zlib.h>
 
+#include "jar.h"
 #include "wake.h"
 
 typedef struct {
@@ -220,6 +221,7 @@ typedef struct {
   str path; /* never freed: the hasher reads it without the lock */
   long long size, mtime;
   uint32_t crc;
+  char *name; /* a jar's own (jar.h); NULL without */
   int state;
 } rom;
 static rom *roms;
@@ -329,11 +331,14 @@ static void *hasher(void *data) {
 
     uint32_t crc = 0;
     const bool ok = file_crc(path, &crc);
+    char name[64] = "";
+    if (ok && str_iends(path, S(".jar")))
+      jar_name(path.p, name, sizeof(name));
     if (ok) {
       FILE *f = fopen(cache_path, "a");
       if (f != NULL) {
         fprintf(f, "%08x %lld %lld ", crc, size, mtime);
-        str_fput(f, path, S("\n"));
+        str_fput(f, path, name[0] ? S("\t") : S(""), str_c(name), S("\n"));
         fclose(f);
       }
     }
@@ -342,6 +347,8 @@ static void *hasher(void *data) {
     /* Unless the file changed meanwhile: then it is pending again */
     if (roms[i].state == HASHING && roms[i].size == size && roms[i].mtime == mtime) {
       roms[i].crc = crc;
+      free(roms[i].name);
+      roms[i].name = name[0] ? strdup(name) : NULL;
       roms[i].state = ok ? KNOWN : FAILED;
     }
     win_wake(UI_HASHED, 0);
@@ -360,7 +367,7 @@ void romdb_init(void) {
     mkdir(cache_path, 0755);
     *slash = '/';
   }
-  /* "crc size mtime path"; a later line for a path wins */
+  /* "crc size mtime path[\tname]"; a later line for a path wins */
   FILE *f = fopen(cache_path, "r");
   char *line = NULL;
   size_t capacity = 0;
@@ -374,9 +381,13 @@ void romdb_init(void) {
     line[whole.n] = '\0';
     if (sscanf(line, "%x %lld %lld %n", &crc, &size, &mtime, &at) != 3)
       continue;
-    rom *r = remember(str_at(whole, at));
-    if (r != NULL)
-      *r = (rom){r->path, size, mtime, crc, KNOWN};
+    str tail = str_at(whole, at);
+    const str path = str_cut(&tail, '\t');
+    rom *r = remember(path);
+    if (r != NULL) {
+      free(r->name);
+      *r = (rom){r->path, size, mtime, crc, tail.n ? (char *)str_dup(tail).p : NULL, KNOWN};
+    }
   }
   free(line);
   if (f != NULL)
@@ -384,7 +395,7 @@ void romdb_init(void) {
   spawn("crc32", hasher, NULL);
 }
 
-bool romdb_crc(str path, const struct stat *st, uint32_t *crc) {
+bool romdb_crc(str path, const struct stat *st, uint32_t *crc, char *name, size_t name_size) {
   pthread_mutex_lock(&lock);
   rom *r = remember(path);
   bool known = false;
@@ -397,6 +408,7 @@ bool romdb_crc(str path, const struct stat *st, uint32_t *crc) {
     }
     known = r->state == KNOWN;
     *crc = r->crc;
+    str_copy(name, name_size, known ? str_c(r->name) : S(""));
   }
   pthread_mutex_unlock(&lock);
   return known;

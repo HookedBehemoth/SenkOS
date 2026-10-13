@@ -1,193 +1,248 @@
-# Working on the device over USB (no card swapping)
+# Working on the device
 
-One flash of the full card image, then everything goes over the USB-C (OTG) cable.
+One flash of the full card image (see [yocto.md](yocto.md)); after that everything goes over the USB-C (OTG) cable.
 
-## The link
+## The USB link
 
 `senkos-base` sets up a configfs USB gadget at boot (`/etc/init.d/senkos`):
 
 | Function | Device side | Host side |
 |---|---|---|
-| NCM ethernet | `usb0` = `10.55.0.1/24`, `udhcpd` hands out `10.55.0.2` (no router/DNS) | new ethernet interface, NetworkManager takes the DHCP lease on its own |
-| ACM serial | getty on `ttyGS0` | `/dev/ttyACM*` (`picocom /dev/ttyACM0`), fallback when the network doesn't come up |
+| NCM ethernet | `usb0` = `10.55.0.1/24`, `udhcpd` hands out `10.55.0.2` (no router/DNS) | new ethernet interface, NetworkManager takes the lease on its own |
+| ACM serial | getty on `ttyGS0` | `/dev/ttyACM*` (`picocom /dev/ttyACM0`), for when the network doesn't come up |
 
-Fixed MACs (`02:35:58:00:00:01` device, `…:02` host), so the host keeps the same connection across reboots.
-`musb` is `dr_mode = "otg"` with the ID pin on PI4: a cable to a PC makes it a gadget, an OTG adapter (keyboard) makes it a host.
+The MACs are fixed (`02:35:58:00:00:01` device, `…:02` host), so the host keeps one connection across reboots.
+`musb` is `dr_mode = "otg"` with the ID pin on PI4: a cable to a PC makes it a gadget, an OTG adapter (keyboard) a host.
 
-`tools/ssh [cmd]` runs ssh to `root@10.55.0.1` (dropbear, empty root password, bring-up only). It doesn't record host keys, because every flashed slot makes new ones. dropbear listens on every interface, Wi-Fi too; Settings → Debug → SSH stops it (sysd's `ssh off`), and `/data/OS/dropbear/disabled` keeps it off at boot.
+`tools/ssh [cmd]` is ssh to `root@10.55.0.1` (dropbear, empty root password, bring-up only) without recording host
+keys, as every flashed slot makes new ones. dropbear listens on every interface, Wi-Fi too; Settings › Debug › SSH
+stops it (sysd's `ssh off`), and `/data/OS/dropbear/disabled` keeps it off at boot.
+
+## Deploying
+
+| What | How |
+|---|---|
+| A whole image | `tools/ota [rootfs.squashfs-lz4]`: the latest build's slot image (or the one given) into the other slot, reboot, commit |
+| The launcher | `tools/deploy-launcher`: builds it, puts it in `/data/OS/overlay/usr/bin/launcher`, runs `overlay` and restarts it |
+| corehost, mediaplayer, a core | copy it to the same path under `/data/OS/overlay` (`OS/overlay/usr/lib64/libretro/` for a core), then run `overlay` |
+| `boot.scr` ([boot.cmd](../yocto/meta-senkos/recipes-bsp/u-boot/files/boot.cmd)), the splash | `tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/rg35xx-sp/boot.scr`; not in a slot, so an OTA doesn't update them |
+| SPL/U-Boot/TF-A | `tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/rg35xx-sp/u-boot-sunxi-with-spl.bin`; shared by both slots. Recovery: flash the full `.wic.gz` from a PC |
+| [data/](../data) (files a new card gets: GPU benchmarks, …) | `tar cf - -C data . \| tools/ssh tar xf - -C /data` |
+
+An overlay goes back to the image's file with `tools/ssh rm /data/OS/overlay/<path>` and a reboot. When the control
+channel's layout ([appctl.h](../apps/common/appctl.h)) changes, deploy the launcher and corehost together.
 
 ## A/B slots
 
 ```
-8 KiB   SPL + U-Boot (+ TF-A BL31)       not A/B; see "Bootloader" below
+8 KiB   SPL + U-Boot (+ TF-A BL31)       not A/B
 p1 FAT  64M  boot.scr, ab.txt            mounted at /uboot
 p2 squashfs 512M slot a: rootfs, /boot/Image + dtb
 p3 squashfs 512M slot b: same
 p4 ext4  rest    /data, read-write; made by the first boot (`ab mount`), survives slot updates
 ```
 
-`boot.scr` ([boot.cmd](../yocto/meta-senkos/recipes-bsp/u-boot/files/boot.cmd)) isn't part of a slot, so an OTA doesn't update it:
-`tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/rg35xx-sp/boot.scr`.
-It reads `ab.txt`:
-- `slot=a|b` is the last known good slot.
-- After an update, `tryslot=` and `tries=` are also set. `tryslot` gets 3 boots, and U-Boot writes the counter back to FAT before each one.
+`boot.scr` reads `ab.txt`: `slot=a|b` is the last known good slot. After an update `tryslot=` and `tries=` are set
+too: `tryslot` gets 3 boots (U-Boot writes the counter back to FAT before each), then U-Boot boots `slot` again and
+drops `tryslot`. A failed try is:
+- a hang in U-Boot or the early kernel: the U-Boot-armed SoC watchdog (16 s) resets the board;
+- a kernel panic: `panic=10` reboots;
+- a userspace hang: busybox `watchdog` resets the board;
+- a slot not committed within 120 s: `ab boot` reboots it. This catches a broken USB link, which would lock us out.
 
-After 3 failed tries, U-Boot boots `slot` again and drops `tryslot`.
+The commit comes from the host: once ssh into the new slot works, `tools/ota` runs `ab commit`. Device side:
+[ab](../yocto/meta-senkos/recipes-core/senkos-base/files/ab) `status|mount|flash|commit|boot`.
+
+## Boot
 
 The kernel shows a splash (kernel patch 0052, `drm_splash`) from ~0.5 s until Weston takes the display over without a
 modeset. It lights the panel from a work item, so the panel's ~290 ms of init sleeps hold up nothing. The image is
-`/uboot/splash.lz4`, or `/uboot/splash-light.lz4` while `/uboot/light` is there (light mode, sysd's `theme light|dark`;
-the apps read the same file) (`splash=<file>` in `/uboot/splash.txt` picks another file there): U-Boot unpacks it into
-memory it reserves and passes its place in `/chosen`, and the kernel frees it once drawn. `tools/mksplash.py` makes both
-from `splash-art.png` (transparent, any size, drawn centred) on the UI's background; only the box around the art is stored. The
-image's copies are in the U-Boot recipe. Like `boot.scr`, an OTA doesn't put them on `/uboot`. `touch /uboot/fbdev` shows the kernel console (fbcon) instead.
+`/uboot/splash.lz4`, or `/uboot/splash-light.lz4` while `/uboot/light` is there (light mode, sysd's `theme
+light|dark`; the apps read the same file); `splash=<file>` in `/uboot/splash.txt` picks another file there. U-Boot
+unpacks it into memory it reserves and passes its place in `/chosen`; the kernel frees it once drawn.
+`tools/mksplash.py` makes both from `splash-art.png` (transparent, any size, drawn centred) on the UI's background,
+storing only the box around the art; the image's copies are in the U-Boot recipe. `touch /uboot/fbdev` shows the
+kernel console (fbcon) instead.
 
-Userspace starts with the UI: rcS S01 (`/etc/init.d/weston`) mounts `/data` and starts seatd, Weston and the
-launcher. PipeWire and the rest of rcS (udev's coldplug, the USB gadget, the watchdog) wait for the
-launcher's first frame (3 s at most). A udevd runs for Weston's start
-meanwhile, so libinput still gets the input devices from the coldplug. Once rcS is done, init starts sysd and
-the USB network's udhcpd (inittab `respawn`: again should they die).
+Userspace starts with the UI: rcS S01 (`/etc/init.d/weston`) mounts `/data`, runs `OS/init.d` and starts seatd,
+Weston and the launcher. PipeWire and the rest of rcS (udev's coldplug, the USB gadget, the watchdog) wait for the
+launcher's first frame (3 s at most). A udevd runs for Weston's start meanwhile, so libinput still gets the input
+devices from the coldplug. Once rcS is done, init starts sysd and the USB network's udhcpd (inittab `respawn`).
 
-sysd ([sysd.c](../yocto/meta-senkos/recipes-core/sysd/files/sysd.c)) is root's side of the UI: lid, power key
-and suspend, and what the unprivileged launcher asks for over `/run/sysd.sock` (`SOCK_SEQPACKET`, a request a
-connection, shell or root only by `SO_PEERCRED`). Its reply comes once the request is done: `ok` or `err WHY`. The
-launcher shows a refusal on the OSD. Requests map to commands in a table (`cmds`), run without a shell; the
-scripts check their own arguments.
+sysd ([sysd.c](../yocto/meta-senkos/recipes-core/sysd/files/sysd.c)) is root's side of the UI: lid, power key and
+suspend (see [suspend.md](suspend.md)), and what the unprivileged launcher asks for over `/run/sysd.sock`
+(`SOCK_SEQPACKET`, a request a connection, shell or root only by `SO_PEERCRED`). It replies once the request is done,
+`ok` or `err WHY`, and the launcher shows a refusal on the OSD. Requests map to commands in a table (`cmds`), run
+without a shell; the scripts check their own arguments.
 
-Settings › Debug › Hold power to turn on (Left/Right: 128 ms, 512 ms, 1 s or 2 s) is kept by sysd in `OS/config/power-on-ms`;
-`save-settings` writes it into the AXP717 (register `0x26`, the pek driver's `startup` attribute, kernel patch 0061),
-which keeps it while off.
-
-The brightness survives reboots in `/uboot/brightness.txt`, written by `save-settings` at shutdown and before suspend
-(only when changed). U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054 makes
-pwm-backlight honour it without a levels table), so the panel lights at that level. The LED driver stays dark started
-below about 5% but keeps going down to 1% once lit, so kernel patch 0057 lights it at 10% for 50 ms first whenever
-it comes on from off below that: at boot, on resume, after a blank.
-
-Things that count as a failed try:
-- A hang in U-Boot or the early kernel: the U-Boot-armed SoC watchdog (16 s) resets the board.
-- A kernel panic: `panic=10` reboots.
-- A userspace hang: busybox `watchdog` resets the board.
-- A slot that boots but isn't committed within 120 s: `ab boot` reboots it. This catches a broken USB link, which would otherwise lock us out.
-
-The commit comes from the host. Once ssh into the new slot works, `tools/ota` runs `ab commit`.
-
-```
-tools/ota                      # flash the latest build's slot image into the other slot, reboot, commit
-tools/ota path/to/rootfs.squashfs-lz4
-tools/ssh ab status
-```
-
-Device side: [ab](../yocto/meta-senkos/recipes-core/senkos-base/files/ab) with `status|mount|flash|commit|boot`.
+Kept across power-off:
+- Settings › Debug › Hold power to turn on (128 ms, 512 ms, 1 s or 2 s): sysd keeps it in `OS/config/power-on-ms`;
+  `save-settings` writes it into the AXP717 (register `0x26`, the pek driver's `startup` attribute, kernel patch
+  0061), which keeps it while off.
+- The brightness: `/uboot/brightness.txt`, written by `save-settings` at shutdown and before suspend (when changed).
+  U-Boot sets the backlight node's `default-brightness-level` from it (kernel patch 0054 makes pwm-backlight honour it
+  without a levels table), so the panel lights at that level. The LED driver stays dark when started below about 5%
+  but goes down to 1% once lit, so kernel patch 0057 lights it at 10% for 50 ms first whenever it comes on from off
+  below that: at boot, on resume, after a blank.
 
 ## Wi-Fi
 
-The RTL8821CS (SDIO) uses the vendor `rtl8821cs` module, with `cfg80211`, loaded only when Wi-Fi is
-turned on. The BSP recipe pins `u-osmi/rtl8821cs-arm64` at `d28399aa` and carries the Linux 7.2
-compatibility patch. Firmware 24.13 is embedded in the module; no separate Wi-Fi firmware package is
-needed. Bluetooth firmware remains built into the kernel. The regulatory database is
-`wireless-regdb-static`'s.
+The RTL8821CS (SDIO) uses the vendor `rtl8821cs` module (the BSP recipe pins `u-osmi/rtl8821cs-arm64` and carries
+the Linux 7.2 patch; firmware embedded), with `cfg80211`, loaded only when Wi-Fi is on. Bluetooth firmware is built
+into the kernel; the regulatory database is `wireless-regdb-static`'s. `/etc/modprobe.d/wifi.conf` keeps both the
+vendor and the mainline SDIO drivers from loading on their own and the vendor's idle power saving off
+(`rtw_power_mgnt=0`, `rtw_ips_mode=0`). The kernel still builds mainline rtw88, but the image loads only the vendor
+module; modules can't be unloaded, so another driver takes a reboot.
 
-`/etc/modprobe.d/wifi.conf` blocks automatic loading of both vendor and mainline SDIO drivers and
-keeps the vendor's idle power saving disabled (`rtw_power_mgnt=0`, `rtw_ips_mode=0`). System suspend
-is separate. This is a provisional driver choice, not a demonstrated fix for the original disconnect;
-see [wifi-investigation.md](wifi-investigation.md). The kernel still builds mainline rtw88 for development,
-but the image selects only the vendor module. Switching drivers requires a reboot: module unloading
-is disabled.
-
-[wifi](../yocto/meta-senkos/recipes-core/senkos-base/files/wifi) (sysd runs `wifi on|off` for the launcher's
-Wi-Fi screen, and `wifi` once the launcher is up, so it stays out of the boot) loads it, starts `wpa_supplicant` on `wlan0` and `wpa_cli -a wifi`,
-whose CONNECTED runs `udhcpc` on it; a lease runs `clock net` (`udhcpc.d/90ntp`, see Time below).
-What's set lives in `/data/OS/wifi`, root's alone (0700): `wpa_supplicant.conf` (the networks, written by its
-`SAVE_CONFIG`) and `enabled`. `/run/wifi` says on or off. The launcher talks to `wpa_supplicant` over its control
-socket, `/run/wpa_supplicant/wlan0` (group player), as `wpa_cli` would:
+[wifi](../yocto/meta-senkos/recipes-core/senkos-base/files/wifi) (sysd runs `wifi on|off` for the launcher's Wi-Fi
+screen, and `wifi` once the launcher is up, out of the boot's way) loads it and starts `wpa_supplicant` on `wlan0` and
+`wpa_cli -a wifi`, whose CONNECTED runs `udhcpc`; a lease runs `clock net` (`udhcpc.d/90ntp`, see Time).
+`/data/OS/wifi` (root's alone, 0700) holds `wpa_supplicant.conf` (the networks, written by `SAVE_CONFIG`) and
+`enabled`; `/run/wifi` says on or off. The launcher talks to `wpa_supplicant` over `/run/wpa_supplicant/wlan0`
+(group player) as `wpa_cli` would; the status bar's symbol is `SIGNAL_POLL`'s RSSI.
 
 ```
 tools/ssh 'wpa_cli -i wlan0 status; wpa_cli -i wlan0 scan_results'
 ```
 
-The status bar's symbol is `SIGNAL_POLL`'s RSSI; there's none while Wi-Fi is off.
-
 ## Time
 
-[clock](../yocto/meta-senkos/recipes-core/senkos-base/files/clock) (sysd runs `clock ...` for the launcher's
-Settings) keeps `/data/OS/time` (root's, readable): `localtime`, a link into `/usr/share/zoneinfo` (tzdata) that
-`/etc/localtime` links to (none: UTC); `chosen` when the zone was picked; `manual` when NTP is off. Every DHCP lease
-sets the clock by NTP (`ntpd -q`, then the RTC) unless `manual`; a new one (a network joined, not a renewal) also
-guesses the zone unless `chosen`: `downloadd zone` asks ipapi.co where the address is. The launcher sets `TZ` to the
-zone's file whenever the link changes (glibc doesn't read `/etc/localtime` again by itself), so what it starts
-afterwards has it too.
+[clock](../yocto/meta-senkos/recipes-core/senkos-base/files/clock) (sysd runs `clock ...` for Settings) keeps
+`/data/OS/time` (root's, readable): `localtime`, a link into `/usr/share/zoneinfo` that `/etc/localtime` links to
+(none: UTC); `chosen` when the zone was picked; `manual` when NTP is off. Every DHCP lease sets the clock by NTP
+(`ntpd -q`, then the RTC) unless `manual`; a new one (a network joined, not a renewal) also guesses the zone unless
+`chosen`: `downloadd zone` asks ipapi.co where the address is. The launcher sets `TZ` whenever the link changes
+(glibc doesn't read `/etc/localtime` again by itself), so what it starts afterwards has it too.
 
 ```
 tools/ssh 'clock zone Europe/Berlin; clock zone auto; clock ntp off; clock set $(date +%s)'
 ```
 
-## /data and the launcher
+## /data
 
-`/data` is the writable, non-system part: the image never touches it, so what lives there survives
-`tools/ota`. wic can't know the card size, so the image has no p4. At boot, `ab mount` does this:
-- If p4 is missing, it appends one that spans the rest of the card (`sfdisk`).
-- It formats p4 only while `/uboot/data-new` marks the partition as just created by it.
-- It mounts p4 at `/data`, and when it just made it, copies the image's `/usr/share/senkos/data` there (`senkos-data`: the repo's [data/](../data) and the empty folders).
+`/data` is everything writable; the image never touches it, so it survives `tools/ota`. wic can't know the card size,
+so the image has no p4. At boot `ab mount` appends one spanning the rest of the card when it's missing (`sfdisk`),
+formats it only while `/uboot/data-new` says it just made it, mounts it, and on a new one copies the image's
+`/usr/share/senkos/data` there (`senkos-data`: the repo's [data/](../data), the empty folders, assets from recipes).
 
-Ours on `/data` are `OS`, `apps`, `roms`, `music` and `videos`; the OS's own files are all in `OS/`. HOME is `/data`: what the launcher and apps keep for themselves stays in `.local/state` and `.cache`, but settings are in `OS/config` (`XDG_CONFIG_HOME`).
+Ours on `/data` are `OS`, `apps`, `roms`, `music` and `videos`; the OS's own files are all in `OS/`. HOME is `/data`:
+what programs keep for themselves goes in `.local/state` and `.cache`, settings in `OS/config` (`XDG_CONFIG_HOME`).
 
-| Path | Used by |
+| Path | What |
 |---|---|
-| `apps/{applications,benchmarks}/` | the launcher's pages of the same names: `*.desktop` entries (or bare executables) |
-| `apps/emulators/` | emulators and players, `.desktop` files over the image's (`/usr/share/senkos/emulators`): one of the same file name replaces the image's or hides it (`Hidden=true`). `MimeType` says which systems' games it runs (each system's `MimeType`), `%f` in `Exec` is the game |
-| `apps/systems/` | game systems, `.system` files over the image's (`/usr/share/senkos/systems`), replaced or hidden by file name like emulators: `[System]` `Name`, `Folder` (its page's, e.g. `roms/msx`), `Aliases` (folder names elsewhere, for Libraries), `Patterns` (`*.rom;*.mx2;`), `MimeType` (what its emulators take), `Pack`, `Order`, `Emulator` (the default emulator's `.desktop` file name). A new system is a `.system` here plus an emulator in `apps/emulators` |
-| `roms/<system>/` | the launcher's system pages |
-| `videos/` | the launcher's Videos page (`.mp4 .mkv .webm .mov .m4v .avi .ts`), played by `mediaplayer` |
-| `OS/assets/thumbnails/<system>.pack` | game packs: titles, metadata and box art by ROM CRC32 (`tools/boxart-pack`) |
-| `OS/assets/emulator/` | the cores' BIOS and asset files (`COREHOST_SYSTEM`; PPSSPP's come with a new card) |
-| `OS/saves/<core>/` | the cores' saves: save RAM, states, PPSSPP's memory stick |
-| `OS/config/` | settings: `corehost/<core>.opt`, `mediaplayer.opt`, `launcher-cores` (the emulator picked per game), `launcher-matches` (the pack game picked per ROM), `launcher-folders` (Libraries), `usb` (Storage) |
-| `OS/overlay/` | rootfs overlays: `OS/overlay/usr/bin/launcher` replaces `/usr/bin/launcher` and so on (`overlay`, at boot: copied into RAM, an overlayfs per top-level directory, so `/data` stays free to unmount; run it again after a change) |
-| `OS/time/` | the time zone and whether NTP sets the clock (see Time above) |
-| `OS/wifi/` | Wi-Fi: the networks and whether it's on, root's alone (see Wi-Fi above) |
+| `apps/{applications,benchmarks}/` | the launcher's pages of those names: `.desktop` files or bare executables |
+| `apps/emulators/` | emulators and players, `.desktop` files over the image's (`/usr/share/senkos/emulators`); one of the same file name replaces the image's or hides it (`Hidden=true`). `MimeType` lists the systems' types it runs, `%f` in `Exec` is the game |
+| `apps/systems/` | game systems, `.system` files over the image's (`/usr/share/senkos/systems`), replaced or hidden by file name likewise: `[System]` `Name`, `Folder` (its page's, e.g. `roms/msx`), `Aliases` (folder names elsewhere, for Libraries), `Patterns` (`*.rom;*.mx2;`), `MimeType` (what its emulators take), `Pack`, `Order`, `Emulator` (the default emulator's `.desktop` file name). A new system is a `.system` here plus an emulator in `apps/emulators` |
+| `roms/<system>/` | the system pages |
+| `videos/` | the Videos page (`.mp4 .mkv .webm .mov .m4v .avi .ts`) |
+| `OS/assets/thumbnails/<system>.pack` | game packs: titles, metadata and box art by ROM CRC32 |
+| `OS/assets/emulator/` | the cores' system directory, BIOS and assets (`COREHOST_SYSTEM`) |
+| `OS/saves/<core>/` | the cores' saves (`COREHOST_SAVE`) |
+| `OS/config/` | settings: `corehost/<core>.opt`, `mediaplayer.opt`, `power-on-ms`, `usb` (Storage) |
+| `OS/launcher/` | the launcher's home (it runs as `shell`): `config/` (`launcher-cores`: emulator per game, `launcher-matches`: pack game per ROM, `launcher-folders`: Libraries, `launcher-power`, `launcher-perf`), `state/` (`launcher`: the page shown, `launcher-ignored`), `cache/` (`launcher/crc32`, thumbnails) |
+| `OS/overlay/` | rootfs overlays: `OS/overlay/usr/bin/launcher` replaces `/usr/bin/launcher` and so on. `overlay` (at boot, again after a change) copies them into RAM, an overlayfs per top-level directory, so `/data` stays free to unmount |
+| `OS/init.d/S*` | run in order with `start` by `/etc/init.d/data-init` (from rcS S01, after `/data` is mounted, before seatd and Weston). `touch /uboot/no-data-init` (FAT, editable from any PC) skips them |
+| `OS/profile.d/*.sh` | sourced last by `/etc/profile` and `weston.init`: environment (`VK_DRIVER_FILES`, `PANVK_DEBUG`, `MESA_*`) for Weston, the launcher, apps and ssh shells |
+| `OS/time/`, `OS/wifi/` | see Time and Wi-Fi |
 | `OS/dropbear/`, `OS/log/` | the ssh host key; the logs of the last 5 boots |
-| `.cache/launcher/crc32` | the launcher's CRC32 of each ROM (past an iNES, fwNES, Lynx or copier header), by path, size and mtime |
-| `OS/init.d/S*` | `/etc/init.d/data-init` (run by `/etc/init.d/weston`, rcS S01: after `/data` is mounted, before seatd and Weston) runs each executable one with `start`, in order. To change a file of the read-only rootfs, put it in `OS/overlay`. `touch /uboot/no-data-init` (FAT, editable from any PC) skips them all |
-| `OS/profile.d/*.sh` | sourced last by `/etc/profile` and by `weston.init`: environment overrides (`VK_DRIVER_FILES`, `PANVK_DEBUG`, `MESA_*`) reach Weston, the launcher, apps and ssh shells |
+| `OS/launcher/cache/launcher/crc32` | each ROM's CRC32 (past an iNES, fwNES, Lynx or copier header) and a jar's own name, by path, size and mtime |
 
-`OS/init.d`, `OS/overlay`, `OS/profile.d` and `OS/dropbear` are root's (`weston.init` makes them so at every boot): root runs or trusts them, and apps run as `player`. `/data` and `/data/OS` are `root:player 1775`, so the player creates files there but can't rename or delete root's. Change them as root (`tools/ssh`) or over UMS.
+`OS/init.d`, `OS/overlay`, `OS/profile.d` and `OS/dropbear` are root's (`weston.init` makes them so at every boot):
+root runs or trusts them, apps run as `player`. `/data` and `/data/OS` are `root:player 1775`, so the player creates
+files there but can't rename or delete root's.
 
-The UI is [apps/launcher/](../apps/launcher) (Wayland + Vulkan + HarfBuzz + fontconfig, immediate mode; no SDL in our apps). `/etc/init.d/weston` runs
-`launcher` (`/data/OS/overlay/usr/bin/launcher` over the image's when there is one). It restarts the launcher whenever it exits.
-- `tools/deploy-launcher`: builds the launcher with bitbake, copies it to `/data/OS/overlay/usr/bin/launcher`, runs `overlay` and restarts it. You don't need to reflash.
-- `tools/ssh rm /data/OS/overlay/usr/bin/launcher`, then a reboot: back to the image's launcher.
-- It shows one page per category, as tiles: the systems (the ROMs in `/data/roms/<system>`), Videos, Applications and Benchmarks (`/data/apps/<category>/`). An app is an XDG `.desktop` file (`Name`, `Exec`, `Path`, `Icon`, `Keywords`, `Categories`) or a bare executable. `Exec` runs under `sh -c`, in `Path` or else the folder. `Icon` is a PNG, JPEG, WebP or BMP, relative to the folder, and the extension is optional. Icons load on a background thread and upload on a transfer queue. Below 100 MB for the whole process, the icons that haven't been shown for a while get evicted. The page shown at exit is shown again at the next start (`$HOME/.local/state/launcher`). While an app runs, Menu pauses it and shows a menu over a blur of its last frame. Quit sends SIGTERM (ours and SDL apps quit cleanly). Menu or B resumes. While paused, the launcher grabs the pad (EVIOCGRAB), so the app never sees those presses.
-- Apps die with the launcher. Each one gets SIGTERM through `PR_SET_PDEATHSIG`, even if the launcher crashes, and corehost also quits when its control socket closes. Nothing is adopted when the launcher starts again, so restarting it (`tools/deploy-launcher`) ends the games, after they have saved.
-- Several apps can run at once. Each one gets a control channel ([appctl.h](../apps/common/appctl.h)): a `SOCK_SEQPACKET` socketpair with fixed-size requests and a memfd holding a fixed struct of options. Neither side serializes anything. An app that uses the channel ([corehost](../apps/corehost)) is paused through it. The pause menu is Resume, Save state, Load state, Settings, Restart, Home and Quit; Load state, Restart and Quit ask first; Quit doesn't when the app's `.desktop` (a game's: its emulator's or player's) has `X-SenkOS-AskQuit=false`, as the media player's does, since it resumes where it was left. Settings lists an entry per category that has options: System, Graphics, Audio and Input (Left/Right change an option), then the launcher's Power and Debug. Home leaves the app paused in the background, on the Running page; Menu at home brings back the last one. Apps that don't use the channel are paused with SIGSTOP and get Resume, Settings (Power, Debug), Home and Quit. Every app's Power page ([power.h](../apps/launcher/power.h)) has its CPU and GPU clocks (Auto, or a step of the kernel's tables: the CPU's a cap, the GPU's pinned; kept per ROM, app folder or command in `OS/config/launcher-power`, set while the app has the screen, Auto at home), the backlight (1% steps, faster while held; also Menu + the volume keys anywhere, shown on the OSD; kept by `save-settings` in `/uboot/brightness.txt`), and Automatic calibration: pick a frame rate (30 to 60), A goes back into the app and lowers the CPU's clock a step at a time while every second of five holds it, then the GPU's, keeping the last that held (about a minute; the result shows on the OSD and is set as if chosen by hand). The frames are counted by Weston's `frames.so` module (`$XDG_RUNTIME_DIR/frames`, a count bumped at each repaint's latch), so any app can be calibrated. sysd sets the clocks and the backlight. Every app's Debug page, like Settings › Debug, toggles the performance overlay ([perf.h](../apps/launcher/perf.h)), picks its corner and toggles each of its lines: fps, CPU load and clock, GPU load (kernel patch 0058's `busy_ns`) and clock, video decoder load (0059), memory, SD card throughput, temperature. It is kept in `OS/launcher/config/launcher-perf`. Menu acts on its release (pause, resume, the quick menu at home), and only when no other button or volume key was pressed while it was held: Menu plus a button is the app's hotkey, Menu plus a volume key the backlight. A tile whose app is running has a dot. An app that exits non-zero or dies from a signal (other than our SIGTERM) is logged and gets a dialog at home; "Ignore for this app" adds it to `$XDG_STATE_HOME/launcher-ignored`. Launching something that is already running brings it back instead of starting a second copy, which would share its save. The launcher keeps its page and focus while an app has the screen.
-- Videos play in `mediaplayer` (in the image; another build goes in `OS/overlay/usr/bin/mediaplayer`; `apps/emulators` has its `.desktop` with the video types). It uses GStreamer's playbin3 (playbin's decodebin makes v4l2codecs refuse dmabufs). Cedrus decodes H.264, H.265, VP8, VP9 and MPEG-2 through v4l2codecs, and waylandsink hands the decoded dmabufs to Weston without a copy. gst-libav decodes the audio, and the video too when Cedrus can't (MPEG-4 ASP, AV1) or decoding fails on it: the file is then opened again in software. 10-bit HEVC and VP9 decode on Cedrus too, to P010, which Weston takes as a dmabuf as well. The OSD is a CPU-drawn subsurface above the video's: title, time and a progress bar, for 3 s after each press and for as long as playback is paused. Controls: A or Start pause; Left/Right seek 10 s and L1/R1 60 s (hold to repeat); Up/Down go to the previous/next video in the folder; X, Y or Select show the OSD; B quits. Menu opens the launcher's pause menu, where Graphics has the scaling (Fit/Stretch, kept in `OS/config/mediaplayer.opt`) and Audio has the audio track, when the file has more than one. Where each video was left is kept in `$HOME/.local/state/mediaplayer/resume`, and playback starts there; a video past 95 % counts as seen. At the end the next video in the folder plays. No subtitles yet. On the desktop, the arrow keys, Space, Esc, Tab and PgUp/PgDn stand in for the pad.
-- Games run in `corehost` (in the image; another build goes in `OS/overlay/usr/bin/corehost`): one libretro core, one game, no UI of its own. The cores are in the image (`/usr/lib64/libretro`); each system page (each `.system`'s folder, shown only when it exists) runs a game with the emulator `.desktop` whose `MimeType` has the system's type (`corehost /usr/lib64/libretro/<core>_libretro.so %f`), in the game's folder. A system with none says so instead. Cores that render with GL (N64, Dreamcast, PSP) get a GLES context from corehost and draw into a framebuffer it blits to the window, scaled like the others. Their BIOS and asset files come from `/data/OS/assets/emulator` (`COREHOST_SYSTEM`; PPSSPP's assets in `PPSSPP/` come with a new card). N64 runs at full speed with GLideN64's threaded renderer and native resolution (`mupen64plus-ThreadedRenderer=True`, `mupen64plus-EnableNativeResFactor=1` in the options), as ROCKNIX sets it. Where a system has more than one emulator (Game Boy, Game Boy Color: Gambatte, mGBA; GBA: mGBA, gpSP; PPSSPP and PPSSPP (Vulkan); Flycast likewise), the `.system`'s `Emulator` (GBA: mGBA, PSP: PPSSPP (Vulkan)), else the first by name, runs a game and Select on it picks another, kept per ROM in `OS/config/launcher-cores`. Saves are in `/data/OS/saves/<core>/` (`COREHOST_SAVE`): `ROM.srm` (save RAM), `ROM.state0`, and what a core saves itself (PPSSPP's memory stick, `PSP/`). When there is no `.srm` there yet, corehost reads the save RAM next to the ROM (`ROM.srm`, else `ROM.sav`: another emulator's or OS's) and never writes it. Options live in `OS/config/corehost/<core>.opt`, read over the image's defaults in `/usr/share/corehost/<core>.opt` ([corehost/defaults](../apps/corehost/defaults); the N64's bindings: stick on the D-pad, A/B on A/B, L/R on L1/R1, Z on L2, the C buttons on R2 + X/B/Y/A and the D-pad on R2 + D-pad). corehost asks cores for core options v2, which carry a category: libretro's video, audio and input become Graphics, Audio and Input, everything else (system, performance) System. corehost adds scaling and filter (Graphics), fast forward speed (System) and, under Input, bindings for the game's inputs the core describes (SET_INPUT_DESCRIPTORS, by its names for them: a GBA has no X, Y, L2 or R2), then the hotkeys. Descriptors that come after the rows are made (mupen sends them once its emulation thread starts) make them again, saved values reloaded. A row is the console's input and the binding what presses it here; a stick is a row per direction at full tilt. When the core has a left stick and the pad has none, the stick defaults to the D-pad and the core's D-pad to Menu + D-pad. The N64 core is patched to one row per N64 button (independent C buttons, no RetroPad C-button options or deadzone). mupen reads its options only when the game starts: back in the game after changing one, corehost saves a state to `ROM.state99`, execs itself in place (same pid and control channel) and loads it once the core has booted. The hotkeys: fast forward (toggle, Menu + R1; held, L2 or R2 where the game doesn't use them; System › Fast forward speed, 2× to 8×, 3× by default), rewind (hold; Menu + L1; whole states in 32 MB, a few seconds for GBA; no row for cores whose states don't fit a second of it, N64 and up), save state and load state (slot 0; Menu + R2 / L2). A binding is a button combo: A on its row records, the buttons show while held, and letting go of the first one pressed sets it ("R2 + Start + A"); X clears it, five seconds without a press gives up. Y makes any option or binding the game's own (its label turns blue; kept in `<core>/<ROM name>.opt` beside `<core>.opt`, loaded before the game starts), Y again gives it back the core's value. When two held bindings overlap, the bigger one wins, so L1 + A doesn't also press what A is bound to. A paused app's pause screen comes back as it was left, in Settings and on the same row; each settings category keeps its own row. Restart (for apps with save states) resets the game. corehost draws a small overlay top left over every core's picture: notices (state saved/loaded, 2 s) and fast forward and rewind while on. It is a built-in 5×7 font, drawn by each video path: on GL a scissored glClear per run of font pixels (only the scissor box of the core's GL state is touched, and restored); on Vulkan written on the CPU at one texel a font pixel into a host-visible buffer, copied into a small image and blitted out scaled, one copy and one blit (PanVK makes a render pass of every blit region). Software cores go the Vulkan way too: each frame is copied into a host-visible buffer, then into an image in the core's own format (RGB565, XRGB1555, XRGB8888), and blitted like a Vulkan core's. GL cores get EGL on the window, the pad is read from evdev. Pacing is RetroArch's default: vsync sets the speed, taken from Weston's frame callbacks in corehost's poll loop rather than a blocking present (mailbox, swap interval 0), so a window that gets no callbacks (hidden) never hangs it, it just goes on after two refreshes; and a core within 5% of the refresh rate (or of half of it, then two swaps a frame) runs at it, its sound stretched to fit (GBA's 59.73 fps runs 0.45% fast at 60 Hz) by our linear resampler to ALSA's `default` at 48 kHz. Dynamic rate control (±0.5%) keeps the 64 ms buffer half full against the panel's and the codec's clock drift. A core further off (PAL at 60 Hz) isn't stretched and its blocking writes pace it.
-- PSP and Dreamcast also offer `PPSSPP (Vulkan)` and `Flycast (Vulkan)` in the per-ROM core picker (Select). These set `COREHOST_RENDER=vulkan`; leave the core's Backend option on `auto` to follow that preference. Backend changes require quitting and relaunching the game. Deploy both the launcher and corehost when updating their control table: v4 has 128 options, enough for PPSSPP's 76 plus host graphics and input bindings. The launcher also accepts v3 clients such as the image's media player. Vulkan startup logs `corehost: Vulkan: Mali-G31 MC1, instance API ..., 640x480` in `/var/log/launcher.log`; loaded GLES/EGL libraries alone do not identify the active backend because a core can link both. Corehost requests the loader's supported instance API: PPSSPP's metadata says 1.0, but its context uses newer promoted functions, which would otherwise be missing.
-- The PPSSPP recipe carries fixes for live Vulkan output resizing/cropping and empty movie reads with system FFmpeg. Deploy the rebuilt `ppsspp_libretro.so` (the image's, or `OS/overlay/usr/lib64/libretro/`) as well as corehost; the frontend alone cannot fix these. Regression checks: change Rendering Resolution 1×→2×→3×→1× while playing, toggle Crop to 16x9, save/load a state, and let the post-character-creation movie end naturally. Resized output must fill the same display area without repeated edges, and the movie must return to gameplay without a decoder spin.
-- Menu icons are SVG strokes in `apps/common/ui/icons` (Lucide's, and ours in its style). `tools/icon-paths` turns them into `apps/common/ui/icons.inc`; run it after adding or changing one. FreeType strokes them at the size drawn, into the glyph atlas.
-- Sound goes through PipeWire (ALSA's default is PipeWire, Pulse clients use pipewire-pulse). A paused app writes nothing.
-- Volume: WirePlumber owns it (the default sink's volume drives the codec's Line Out) and restores it when it starts. The launcher reads the volume keys (evdev, whatever has the focus), steps it with `wpctl` and shows the level in its `osd` window; with Menu held they step the backlight instead. The OSD and the performance overlay keep their dark colors in light mode. Nothing may write Line Out directly, or WirePlumber's stored volume goes stale. The patched kiosk shell keeps that window on top without focus.
-- [data/](../data) holds `/data` files that live in this repo (a new card gets them): `tar cf - -C data . | tools/ssh tar xf - -C /data`. They include the
-  GPU benchmarks (glmark2, vkmark), which show Mesa's HUD (`GALLIUM_HUD`, `VK_LAYER_MESA_overlay`)
-  and write their scores to `/var/log`.
-- ROMs get their title and box art from the system's game pack, matched by the CRC32 of the ROM (of a zip: of its first file, from the zip's directory). The launcher computes each CRC once in the background and caches it. When the CRC finds nothing, or the wrong game, Select on the game → Title and box art picks one of the pack's games by hand: those whose titles share the most words with the file name (or its initials: `aos.gba` finds Aria of Sorrow), or with what Search typed. The pick is kept in `OS/config/launcher-matches` (`ROM<tab>CRC`); By its contents goes back to the CRC. An image of the same name next to the ROM wins over both. The focused tile's or row's text scrolls when it doesn't fit (a step every 33 ms, held 1.5 s at either end; no frames meanwhile). To build a pack, use `tools/boxart-pack "Nintendo - Game Boy Advance" <libretro-thumbnails>/Named_Boxarts out.pack` (the box art from the thumbnail repo's archive zip, `https://github.com/libretro-thumbnails/<name>/archive/refs/heads/master.zip`). More system/folder pairs go into one pack for a folder that holds several: GB in GBC, WonderSwan in WonderSwan Color, Neo Geo Pocket in Color, Famicom Disk System in NES, 64DD in N64, PC Engine CD in PC Engine. It downloads the No-Intro and Redump DATs and metadata (genre, developer, publisher, franchise, year, players) from libretro-database. It deduplicates box art by perceptual hash, keeps the best source of each group, and stores the art at 128 px as WebP (GBA: 2.4 GB of PNGs becomes 7.5 MB). Disc games match only as an uncompressed image whose CRC32 is in the Redump DAT (a PSP `.iso`, a one-track PlayStation `.bin`); a `.chd`, `.cso`, `.pbp` or a GD-ROM's tracks get none. The format is in [romdb.h](../apps/launcher/romdb.h).
-- On the desktop: `meson setup build apps && ninja -C build && LAUNCHER_DATA=apps/launcher/testdata build/launcher/launcher` (arrows, Enter, PgUp/PgDn). `apps/launcher/testdata` holds fake apps and ROMs with made-up icons in every format. The apps only sleep for 2 s. Its GBA ROMs carry the CRC32s of real games, so they match a GBA pack in `OS/assets/thumbnails`; `apps/emulators/fake.desktop` stands in for the image's emulators.
+## The launcher
 
-The libretro cores are in the image (`/usr/lib64/libretro`). A core's rebuild goes in as an overlay: `tools/ssh` it to `/data/OS/overlay/usr/lib64/libretro/`, then run `overlay`.
+[apps/launcher/](../apps/launcher) is the UI (Wayland + Vulkan + HarfBuzz + fontconfig, immediate mode).
+`/etc/init.d/weston` runs it and restarts it whenever it exits.
 
-## Bootloader
+- **Pages:** one per category, as tiles: the systems (each `.system`'s folder, shown when it exists), Videos,
+  Applications, Benchmarks. An app is a `.desktop` file (`Name`, `Exec`, `Path`, `Icon`, `Keywords`, `Categories`)
+  or a bare executable; `Exec` runs under `sh -c` in `Path`, else the folder. `Icon` is a PNG, JPEG, WebP or BMP
+  relative to the folder, the extension optional; icons load on a thread, upload on a transfer queue, and those not
+  shown for a while go when the process passes 100 MB. The page shown at exit comes back at the next start. The focused text scrolls when it doesn't fit.
+- **Games:** a system page runs a game with the emulator whose `MimeType` has the system's type, in the game's
+  folder: the `.system`'s `Emulator`, else the first by name. Select on a game picks another (kept per ROM in
+  `launcher-cores`). A system with no emulator says so.
+- **Running apps:** several at once; launching one that runs brings it back. A running app's tile has a dot. Apps get
+  SIGTERM through `PR_SET_PDEATHSIG` when the launcher dies, and nothing is adopted when it starts again, so
+  restarting it ends the games (after they save). An app that exits non-zero or dies from a signal (not our SIGTERM)
+  is logged and gets a dialog at home; "Ignore for this app" adds it to `launcher-ignored`.
+- **Pause menu:** Menu pauses the app and shows a menu over a blur of its last frame; Menu or B resumes. Menu acts on
+  release, and only when no other button or volume key was pressed meanwhile (Menu plus a button is the app's
+  hotkey, plus a volume key the backlight). While paused the launcher grabs the pad (EVIOCGRAB). An app with a control
+  channel ([appctl.h](../apps/common/appctl.h): a `SOCK_SEQPACKET` socketpair with fixed-size requests and a memfd
+  holding the options, nothing serialized), like corehost, gets Resume, Save state, Load state, Settings, Restart,
+  Home and Quit. Load state, Restart and Quit ask first, Quit not when the `.desktop` has `X-SenkOS-AskQuit=false`.
+  Others are paused with SIGSTOP and get Resume, Settings, Home and Quit. Quit is SIGTERM. Home leaves the app paused
+  on the Running page; Menu at home brings back the last one. The menu comes back as it was left.
+- **Settings:** the app's categories with options (System, Graphics, Audio, Input; Left/Right change one), then Power
+  and Debug. Power ([power.h](../apps/launcher/power.h)): CPU and GPU clocks (Auto, or a step of the kernel's
+  tables: the CPU's a cap, the GPU's pinned; per ROM, app folder or command in `launcher-power`, set while the app has
+  the screen, Auto at home), the backlight (also Menu + volume keys anywhere), and Automatic calibration: pick a frame
+  rate (30 to 60), and back in the app the CPU's clock goes down a step while every second of five holds it, then the
+  GPU's, keeping the last that held (about a minute). Frames are counted by Weston's `frames.so`
+  (`$XDG_RUNTIME_DIR/frames`, bumped at each repaint's latch), so any app can be calibrated; sysd sets the clocks.
+  Debug: the performance overlay ([perf.h](../apps/launcher/perf.h)), its corner and lines: fps, CPU load and clock,
+  GPU load (kernel patch 0058's `busy_ns`) and clock, video decoder load (0059), memory, SD throughput, temperature.
+- **Titles and box art:** from the system's game pack by the ROM's CRC32 (a zip's: its first file's, from the
+  directory), computed once in the background. When it finds nothing or the wrong game, Select › Title and box art
+  picks one of the pack's games by hand, ranked by words shared with the file name (or its initials: `aos.gba` finds
+  Aria of Sorrow) or with what Search typed; kept in `launcher-matches` (`ROM<tab>CRC`); By its contents goes back.
+  An image of the same name next to the ROM wins over both. A J2ME jar names itself and its icon is its art
+  (MIDlet-Name and MIDlet-Icon in its manifest, [jar.h](../apps/common/ui/jar.h)). Packs come from `tools/boxart-pack "Nintendo - Game Boy
+  Advance" <libretro-thumbnails>/Named_Boxarts out.pack`; the format is in [romdb.h](../apps/launcher/romdb.h).
+- **Menu icons** are SVG strokes in `apps/common/ui/icons` (Lucide's and ours in its style); `tools/icon-paths` turns
+  them into `apps/common/ui/icons.inc`. FreeType strokes them at the size drawn, into the glyph atlas.
 
-SPL/U-Boot/TF-A at 8 KiB is shared by both slots. Updating it is the one step that can still need the card reader:
-```
-tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/rg35xx-sp/u-boot-sunxi-with-spl.bin
-```
-Recovery: flash the full `.wic.gz` from a PC (see [yocto.md](yocto.md)).
+## corehost
+
+[corehost](../apps/corehost) runs one libretro core with one game, with no UI of its own; the cores are in the image
+(`/usr/lib64/libretro`) and an emulator is a `.desktop` running `corehost /usr/lib64/libretro/<core>_libretro.so %f`.
+How it renders, paces and resamples is in [main.c](../apps/corehost/main.c)'s header and comments.
+
+- **Saves:** `OS/saves/<core>/ROM.srm` (save RAM), `ROM.state0`, and what a core saves itself. With no `.srm` there
+  yet, corehost reads the save RAM next to the ROM (`ROM.srm`, else `ROM.sav`) and never writes it.
+- **Options:** `OS/config/corehost/<core>.opt` over the image's defaults
+  ([corehost/defaults](../apps/corehost/defaults)). Core options v2 categories map to Graphics, Audio and Input, the
+  rest to System. corehost adds scaling and filter, fast forward speed, and under Input Rumble (the motor, a `pwm-vibrator`
+  input device, kernel patch 0062; shown when the core asks for rumble) and a binding per input the core
+  describes (SET_INPUT_DESCRIPTORS, by its names; a stick is a row per direction), then the hotkeys. With a left
+  stick and no stick on the pad, the stick defaults to the D-pad and the core's D-pad to Menu + D-pad. Y makes an
+  option or binding the game's own (blue label, `<core>/<ROM name>.opt`); Y again gives it back. A core that reads
+  its options only at start (mupen) gets them by a state saved to `ROM.state99`, corehost exec'ing itself, and the
+  state loaded.
+- **Bindings:** a button combo. A on a row records, letting go of the first button pressed sets it ("R2 + Start +
+  A"), X clears it, five seconds without a press gives up. Of two held bindings that overlap, the bigger wins.
+- **Hotkeys:** fast forward (toggle Menu + R1; held L2 or R2 where the game doesn't use them; System › Fast forward
+  speed, 2× to 8×), rewind (hold Menu + L1; whole states in 32 MB, none for cores whose states don't fit a second of
+  it), save and load state (slot 0; Menu + R2 / L2). An overlay top left shows notices and fast forward or rewind.
+
+## Media player and sound
+
+`mediaplayer` ([apps/mediaplayer](../apps/mediaplayer)) plays the Videos page with GStreamer's playbin3: Cedrus
+decodes H.264, H.265 (10-bit too), VP8, VP9 and MPEG-2 through v4l2codecs and waylandsink hands the dmabufs to Weston;
+gst-libav decodes the audio, and the video when Cedrus can't or fails. Controls: A or Start pause; Left/Right seek
+10 s, L1/R1 60 s; Up/Down previous/next video; X, Y or Select show the OSD; B quits. Graphics has the scaling,
+Audio the track. Where each video was left is kept in `.local/state/mediaplayer/resume`; past 95 % counts as seen.
+
+Sound goes through PipeWire (ALSA's default is PipeWire; Pulse clients use pipewire-pulse). WirePlumber owns the
+volume (the default sink's drives the codec's Line Out) and restores it at start; nothing may write Line Out directly.
+The launcher reads the volume keys (evdev, whatever has the focus), steps the volume with `wpctl` and shows it in its
+`osd` window, which the patched kiosk shell keeps on top without focus. A paused app writes nothing.
+
+## On the desktop
+
+`meson setup build apps && ninja -C build && LAUNCHER_DATA=apps/launcher/testdata build/launcher/launcher` (arrows,
+Enter, PgUp/PgDn). `apps/launcher/testdata` holds fake apps and ROMs with icons in every format; its GBA ROMs carry
+real games' CRC32s, so they match a GBA pack in `OS/assets/thumbnails`, and `apps/emulators/fake.desktop` stands in
+for the image's emulators. The media player takes the arrow keys, Space, Esc, Tab and PgUp/PgDn for the pad.
 
 ## Logs
 
-`/var/log` is `/data/OS/log/0` (this boot); `/data/OS/log/1`..`4` are the boots before. syslogd/klogd write
-`messages`, plus `dmesg` (boot kernel log), `weston.log`, `launcher.log`. A hard panic doesn't reach the card:
-DRAM doesn't survive a reset on this board, so there's no ramoops.
+`/var/log` is `/data/OS/log/0` (this boot); `1`..`4` are the boots before: `messages` (syslogd/klogd), `dmesg` (the
+boot's kernel log), `weston.log`, `launcher.log` (with the apps' output). A hard panic doesn't reach the card: DRAM
+doesn't survive a reset on this board, so there's no ramoops.
 
 ## SD card in TF2
 
@@ -206,4 +261,5 @@ cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-lz4> && cp
 tools/ota $K/test/t.sqfs
 ```
 
-When it works: `make savedefconfig` and copy `out/defconfig` back into the recipe, minus the `splash.cfg` lines (meta-senkos adds them) (bitbake runs `olddefconfig`, so a minimal defconfig is enough).
+When it works: `make savedefconfig` and copy `out/defconfig` back into the recipe, minus the `splash.cfg` lines
+(meta-senkos adds them); bitbake runs `olddefconfig`, so a minimal defconfig is enough.

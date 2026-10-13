@@ -10,7 +10,7 @@
  *
  * What had to shrink to load is kept shrunk, a WebP in $XDG_CACHE_HOME/thumbnails, and read from
  * there from then on. "video:PATH" is a video's thumbnail: ASSETS_THUMBNAILER --thumbnail PATH OUT
- * SIZE writes it there (a frame as WebP, its longest side SIZE).
+ * SIZE writes it there (a frame as WebP, its longest side SIZE). "jar:PATH" is a J2ME jar's icon (jar.h).
  */
 #pragma once
 

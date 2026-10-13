@@ -1,0 +1,3 @@
+#!/bin/sh
+# Java's per-user files (preferences, Gervill's generated soundbank) are a cache, not dotfiles in HOME
+exec /usr/lib64/jvm/java-21/bin/java -Duser.home="${XDG_CACHE_HOME:-$HOME/.cache}/java" "$@"

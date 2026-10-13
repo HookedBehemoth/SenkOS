@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=FreeJ2ME
+Comment=J2ME
+Exec=corehost /usr/lib64/libretro/freej2me_libretro.so %f
+MimeType=application/x-j2me-app;
+Categories=Game;Emulator;

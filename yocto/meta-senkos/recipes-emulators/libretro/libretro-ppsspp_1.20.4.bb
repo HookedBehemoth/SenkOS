@@ -2,6 +2,9 @@ SUMMARY = "PSP (PPSSPP) libretro core, GLES + Vulkan"
 LICENSE = "GPL-2.0-or-later"
 LIC_FILES_CHKSUM = "file://LICENSE.TXT;md5=e336f8162cddec7981e240f46825d8a2"
 # The release tarball carries the submodules (glslang, SPIRV-Cross, ffmpeg, ...)
+# Checks for the patches: Rendering Resolution 1x -> 2x -> 3x -> 1x and Crop to 16x9 in a game
+# on Vulkan fill the same area without repeated edges, also after a state load (0001); a movie
+# that ends by itself goes back to the game (0002: Monster Hunter's after character creation)
 SRC_URI = "https://github.com/hrydgard/ppsspp/releases/download/v${PV}/ppsspp-${PV}.tar.xz \
     file://0001-libretro-resize-vulkan-output.patch \
     file://0002-mediaengine-handle-empty-ffmpeg-reads.patch"

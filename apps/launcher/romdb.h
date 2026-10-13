@@ -16,7 +16,8 @@
  *   strings  NUL-terminated; offset 0 is ""
  *
  * CRCs are computed in the background (a zip's from its directory) and
- * cached in $XDG_CACHE_HOME/launcher/crc32 by path, size and mtime.
+ * cached in $XDG_CACHE_HOME/launcher/crc32 by path, size and mtime; a J2ME
+ * jar's name (jar.h) with them.
  */
 #pragma once
 
@@ -45,8 +46,9 @@ typedef struct {
 
 /* win_wake(UI_HASHED) when a CRC was computed, so the list can be rescanned */
 void romdb_init(void);
-/* The ROM's CRC if known; else false, and it is computed in the background */
-bool romdb_crc(str path, const struct stat *st, uint32_t *crc);
+/* The ROM's CRC if known, and its own name into `name` ("" without); else false, and they are
+ * found in the background */
+bool romdb_crc(str path, const struct stat *st, uint32_t *crc, char *name, size_t name_size);
 bool romdb_find(str pack, uint32_t crc, romdb_game *out);
 /* Packs found missing are looked for again (one was downloaded) */
 void romdb_retry(void);

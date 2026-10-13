@@ -38,16 +38,20 @@
  * channel) and loads it.
  */
 #include <ctype.h>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/input.h>
 #include <math.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -106,6 +110,12 @@ static int frame_w, frame_h;
 static float aspect;
 static snd_pcm_t *audio;
 static int pad_fd = -1;
+/* The rumble motor (pwm-vibrator): one FF_RUMBLE effect, played at the
+ * stronger of what the core asks of its two motors, once a frame */
+static int rumble_fd = -1;
+static struct ff_effect rumble = {.type = FF_RUMBLE, .id = -1};
+static _Atomic uint16_t rumble_wanted[2];
+static bool rumble_asked; /* GET_RUMBLE_INTERFACE: the Rumble option shows */
 /* evdev KEY_*, for the keyboard's bindings */
 static bool keys[KEY_MAX + 1];
 static double fps = 60;
@@ -148,6 +158,8 @@ static char **args;
 static bool startup_options; /* the core reads its options only at load */
 static uint8_t started_with[APPCTL_OPTIONS_MAX];
 static bool restart;
+/* The game quit itself: corehost quits as it would for the launcher */
+static bool core_shutdown;
 /* stem: the saves' path but for the extension; rom_stem: the ROM's */
 static char opt_path[512], stem[512], rom_stem[512], save_dir[512], default_opt_path[512];
 /* This game's own options (Y in the launcher: their own is 1), in
@@ -215,7 +227,7 @@ enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
 _Static_assert(BINDINGS <= 32, "active is a bit per binding");
 
 /* Our own options, after the core's: these choices, then the bindings */
-enum { HOST_SCALE, HOST_FILTER, HOST_FAST, HOST_CHOICES };
+enum { HOST_SCALE, HOST_FILTER, HOST_FAST, HOST_RUMBLE, HOST_CHOICES };
 static const struct {
   const char *key, *label, *values;
   int category;
@@ -225,6 +237,8 @@ static const struct {
     {"corehost_filter", "Filter", "Sharp|Smooth", APPCTL_GRAPHICS, 0},
     /* Frames run per frame shown */
     {"corehost_fast_speed", "Fast forward speed", "2x|3x|4x|6x|8x", APPCTL_SYSTEM, 1},
+    /* Last: left out without a motor or a core that rumbles (host_value: 0, On) */
+    {"corehost_rumble", "Rumble", "On|Off", APPCTL_INPUT, 0},
 };
 static const int fast_speeds[] = {2, 3, 4, 6, 8};
 static unsigned host_option_at; /* index of the first one in shm */
@@ -340,7 +354,7 @@ static void add_definition(const char *key, const char *desc, const char *catego
 /* Scaling, filter and fast forward speed, then the bindings */
 static void publish_host(void) {
   host_option_at = atomic_load(&shm->option_count);
-  for (int i = 0; i < HOST_CHOICES; i++) {
+  for (int i = 0; i < HOST_CHOICES - !rumble_asked; i++) {
     char desc[128];
     snprintf(desc, sizeof(desc), "%s; %s", host_options[i].label, host_options[i].values);
     add_option(host_options[i].key, desc, host_options[i].category);
@@ -1485,6 +1499,14 @@ static void hw_present(int x, int y, int w, int h, int win_w, int win_h) {
     gl.Enable(GL_SCISSOR_TEST);
 }
 
+/* The pad's motor only; called from the core's threads too */
+static bool set_rumble(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
+  if (port != 0 || effect > RETRO_RUMBLE_WEAK)
+    return false;
+  rumble_wanted[effect] = strength;
+  return true;
+}
+
 static bool environment(unsigned cmd, void *data) {
   switch (cmd) {
   case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
@@ -1497,6 +1519,12 @@ static bool environment(unsigned cmd, void *data) {
     }
   case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
     ((struct retro_log_callback *)data)->log = logf_;
+    return true;
+  case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE:
+    if (rumble_fd < 0 || data == NULL)
+      return false;
+    ((struct retro_rumble_interface *)data)->set_rumble_state = set_rumble;
+    rumble_asked = true;
     return true;
   case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
     if (data != NULL)
@@ -1595,6 +1623,9 @@ static bool environment(unsigned cmd, void *data) {
       }
     if (host_published)
       atomic_store(&redescribed, true);
+    return true;
+  case RETRO_ENVIRONMENT_SHUTDOWN:
+    core_shutdown = true;
     return true;
   case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
   case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
@@ -1826,6 +1857,46 @@ static void rewind_pop(void) {
   core.retro_unserialize(rewind_ring + rewind_head * state_size, state_size);
 }
 
+/* The motor at `level` (0: still), told only when that changes */
+static void rumble_play(uint16_t level) {
+  static uint16_t now;
+  if (rumble_fd < 0 || level == now)
+    return;
+  /* Length 0: until stopped */
+  rumble.u.rumble.strong_magnitude = level;
+  if (level > 0 && ioctl(rumble_fd, EVIOCSFF, &rumble) < 0)
+    return;
+  const struct input_event e = {.type = EV_FF, .code = (uint16_t)rumble.id, .value = level > 0};
+  if ((level == 0 || now == 0) && write(rumble_fd, &e, sizeof(e)) != sizeof(e))
+    return;
+  now = level;
+}
+
+/* The processes the core started (FreeJ2ME's Java app), which pause with the game: SIGSTOP,
+ * SIGCONT */
+static void signal_children(int sig) {
+  DIR *proc = opendir("/proc");
+  for (struct dirent *e; proc != NULL && (e = readdir(proc)) != NULL;) {
+    char path[300], stat[256];
+    if (!isdigit((unsigned char)e->d_name[0]))
+      continue;
+    snprintf(path, sizeof(path), "/proc/%s/stat", e->d_name);
+    FILE *f = fopen(path, "r");
+    const size_t n = f != NULL ? fread(stat, 1, sizeof(stat) - 1, f) : 0;
+    if (f != NULL)
+      fclose(f);
+    stat[n] = '\0';
+    /* "pid (name) state ppid ...": the name may hold anything, up to the last ')' */
+    const char *name_end = strrchr(stat, ')');
+    char state;
+    int ppid;
+    if (name_end != NULL && sscanf(name_end + 1, " %c %d", &state, &ppid) == 2 && ppid == getpid())
+      kill(atoi(e->d_name), sig);
+  }
+  if (proc != NULL)
+    closedir(proc);
+}
+
 /* One request, answered; false once the launcher is gone */
 static bool control(bool *paused) {
   appctl_msg m;
@@ -1838,6 +1909,8 @@ static bool control(bool *paused) {
   switch (m.op) {
   case APPCTL_PAUSE:
     *paused = true;
+    rumble_play(0);
+    signal_children(SIGSTOP);
     if (audio != NULL)
       snd_pcm_drop(audio);
     /* Home may be the last the game sees for a while */
@@ -1845,6 +1918,7 @@ static bool control(bool *paused) {
     break;
   case APPCTL_RESUME:
     *paused = false;
+    signal_children(SIGCONT);
     for (unsigned i = 0; startup_options && i < host_option_at; i++)
       restart |= atomic_load(&shm->options[i].value) != started_with[i];
     /* Mapped again: the kiosk shell puts what maps on top */
@@ -2047,6 +2121,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   pad_fd = pad_open(0);
+  rumble_fd = input_open(S("pwm-vibrator"), O_RDWR);
   core.retro_init();
 
   struct retro_game_info game = {.path = rom};
@@ -2185,6 +2260,8 @@ int main(int argc, char **argv) {
       unseen = i + 1 < speed;
       core.retro_run();
     }
+    running &= !core_shutdown;
+    rumble_play(host_value(HOST_RUMBLE) == 0 ? MAX(rumble_wanted[0], rumble_wanted[1]) : 0);
     if (atomic_exchange(&redescribed, false)) {
       atomic_store(&shm->option_count, host_option_at);
       publish_and_load();

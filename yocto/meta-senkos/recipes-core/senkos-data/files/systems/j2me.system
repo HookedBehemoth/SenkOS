@@ -1,0 +1,7 @@
+[System]
+Name=J2ME
+Folder=roms/j2me
+Aliases=j2me;java;
+Patterns=*.jar;*.kjx;
+MimeType=application/x-j2me-app;
+Order=185

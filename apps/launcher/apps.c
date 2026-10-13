@@ -283,10 +283,20 @@ static void scan_entry(category *c, str picks, str matched, str folder, str name
     STRBUF(16) hex;
     if (line_of(matched, sb_str(path), &match) && sb_set(hex, match))
       a->match = (uint32_t)strtoul(hex.p, NULL, 16);
+    /* A jar names itself, and its icon is its art (jar.h) */
+    const bool jar = str_iends(name, S(".jar"));
+    if (jar && a->icon.n == 0 && !sb_set(a->icon, S("jar:"), sb_str(path)))
+      a->icon.n = 0;
     uint32_t crc = a->match;
+    char own[sizeof(a->name.p)];
     romdb_game game;
     const str pack = apps_pack(c);
-    if (pack.n > 0 && (crc != 0 || romdb_crc(sb_str(path), &st, &crc)) && romdb_find(pack, crc, &game)) {
+    const bool hashed = (jar || (pack.n > 0 && crc == 0)) && romdb_crc(sb_str(path), &st, &crc, own, sizeof(own));
+    if (hashed && own[0] != '\0')
+      sb_set(a->name, str_c(own));
+    if (a->match != 0)
+      crc = a->match;
+    if (pack.n > 0 && (a->match != 0 || hashed) && romdb_find(pack, crc, &game)) {
       sb_set(a->name, game.title);
       if (a->icon.n == 0)
         sb_set(a->icon, sb_str(game.image));

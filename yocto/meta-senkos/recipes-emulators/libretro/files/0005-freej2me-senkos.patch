@@ -1,0 +1,157 @@
+Subject: [PATCH] Jar from /usr/share/freej2me, keypad bindings, no auto-pause,
+ shut down with the app
+
+The jar is the image's, not one in the frontend's system directory. The
+D-Pad presses 2 4 6 8, X OK/Fire and Y 0; the rest stay (A 9, B 7, L1 1,
+R1 3, L2 *, R2 #, Select and Start the soft keys, L3 5). No sticks are
+described: the pad has none. Rumble is stopped only where the frontend
+has it (a NULL call otherwise), and the Java app dies with the frontend.
+
+The app isn't told a frame was processed: that arms its own pause, which
+calls the game's pauseApp after 250 ms without a frame and startApp on
+the next, both on the thread that reads the pipe, and a game that blocks
+in either hangs the core waiting for a frame (Diamond Rush hung so after
+a while in the pause menu: the core in the pipe's read, the app idle).
+corehost stops the app's process while the game is paused instead.
+
+The core asks the frontend to shut down when the app is gone.
+
+Upstream-Status: Inappropriate [SenkOS layout and bindings]
+---
+diff --git a/src/libretro/freej2me_libretro.c b/src/libretro/freej2me_libretro.c
+index c2f47bd..cf92ec1 100755
+--- a/src/libretro/freej2me_libretro.c
++++ b/src/libretro/freej2me_libretro.c
+@@ -21,6 +21,7 @@
+ #include <stdarg.h>
+ #include <unistd.h>
+ #include <sys/wait.h>
++#include <sys/prctl.h>
+ #elif _WIN32
+ #include <windows.h>
+ #include <tlhelp32.h>
+@@ -36,7 +37,7 @@ const char *slash = path_default_slash();
+ 
+ // These may change to .so and .dll at some point
+ #ifdef __linux__
+-const char *freej2meapp = "freej2me-lr.jar";
++const char *freej2meapp = "/usr/share/freej2me/freej2me-lr.jar";
+ #elif _WIN32
+ const char *freej2meapp = "freej2me-lr.jar";
+ #endif
+@@ -751,7 +752,7 @@ void retro_init(void)
+ 
+ 	/* Check if freej2me's app actually exists and notify the user if it doesn't */
+ 	char *freej2mePath = malloc(sizeof(char) * PIPE_MAX_LEN);
+-    snprintf(freej2mePath, sizeof(char) * PIPE_MAX_LEN, "%s/%s", systemPath, freej2meapp);
++    snprintf(freej2mePath, sizeof(char) * PIPE_MAX_LEN, "%s", freej2meapp);
+ 
+     if (!freej2me_present(freej2mePath)) 
+ 	{
+@@ -917,13 +918,11 @@ void retro_run(void)
+ 		 * Input array in libretro: [Up, Down, Left, Right, 9, 7, 0, Fire, RightSoft, LeftSoft, 1, 3. *. #, 2, 4, 6, 8, 5, CLR] 
+ 		 */
+ 
+-		joypad[0] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP);
+-		joypad[1] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN);
+-		joypad[2] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT);
+-		joypad[3] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT);
++		/* The D-Pad is the keypad's 2 4 6 8 (below), X Fire, Y 0 */
++		joypad[0] = joypad[1] = joypad[2] = joypad[3] = 0;
+ 
+-		joypad[6] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X);
+-		joypad[7] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y);
++		joypad[6] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y);
++		joypad[7] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X);
+ 
+ 		joypad[8] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START);
+ 		joypad[9] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT);
+@@ -976,6 +975,11 @@ void retro_run(void)
+ 			joypad[17] = (int) ((InputState(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y ) / 32767.0f) > analogDeadzone);  // Num 8
+ 		}
+ 
++		joypad[14] |= InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP);
++		joypad[15] |= InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT);
++		joypad[16] |= InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT);
++		joypad[17] |= InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN);
++
+ 		joypad[18] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3); // Num 5
+ 		joypad[19] = InputState(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3); // CLR
+ 		
+@@ -998,7 +1002,7 @@ void retro_run(void)
+ 			rumble.set_rumble_state(0, RETRO_RUMBLE_WEAK,  rumbleStrength);
+ 			rumbleTime -= 1000 / DEFAULT_FPS;
+ 		}
+-		else
++		else if (rumble.set_rumble_state)
+ 		{
+ 			rumble.set_rumble_state(0, RETRO_RUMBLE_STRONG, 0);
+ 			rumble.set_rumble_state(0, RETRO_RUMBLE_WEAK, 0);
+@@ -1328,8 +1332,9 @@ void retro_run(void)
+  	 */
+ 	if(resetRequested) { retro_reset(); }
+ 	
+-	javaRequestFrame[3] = 1; // Indicate that frame was processed
+-	write_to_pipe(pWrite[1], javaRequestFrame, 5);
++	/* Not told that the frame was processed: that starts the app's own pause after 250 ms
++	 * without a frame, pauseApp and startApp on its pipe's thread, which some games
++	 * deadlock in. The frontend stops the app's process while it pauses instead. */
+ 	
+ }
+ 
+@@ -1479,7 +1484,9 @@ bool javaOpen(char *cmd, char **params)
+ 
+ 		close(pWrite[1]);
+ 		close(pRead[0]);
+-		
++
++		/* Gone with the frontend, even when it crashes */
++		prctl(PR_SET_PDEATHSIG, SIGKILL);
+ 		chdir(systemPath);
+ 
+ 		execvp(cmd, params);
+@@ -1637,7 +1644,8 @@ bool isRunning()
+ 
+ 	log_fn(RETRO_LOG_INFO, "Java app is not running! Last known PID=%d \n", javaProcess.dwProcessId);
+ #endif
+-	Environ(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, (void*)&messages[CHILDPROC_CLOSED_MSG]);
++	/* The app is gone (it quit or crashed): so is the game */
++	Environ(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
+ 	stoppedRunning = true;
+ 	return false;
+ }
+diff --git a/src/libretro/freej2me_libretro.h b/src/libretro/freej2me_libretro.h
+index ae741d2..6c3a996 100644
+--- a/src/libretro/freej2me_libretro.h
++++ b/src/libretro/freej2me_libretro.h
+@@ -87,23 +87,19 @@ static const struct retro_message_ext messages[] =
+ /* This is responsible for exposing the joypad input mappings to the frontend */
+ static const struct retro_input_descriptor desc[] =
+ {
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,                                     "Arrow Left" },
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,	                                      "Arrow Up" },
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,                                     "Arrow Down" },
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,                                    "Arrow Right" },
+-    { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X,           "Num 4(-), Num 6(+) : " },
+-    { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y,           "Num 2(-), Num 8(+) : " },
+-    { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X,          "Pointer Horizontal Move"},
+-    { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y,          "Pointer Vertical Move"},
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,                                     "Num 4" },
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,	                                      "Num 2" },
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,                                     "Num 8" },
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,                                    "Num 6" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,                                        "Num 7" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,                                        "Num 9" },
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,                                        "Num 0" },
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,                                        "OK/Fire" },
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,                                        "OK/Fire" },
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,                                        "Num 0" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,                                        "Num 1" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,                                        "Num 3" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,                                       "Num #" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,                                       "Num *" },
+-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,                                       "Num 5/Pointer Press" },
++    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,                                       "Num 5" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,                                   "Left Softkey" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,                                    "Right Softkey" },
+     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,                                       "CLR" },
