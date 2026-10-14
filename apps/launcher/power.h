@@ -1,20 +1,20 @@
 /*
  * The pause menu's Power page: the CPU's and the GPU's clocks for each app,
- * and the backlight. No power draw: the AXP717's battery current is a raw ADC
+ * the display's refresh rate and the backlight for all. No power draw: the AXP717's battery current is a raw ADC
  * value of unknown offset (mainline's driver says so), ~405 mA idle or busy.
  *
  * An app's clocks come from the kernel's tables, set whenever it comes on
  * screen: the CPU's a cap (Auto: the highest), the GPU's pinned (Auto: its
  * governor's choice). At home everything goes back to Auto. sysd writes them, the launcher runs unprivileged.
- * The display's refresh rate too, one of its modes' (Auto: the one Weston
- * started with), switched by Weston's frames.so. Kept a line an app in
- * $XDG_CONFIG_HOME/launcher-power: "CPU_KHZ GPU_HZ FPS REFRESH_MHZ KEY", 0 for Auto.
+ * Kept a line an app in $XDG_CONFIG_HOME/launcher-power: "CPU_KHZ GPU_HZ FPS
+ * KEY", 0 for Auto. The refresh rate is one of the display's modes', the same
+ * everywhere: Weston's shell sets and keeps it.
  *
  * Calibration finds the lowest clocks that still hold the app's frame rate
  * (FPS, 30 to the refresh rate): from the highest, the CPU's a step at a time while every
  * second of five holds it, then the GPU's the same way, and keeps the last
- * that held. Frames are what the display shows (Weston's frames.so
- * module), whoever draws them. The result is set once, like a manual choice.
+ * that held. Frames are what the display shows (counted by Weston's shell),
+ * whoever draws them. The result is set once, like a manual choice.
  */
 #pragma once
 
@@ -39,7 +39,7 @@ void power_step(int row, int by);
 /* The backlight's percent, -1 without one */
 int power_brightness(void);
 
-/* The frames shown so far (Weston's frames.so), false without the counter */
+/* The frames shown so far (Weston's shell's count), false without it */
 bool power_frames(uint32_t *out);
 void power_calibrate(void);
 bool power_calibrating(void);

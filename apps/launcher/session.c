@@ -7,6 +7,7 @@
 #include "capture.h"
 #include "cfg.h"
 #include "launcher_internal.h"
+#include "layer.h"
 #include "power.h"
 #include "util.h"
 #include "wake.h"
@@ -37,8 +38,7 @@ void go_home(nav *ui) {
   launcher.capture.option = -1;
   pad_listen(true);
   drop_backdrop();
-  if (!window.configured)
-    win_map(&window);
+  layer_show(&window, true);
   screen_focus_restore(launcher.visible, ui);
 }
 
@@ -65,8 +65,9 @@ void session_start(nav *ui, str label, str icon, str exec, str arg, str dir,
   running *r = run_same(exec, arg, dir);
   if (r != NULL) {
     hand_over(ui, r);
-    run_resume(r, true);
-    win_unmap(&window);
+    layer_show_app(r->pid);
+    run_resume(r);
+    layer_show(&window, false);
     return;
   }
   r = run_launch(label, icon, exec, arg, dir);
@@ -98,8 +99,7 @@ void session_pause(nav *ui) {
   pad_listen(true);
   pad_grab(true);
   screen_focus_restore(launcher.visible, ui);
-  /* kiosk-shell puts a toplevel on top when it maps: map again */
-  win_map(&window);
+  layer_show(&window, true);
 }
 
 void resume_front(nav *ui) {
@@ -111,9 +111,9 @@ void resume_front(nav *ui) {
   launcher.visible = NULL;
   pad_listen(false);
   pad_grab(false);
-  win_unmap(&window);
+  layer_show(&window, false);
   drop_backdrop();
-  run_resume(launcher.front, false);
+  run_resume(launcher.front);
 }
 
 void quit_front(nav *ui) {

@@ -30,7 +30,7 @@ enum {
   RADIUS = 12,
   GAP = 8
 };
-enum { OSD_W = 320, OSD_H = 40, OSD_MS = 1500, RESULT_MS = 5000 };
+enum { OSD_W = 320, OSD_H = 40, OSD_TOP = 40, OSD_MS = 1500, RESULT_MS = 5000 };
 enum {
   SPLASH_PX = 256,
   PERF_W = 200,
@@ -229,7 +229,6 @@ void launcher_key(unsigned code, bool down);
 bool launcher_input(nav *ui, int why, int value, size_t *page);
 void osd_show_level(bool brightness, int percent);
 void osd_show_text(str text, int ms);
-void osd_init(void);
 uint64_t osd_due(void);
 void osd_tick(uint64_t now);
 void osd_limit_notice(void);

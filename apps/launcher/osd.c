@@ -2,6 +2,7 @@
 #include <limits.h>
 
 #include "launcher_internal.h"
+#include "layer.h"
 #include "perf.h"
 #include "util.h"
 #include "wake.h"
@@ -15,9 +16,16 @@ static gfx_target *osd_screen, *perf_screen;
 static uint64_t osd_until;
 static bool perf_pending, perf_move;
 
+/* Top centre */
+static void map_osd(void) {
+  if (osd.configured)
+    return;
+  layer_overlay(&osd, LAYER_TOP, OSD_TOP);
+  win_map(&osd);
+}
+
 void osd_show_level(bool brightness, int percent) {
-  if (!osd.configured)
-    win_map(&osd);
+  map_osd();
   if (osd_screen == NULL)
     osd_screen = gfx_target_create(&osd, true);
   if (osd_screen == NULL)
@@ -44,8 +52,7 @@ void osd_show_level(bool brightness, int percent) {
 }
 
 void osd_show_text(str text, int ms) {
-  if (!osd.configured)
-    win_map(&osd);
+  map_osd();
   if (osd_screen == NULL)
     osd_screen = gfx_target_create(&osd, true);
   int w, h;
@@ -60,9 +67,18 @@ void osd_show_text(str text, int ms) {
   osd_until = ms_now() + ms;
 }
 
+static const unsigned corner_anchors[PERF_CORNERS] = {
+    [PERF_TOP_LEFT] = LAYER_TOP | LAYER_LEFT,
+    [PERF_TOP_RIGHT] = LAYER_TOP | LAYER_RIGHT,
+    [PERF_BOTTOM_LEFT] = LAYER_BOTTOM | LAYER_LEFT,
+    [PERF_BOTTOM_RIGHT] = LAYER_BOTTOM | LAYER_RIGHT,
+};
+
 void show_perf(void) {
-  if (!perf.configured)
+  if (!perf.configured) {
+    layer_overlay(&perf, corner_anchors[perf_corner()], 0);
     win_map(&perf);
+  }
   if (perf_screen == NULL)
     perf_screen = gfx_target_create(&perf, true);
   int w, h;
@@ -87,7 +103,7 @@ void show_perf(void) {
 
 void launcher_perf_action(int action, intptr_t arg) {
   if (action == PERF_CORNER) {
-    perf_next_corner();
+    perf_step_corner((int)arg);
     perf_move = true;
   } else if (action == PERF) {
     perf_toggle(arg);
@@ -100,7 +116,6 @@ void osd_flush(void) {
     return;
   perf_pending = false;
   if (perf_move) {
-    perf.title = perf_titles[perf_corner()].p;
     win_unmap(&perf);
     perf_move = false;
   }
@@ -109,8 +124,6 @@ void osd_flush(void) {
   else if (perf.configured)
     win_unmap(&perf);
 }
-
-void osd_init(void) { perf.title = perf_titles[perf_corner()].p; }
 
 uint64_t osd_due(void) { return osd_until; }
 

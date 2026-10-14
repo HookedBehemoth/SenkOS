@@ -219,6 +219,7 @@ static void output_done(void *data, struct wl_output *o) {
       win_refreshes_mhz[at] = win_refreshes_mhz[at - 1];
     win_refreshes_mhz[at] = modes[i].mhz;
   }
+  win_wake(WIN_OUTPUT, 0);
 }
 static void output_scale(void *data, struct wl_output *o, int32_t factor) { (void)data, (void)o, (void)factor; }
 static const struct wl_output_listener output_listener = {

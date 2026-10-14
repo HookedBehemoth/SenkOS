@@ -1,5 +1,6 @@
-SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, the media player, corehost, downloadd, refreshtest, and common/ that they share"
-# Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT. Listed so their
+SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, Weston's shell, the media player, corehost, downloadd, refreshtest, and common/ that they share"
+# Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT, the shell (from
+# Weston's kiosk-shell) MIT. Listed so their
 # texts land in the image with ours (the launcher's Licenses screen).
 LICENSE = "AGPL-3.0-only & ISC & MIT"
 LIC_FILES_CHKSUM = "file://common/ui/icons/LICENSE;md5=5d494583c484398d800c8e0f74da272b \
@@ -15,17 +16,19 @@ inherit meson pkgconfig deploy
 
 # No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev).
 # common/ui: Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
-# launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys). mediaplayer: GStreamer.
+# shell: libweston. launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys). mediaplayer: GStreamer.
 # downloadd: curl, zstd, OpenSSL's SHA-256.
 # corehost: Vulkan, EGL (virtual/libgles2 for headers only, the functions come
 # from eglGetProcAddress), ALSA, zlib.
-DEPENDS = "vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
+DEPENDS = "weston vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
     libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib pulseaudio curl zstd openssl \
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime
-PACKAGES =+ "launcher mediaplayer corehost downloadd refreshtest"
+PACKAGES =+ "launcher senkos-shell mediaplayer corehost downloadd refreshtest"
 FILES:launcher = "${bindir}/launcher"
+FILES:senkos-shell = "${libdir}/weston/senkos-shell.so"
+RDEPENDS:senkos-shell = "weston"
 FILES:downloadd = "${bindir}/downloadd"
 # A test pattern, not in the image: copied to /data/apps/benchmarks to try a refresh rate
 FILES:refreshtest = "${bindir}/refreshtest"
@@ -49,5 +52,6 @@ do_deploy() {
     for app in launcher mediaplayer corehost downloadd; do
         install -m 0755 ${B}/$app/$app ${DEPLOYDIR}/$app
     done
+    install -m 0755 ${B}/shell/senkos-shell.so ${DEPLOYDIR}/senkos-shell.so
 }
 addtask deploy after do_compile before do_build

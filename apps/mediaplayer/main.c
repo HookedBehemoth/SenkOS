@@ -975,8 +975,6 @@ static bool control(void) {
     break;
   case APPCTL_RESUME:
     ctl_paused = false;
-    if (m.arg)
-      win_map(&window);
     /* Presses that were the launcher's */
     read_pad(true);
     play_state();

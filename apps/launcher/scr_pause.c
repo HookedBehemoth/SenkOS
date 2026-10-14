@@ -366,6 +366,15 @@ static bool pause_settings_button(ui_screen *screen, nav *ui, int button) {
     run_request(state->front, APPCTL_OPTIONS, 0);
     return true;
   }
+  if (settings_category(state) == DEBUG_PAGE && menu_focus >= 0 &&
+      (button == APPCTL_LEFT || button == APPCTL_RIGHT)) {
+    entry rows[PERF_ROWS];
+    if ((size_t)menu_focus >= launcher_perf_rows(rows) ||
+        rows[menu_focus].action != PERF_CORNER)
+      return false;
+    launcher_perf_action(PERF_CORNER, button == APPCTL_LEFT ? -1 : 1);
+    return true;
+  }
   if (settings_category(state) == POWER_PAGE && launcher_power_focus >= 0 &&
       (button == APPCTL_LEFT || button == APPCTL_RIGHT)) {
     power_step(launcher_power_focus, button == APPCTL_LEFT ? -1 : 1);
@@ -436,7 +445,7 @@ static void choose_pause_settings(nav *ui, void *choice) {
   const entry *chosen = choice;
   switch (chosen->action) {
   case PERF_CORNER:
-    launcher_perf_action(PERF_CORNER, 0);
+    launcher_perf_action(PERF_CORNER, 1);
     break;
   case PERF:
     launcher_perf_action(PERF, chosen->arg);

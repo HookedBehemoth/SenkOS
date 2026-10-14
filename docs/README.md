@@ -9,7 +9,7 @@ A small, fast-booting OS for the Anbernic **RG35XX-SP** (Allwinner H700).
 | Boot | mainline SPL (DRAM init) + TF-A BL31 + U-Boot, A/B slot choice in `boot.scr` |
 | Kernel | Linux 7.2 + H700 board patches, everything built in, no initramfs |
 | Root fs | read-only squashfs (lz4) per slot; `/data` ext4 for everything writable |
-| Userspace | busybox init, eudev, Weston (kiosk shell) on DRM, Mesa panfrost (GL/GLES) + PanVK (Vulkan) |
+| Userspace | busybox init, eudev, Weston (our shell, [apps/shell](../apps/shell/shell.c)) on DRM, Mesa panfrost (GL/GLES) + PanVK (Vulkan) |
 | UI | [apps/launcher/](../apps/launcher) (Wayland, Vulkan); [apps/mediaplayer/](../apps/mediaplayer) (GStreamer, Cedrus); the libretro cores run in corehost; mGBA and games live on `/data` |
 | Build | Yocto (oe-core + meta-arm + meta-senkos) via kas in a container |
 

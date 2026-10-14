@@ -55,4 +55,4 @@ do_install() {
 }
 
 FILES:${PN} += "/uboot /data"
-RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk util-linux-mount e2fsprogs-mke2fs e2fsprogs-e2fsck alsa-utils-amixer weston-frames ksmbd-tools avahi-daemon umtprd senkos-data"
+RDEPENDS:${PN} = "busybox busybox-syslog dropbear weston seatd launcher corehost util-linux-sfdisk util-linux-mount e2fsprogs-mke2fs e2fsprogs-e2fsck alsa-utils-amixer senkos-shell ksmbd-tools avahi-daemon umtprd senkos-data"

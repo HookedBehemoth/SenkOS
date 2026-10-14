@@ -383,10 +383,15 @@ static bool debug_button(ui_screen *screen, nav *ui, int button) {
   page_label labels[2];
   (void)ui;
   if (menu_focus < 0 || (button != APPCTL_LEFT && button != APPCTL_RIGHT) ||
-      (size_t)menu_focus >= page_rows(screen->def, rows, labels) ||
-      rows[menu_focus].action != POWER_ON)
+      (size_t)menu_focus >= page_rows(screen->def, rows, labels))
     return false;
-  power_on_step(button == APPCTL_LEFT ? -1 : 1);
+  const int by = button == APPCTL_LEFT ? -1 : 1;
+  if (rows[menu_focus].action == POWER_ON)
+    power_on_step(by);
+  else if (rows[menu_focus].action == PERF_CORNER)
+    launcher_perf_action(PERF_CORNER, by);
+  else
+    return false;
   return true;
 }
 
@@ -488,7 +493,7 @@ static void choose_debug(nav *ui, void *choice) {
     power_on_step(1);
     break;
   case PERF_CORNER:
-    launcher_perf_action(PERF_CORNER, 0);
+    launcher_perf_action(PERF_CORNER, 1);
     break;
   case PERF:
     launcher_perf_action(PERF, chosen->arg);

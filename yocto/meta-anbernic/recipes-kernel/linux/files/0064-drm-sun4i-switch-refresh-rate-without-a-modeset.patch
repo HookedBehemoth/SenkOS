@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Wed, 14 Oct 2026 01:00:00 +0200
+Subject: [PATCH] drm/sun4i: switch the refresh rate without a modeset
+
+A panel's modes of the same timings at other pixel clocks (the RG35XX
+SP's 640x480 at 60 and 120 Hz: 24 and 48 MHz) are refresh rates of one
+mode, but a mode change is a full modeset: the CRTC, the encoder and the
+panel go down and up, the panel's init sequence runs again and the
+screen is dark for a few hundred ms.
+
+When the new mode differs from the one on screen only in its clock, on
+an RGB TCON that stays on, the CRTC's atomic_check clears mode_changed
+and atomic_flush sets the TCON0 pixel clock alone: DCLK's divider if one
+fits the rate its parent runs at (pinned, so the parent stays), else the
+parent too, as a modeset would. The rest of the frame being scanned out
+goes at the new rate; the panel counts its timings in pixels, so it sees
+one frame of another length. Without ALLOW_MODESET such a commit is
+accepted too.
+
+Upstream-Status: Pending
+---
+ drivers/gpu/drm/sun4i/sun4i_crtc.c | 38 +++++++++++++++++++++++++++++++-
+ drivers/gpu/drm/sun4i/sun4i_tcon.c | 44 ++++++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/sun4i/sun4i_tcon.h |  6 ++++++
+ 3 files changed, 87 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sun4i/sun4i_crtc.c b/drivers/gpu/drm/sun4i/sun4i_crtc.c
+index 846036cd2..1e05f10bb 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_crtc.c
++++ b/drivers/gpu/drm/sun4i/sun4i_crtc.c
+@@ -45,15 +45,45 @@ static struct drm_encoder *sun4i_crtc_get_encoder(struct drm_crtc *crtc)
+ 	return NULL;
+ }
+ 
++/* The same timings but for the pixel clock: another refresh rate */
++static bool sun4i_crtc_clock_only(const struct drm_display_mode *old,
++				  const struct drm_display_mode *new)
++{
++	struct drm_display_mode mode;
++
++	drm_mode_copy(&mode, new);
++	mode.clock = old->clock;
++	return old->clock != new->clock &&
++	       drm_mode_match(old, &mode, DRM_MODE_MATCH_TIMINGS |
++				  DRM_MODE_MATCH_FLAGS | DRM_MODE_MATCH_3D_FLAGS);
++}
++
+ static int sun4i_crtc_atomic_check(struct drm_crtc *crtc,
+ 				    struct drm_atomic_commit *state)
+ {
++	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
++									 crtc);
+ 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state,
+ 									  crtc);
+ 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
++	struct drm_encoder *encoder = sun4i_crtc_get_encoder(crtc);
+ 	struct sunxi_engine *engine = scrtc->engine;
+ 	int ret = 0;
+ 
++	/*
++	 * Another refresh rate of the mode on screen: the pixel clock changed
++	 * in atomic_flush, not a modeset, which would take the panel down and
++	 * up (its init sequence again, the screen dark for a moment)
++	 */
++	if (crtc_state->mode_changed && !crtc_state->active_changed &&
++	    !crtc_state->connectors_changed && old_state->active &&
++	    crtc_state->active && encoder &&
++	    sun4i_crtc_clock_only(&old_state->adjusted_mode,
++				  &crtc_state->adjusted_mode) &&
++	    sun4i_tcon_can_set_clock(scrtc->tcon, encoder,
++				     &crtc_state->adjusted_mode))
++		crtc_state->mode_changed = false;
++
+ 	if (engine && engine->ops && engine->ops->atomic_check)
+ 		ret = engine->ops->atomic_check(engine, crtc_state);
+ 
+@@ -75,12 +105,18 @@ static void sun4i_crtc_atomic_begin(struct drm_crtc *crtc,
+ static void sun4i_crtc_atomic_flush(struct drm_crtc *crtc,
+ 				    struct drm_atomic_commit *state)
+ {
++	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
++									 crtc);
+ 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
+ 	struct drm_device *dev = crtc->dev;
+ 	unsigned long flags;
+ 
+-	DRM_DEBUG_DRIVER("Committing plane changes\n");
++	/* atomic_check's other refresh rate */
++	if (!drm_atomic_crtc_needs_modeset(crtc->state) &&
++	    old_state->adjusted_mode.clock != crtc->state->adjusted_mode.clock)
++		sun4i_tcon_set_clock(scrtc->tcon, &crtc->state->adjusted_mode);
+ 
++	DRM_DEBUG_DRIVER("Committing plane changes\n");
+ 	sunxi_engine_commit(scrtc->engine, crtc, state);
+ 
+ 	/*
+diff --git a/drivers/gpu/drm/sun4i/sun4i_tcon.c b/drivers/gpu/drm/sun4i/sun4i_tcon.c
+index 3e5ff2a7e..69a6df07c 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_tcon.c
++++ b/drivers/gpu/drm/sun4i/sun4i_tcon.c
+@@ -725,6 +725,50 @@ static void sun4i_tcon1_mode_set(struct sun4i_tcon *tcon,
+ 			   SUN4I_TCON_GCTL_IOMAP_TCON1);
+ }
+ 
++/*
++ * The divider that gives the mode's pixel clock from the rate DCLK's parent
++ * runs at now, 0 if none does exactly: another refresh rate of the same
++ * timings (a panel's 60 and 120 Hz) without touching the parent.
++ */
++static u8 sun4i_tcon0_dclk_div(struct sun4i_tcon *tcon,
++			       const struct drm_display_mode *mode)
++{
++	unsigned long parent = clk_get_rate(clk_get_parent(tcon->dclk));
++	unsigned long rate = mode->clock * 1000UL;
++	unsigned long div;
++
++	if (!rate || parent % rate)
++		return 0;
++	div = parent / rate;
++	return div >= tcon->quirks->dclk_min_div && div <= 127 ? div : 0;
++}
++
++bool sun4i_tcon_can_set_clock(struct sun4i_tcon *tcon,
++			      const struct drm_encoder *encoder,
++			      const struct drm_display_mode *mode)
++{
++	return encoder->encoder_type == DRM_MODE_ENCODER_NONE;
++}
++EXPORT_SYMBOL(sun4i_tcon_can_set_clock);
++
++/*
++ * The pixel clock alone, while scanning out: DCLK's divider if one fits the
++ * parent's rate (pinned, so the clock framework keeps the parent), else the
++ * parent's PLL too, as a modeset would set it. Mid-frame the rest of that
++ * frame goes out at the new rate; the panel counts its timings in pixels, so
++ * it sees one frame of another length.
++ */
++void sun4i_tcon_set_clock(struct sun4i_tcon *tcon,
++			  const struct drm_display_mode *mode)
++{
++	u8 div = sun4i_tcon0_dclk_div(tcon, mode);
++
++	tcon->dclk_min_div = div ? div : tcon->quirks->dclk_min_div;
++	tcon->dclk_max_div = div ? div : 127;
++	clk_set_rate(tcon->dclk, mode->clock * 1000);
++}
++EXPORT_SYMBOL(sun4i_tcon_set_clock);
++
+ void sun4i_tcon_mode_set(struct sun4i_tcon *tcon,
+ 			 const struct drm_encoder *encoder,
+ 			 const struct drm_display_mode *mode)
+diff --git a/drivers/gpu/drm/sun4i/sun4i_tcon.h b/drivers/gpu/drm/sun4i/sun4i_tcon.h
+index c9460f366..75f605ae4 100644
+--- a/drivers/gpu/drm/sun4i/sun4i_tcon.h
++++ b/drivers/gpu/drm/sun4i/sun4i_tcon.h
+@@ -302,6 +302,12 @@ void sun4i_tcon_mode_set(struct sun4i_tcon *tcon,
+ 			 const struct drm_display_mode *mode);
+ void sun4i_tcon_set_status(struct sun4i_tcon *crtc,
+ 			   const struct drm_encoder *encoder, bool enable);
++/* Another pixel clock for the same timings, without a modeset (RGB) */
++bool sun4i_tcon_can_set_clock(struct sun4i_tcon *tcon,
++			      const struct drm_encoder *encoder,
++			      const struct drm_display_mode *mode);
++void sun4i_tcon_set_clock(struct sun4i_tcon *tcon,
++			  const struct drm_display_mode *mode);
+ 
+ extern const struct of_device_id sun4i_tcon_of_table[];
+ 

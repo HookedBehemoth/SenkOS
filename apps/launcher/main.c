@@ -17,6 +17,7 @@
 #include "gfx.h"
 #include "keys.h"
 #include "launcher_internal.h"
+#include "layer.h"
 #include "pad.h"
 #include "perf.h"
 #include "power.h"
@@ -124,6 +125,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "launcher: no Wayland display\n");
     return 1;
   }
+  layer_connect();
   win_map(&window);
   if ((screen = gfx_target_create(&window, false)) == NULL) {
     fprintf(stderr, "launcher: can't draw\n");
@@ -140,7 +142,6 @@ int main(int argc, char **argv) {
   pad_start();
   power_init();
   perf_init();
-  osd_init();
   power_use(HOME_KEY);
   clock_refresh();
   const int volume_keys = input_open(S("gpio-keys-volume"), 0);

@@ -21,7 +21,7 @@ if [ "$1" = session ]; then
 		wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
 		pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
 	) &
-	exec weston --backend=drm --shell=kiosk --modules=frames.so --socket=$WAYLAND_DISPLAY \
+	exec weston --backend=drm --shell=senkos --socket=$WAYLAND_DISPLAY \
 		--log=/var/log/weston.log </dev/null >/dev/null 2>&1
 fi
 ui() {

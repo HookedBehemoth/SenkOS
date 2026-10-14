@@ -1940,9 +1940,6 @@ static bool control(bool *paused) {
     signal_children(SIGCONT);
     for (unsigned i = 0; startup_options && i < host_option_at; i++)
       restart |= atomic_load(&shm->options[i].value) != started_with[i];
-    /* Mapped again: the kiosk shell puts what maps on top */
-    if (m.arg)
-      win_map(&window);
     /* What is held now was pressed for the launcher */
     launcher_held = pad_held(pad_fd);
     if (audio != NULL)

@@ -26,7 +26,7 @@
 enum {
   /* Stop running and wait; the app has stopped once it answers */
   APPCTL_PAUSE = 1,
-  /* arg 1: it was out of sight (Home), map the window again to come on top */
+  /* Run again */
   APPCTL_RESUME,
   /* arg: slot */
   APPCTL_SAVE_STATE,

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="senkos_shell_v1">
+  <copyright>
+    SPDX-License-Identifier: MIT (built into Weston, like the shell)
+  </copyright>
+
+  <interface name="senkos_shell_v1" version="1">
+    <description summary="the launcher's control of Weston's senkos shell">
+      Only the launcher may bind this (Weston's senkos-shell.so lets the
+      user shell and root bind it).
+
+      Each of the launcher's toplevels is in the launcher layer, above the
+      apps' toplevels, fullscreen, unless it's an overlay. The layer is shown
+      and focused when one of them maps, or after show. It's hidden on hide,
+      or when the root of a new toplevel tree of an app maps; the app's top
+      toplevel then gets the focus.
+    </description>
+
+    <request name="destroy" type="destructor"/>
+
+    <enum name="anchor" bitfield="true">
+      <entry name="none" value="0"/>
+      <entry name="top" value="1"/>
+      <entry name="bottom" value="2"/>
+      <entry name="left" value="4"/>
+      <entry name="right" value="8"/>
+    </enum>
+
+    <request name="set_overlay">
+      <description summary="above everything, never focused">
+        Sent before the first commit of the surface's toplevel; again to move
+        it. The surface is drawn above every other one at its own size, at the
+        edges anchored, margin pixels in, centred on the others. It never
+        gets the focus, so the app under it keeps running and keeps the keys.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="anchor" type="uint" enum="anchor"/>
+      <arg name="margin" type="int"/>
+    </request>
+
+    <request name="show">
+      <description summary="the launcher's layer on top, focused">
+        At the next commit of one of its toplevels, so what was on it when
+        it hid is never shown again.
+      </description>
+    </request>
+
+    <request name="hide">
+      <description summary="the launcher's layer hidden, the app focused"/>
+    </request>
+
+    <request name="show_app">
+      <description summary="an app's windows shown, under the launcher's layer">
+        The newest toplevel tree of the clients in this process group, the
+        apps' tree shown from now (the focus once the launcher's layer
+        hides); the windows it had stay as they were, nothing is mapped
+        again. Nothing when none of them has a toplevel (Xwayland's windows
+        are the Xwayland server's, not the app's).
+      </description>
+      <arg name="pgid" type="int"/>
+    </request>
+
+    <request name="set_refresh">
+      <description summary="each output to the mode at its size of this rate">
+        The rate in mHz, as wl_output's mode gives it. A rate an output has no
+        mode for changes nothing. Kept by the shell, set again at each start.
+      </description>
+      <arg name="mhz" type="int"/>
+    </request>
+  </interface>
+</protocol>

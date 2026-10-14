@@ -257,11 +257,11 @@ void run_pause(running *r) {
     kill(-r->pid, SIGSTOP);
 }
 
-void run_resume(running *r, bool raise) {
+void run_resume(running *r) {
   /* Continued either way: a stop is cheap to undo and may be what happened */
   kill(-r->pid, SIGCONT);
   if (run_controlled(r))
-    run_request(r, APPCTL_RESUME, raise);
+    run_request(r, APPCTL_RESUME, 0);
 }
 
 /* Ours (win.h) and SDL's turn SIGTERM into a clean exit (corehost and mGBA

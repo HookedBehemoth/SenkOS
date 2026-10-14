@@ -16,9 +16,6 @@ const str perf_labels[PERF_METRICS] = {S("Frame rate"), S("CPU"),      S("GPU"),
                                        S("Memory"),     S("SD cards"), S("Temperature")};
 
 static const str corners[PERF_CORNERS] = {S("top-left"), S("top-right"), S("bottom-left"), S("bottom-right")};
-/* The kiosk shell's patch 0002 reads "right" and "bottom" in it */
-const str perf_titles[PERF_CORNERS] = {S("perf top-left"), S("perf top-right"), S("perf bottom-left"),
-                                       S("perf bottom-right")};
 const str perf_corner_labels[PERF_CORNERS] = {S("Top left"), S("Top right"), S("Bottom left"), S("Bottom right")};
 
 static bool on;
@@ -92,8 +89,8 @@ void perf_toggle(int metric) {
   save();
 }
 
-void perf_next_corner(void) {
-  corner = (corner + 1) % PERF_CORNERS;
+void perf_step_corner(int by) {
+  corner = (corner + by + PERF_CORNERS) % PERF_CORNERS;
   save();
 }
 

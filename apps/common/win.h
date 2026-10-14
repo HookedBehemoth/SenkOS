@@ -32,7 +32,8 @@ extern int win_refreshes_mhz[WIN_REFRESHES_MAX], win_refresh_count;
 
 /* What woke the loop: ours, then the app's own from WIN_WAKE_APP */
 enum {
-  WIN_QUIT, /* SIGTERM, SIGINT, or a window's close */
+  WIN_QUIT,   /* SIGTERM, SIGINT, or a window's close */
+  WIN_OUTPUT, /* The output's mode changed: win_refresh_mhz */
   WIN_WAKE_APP,
 };
 
@@ -46,7 +47,7 @@ typedef struct win {
   struct wl_surface *surface;
   /* Acked: may be drawn to. False while unmapped. */
   bool configured;
-  /* On top, with the focus: the kiosk shell gives it to each window that maps */
+  /* Has the focus (xdg's activated) */
   bool activated;
   /* Optional: after each configure is acked */
   void (*configure)(struct win *);
@@ -58,8 +59,8 @@ typedef struct win {
 
 /* `key`, optional: a key pressed or released, while a window has focus */
 bool win_connect(void (*key)(unsigned code, bool down));
-/* Shown, back from the compositor's first configure. Mapped again
- * (unmapped first) it comes on top: the kiosk shell raises what maps. */
+/* Shown, back from the compositor's first configure. Mapped again, it's
+ * unmapped first: a new toplevel, which Weston's shell puts on top. */
 void win_map(win *w);
 void win_unmap(win *w);
 /* The next commit's frame callback: frame_pending until the compositor shows

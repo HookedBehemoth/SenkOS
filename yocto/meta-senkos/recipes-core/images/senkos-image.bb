@@ -84,7 +84,7 @@ IMAGE_INSTALL += "${PORTS_PLATFORM} \
 # Developer builds (SENKOS_DEV, dev.yml): debuggers and tracers
 IMAGE_INSTALL += "${@'gdb gdbserver strace perf trace-cmd' if d.getVar('SENKOS_DEV') == '1' else ''}"
 IMAGE_LINGUAS = ""
-# Weston is started by senkos-base (as player, via seatd; kiosk shell)
+# Weston is started by senkos-base (as player, via seatd; our shell, apps/shell)
 BAD_RECOMMENDATIONS += "weston-init"
 # libdbus (ports, libpulse) recommends the daemon: no bus here, nothing talks to one. By the
 # package's name (debian renaming), not the "dbus" it provides: opkg matches that

@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "apps.h"
+#include "layer.h"
 #include "running.h"
 #include "sysd.h"
 #include "util.h"
@@ -22,9 +23,9 @@ static int cpu_count, gpu_count;
 static long brightness, brightness_max;
 
 /* The app on screen: its key, and its choices; a clock is an index into the
- * steps + 1, 0 for Auto; the refresh rate in mHz, 0 for Auto */
+ * steps + 1, 0 for Auto */
 static STRBUF(512) app_key;
-static int app_cpu, app_gpu, app_fps = FPS_DEFAULT, app_refresh;
+static int app_cpu, app_gpu, app_fps = FPS_DEFAULT;
 
 /* Up to the display's rate: a 60 fps target at 120 Hz is fine too */
 static int fps_max(void) { return MAX(FPS_DEFAULT, (win_refresh_mhz + 500) / 1000); }
@@ -73,19 +74,6 @@ static void set_clocks(int cpu, int gpu) {
     request("gpu", gpu > 0 ? gpu_steps[gpu - 1] : 0);
 }
 
-/* To Weston's frames.so; it ignores a rate the display hasn't */
-static void set_refresh(int mhz) {
-  char path[256], line[16];
-  const char *dir = run_app_env("XDG_RUNTIME_DIR");
-  snprintf(path, sizeof(path), "%s/refresh", dir ? dir : "/tmp");
-  const int fd = open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-  if (fd < 0)
-    return;
-  if (write(fd, line, (size_t)snprintf(line, sizeof(line), "%d\n", mhz)) < 0)
-    perror("launcher: refresh");
-  close(fd);
-}
-
 static int step_of(const long *steps, int count, long value) {
   for (int i = 0; i < count; i++)
     if (steps[i] == value)
@@ -93,7 +81,8 @@ static int step_of(const long *steps, int count, long value) {
   return 0;
 }
 
-/* A line's numbers (CPU GPU FPS REFRESH; older lines have no REFRESH) and its key */
+/* A line's numbers (CPU GPU FPS; lines with a fourth, a refresh rate, from
+ * before it was one for all: ignored) and its key */
 static bool parse(str line, long v[4], str *key) {
   char head[96];
   int used = -1;
@@ -108,7 +97,7 @@ static bool parse(str line, long v[4], str *key) {
 
 /* The app's line */
 static void load(str key) {
-  app_cpu = app_gpu = app_refresh = 0;
+  app_cpu = app_gpu = 0;
   app_fps = FPS_DEFAULT;
   str text = str_read(config_file("-power", "r")), rest = text;
   while (rest.n > 0) {
@@ -118,7 +107,6 @@ static void load(str key) {
       app_cpu = step_of(cpu_steps, cpu_count, v[0]);
       app_gpu = step_of(gpu_steps, gpu_count, v[1]);
       app_fps = CLAMP((int)v[2], FPS_MIN, fps_max());
-      app_refresh = (int)v[3];
     }
   }
   free((char *)text.p);
@@ -140,8 +128,8 @@ static void save(void) {
       if (line.n > 0)
         str_fput(f, line, S("\n"));
     }
-    fprintf(f, "%ld %ld %d %d ", app_cpu > 0 ? cpu_steps[app_cpu - 1] : 0, app_gpu > 0 ? gpu_steps[app_gpu - 1] : 0,
-            app_fps, app_refresh);
+    fprintf(f, "%ld %ld %d ", app_cpu > 0 ? cpu_steps[app_cpu - 1] : 0, app_gpu > 0 ? gpu_steps[app_gpu - 1] : 0,
+            app_fps);
     str_fput(f, sb_str(app_key), S("\n"));
     fclose(f);
   }
@@ -152,7 +140,6 @@ void power_apply(void) {
   if (brightness_max > 0 && brightness > 0)
     request("brightness", brightness);
   set_clocks(app_cpu, app_gpu);
-  set_refresh(app_refresh);
 }
 
 void power_init(void) {
@@ -194,9 +181,8 @@ void power_use(str key) {
   if (key.n > 0)
     load(key);
   else
-    app_cpu = app_gpu = app_refresh = 0;
+    app_cpu = app_gpu = 0;
   set_clocks(app_cpu, app_gpu);
-  set_refresh(app_refresh);
 }
 
 str power_value(int row) {
@@ -215,9 +201,9 @@ str power_value(int row) {
     sb_fmt(out, "%ld MHz", gpu_steps[app_gpu - 1] / 1000000);
     break;
   case POWER_REFRESH:
-    if (app_refresh == 0)
-      return S("Auto");
-    sb_fmt(out, "%d Hz", (app_refresh + 500) / 1000);
+    if (win_refresh_mhz <= 0)
+      return S("None");
+    sb_fmt(out, "%d Hz", (win_refresh_mhz + 500) / 1000);
     break;
   case POWER_BRIGHTNESS:
     if (brightness_max <= 0)
@@ -238,15 +224,15 @@ void power_step(int row, int by) {
   case POWER_CPU: app_cpu = (app_cpu + by + cpu_count + 1) % (cpu_count + 1); break;
   case POWER_GPU: app_gpu = (app_gpu + by + gpu_count + 1) % (gpu_count + 1); break;
   case POWER_REFRESH: {
-    /* Auto, then the display's rates */
+    /* The display's next rate; Weston's shell keeps it */
+    if (win_refresh_count == 0)
+      return;
     int at = 0;
     for (int i = 0; i < win_refresh_count; i++)
-      if (win_refreshes_mhz[i] == app_refresh)
-        at = i + 1;
-    at = (at + by + win_refresh_count + 1) % (win_refresh_count + 1);
-    app_refresh = at > 0 ? win_refreshes_mhz[at - 1] : 0;
-    set_refresh(app_refresh);
-    break;
+      if (win_refreshes_mhz[i] == win_refresh_mhz)
+        at = i;
+    layer_refresh(win_refreshes_mhz[(at + by + win_refresh_count) % win_refresh_count]);
+    return;
   }
   case POWER_BRIGHTNESS: {
     if (brightness_max <= 0)

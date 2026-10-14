@@ -47,7 +47,7 @@ dynamic-layers/anbernic/           kernel: boot splash client, battery name
 recipes-core/images/               senkos-image (image types, card layout)
 recipes-core/senkos-base/          init glue: USB gadget, A/B slots + /data, logs, watchdog, Weston, SD automount
 recipes-core/sysd/                 root's side of the UI: suspend, the launcher's requests
-recipes-graphics/                  launcher, Weston trims + kiosk-shell OSD layer, Mesa build flags, SDL2/vulkan-tools tweaks
+recipes-graphics/                  launcher and Weston's shell (apps/), Weston trims, Mesa build flags, SDL2/vulkan-tools tweaks
 recipes-emulators/, recipes-games/ libretro cores (in the image)
 ```
 

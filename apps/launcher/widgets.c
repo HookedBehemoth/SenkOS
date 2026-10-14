@@ -292,18 +292,17 @@ size_t launcher_perf_rows(entry *rows) {
   static const int icons[PERF_METRICS] = {
       ICON_GAUGE,   ICON_CPU,        ICON_MICROCHIP, ICON_PLAY,
       ICON_LIBRARY, ICON_HARD_DRIVE, ICON_SUN};
-  static STRBUF(64) corner;
   size_t n = 0;
   rows[n++] = (entry){.label = S("Performance overlay"),
                       .action = PERF,
                       .icon = ICON_GAUGE,
                       .arg = -1,
                       .checked = perf_on()};
-  sb_set(corner, S("Corner  \u00b7  "), perf_corner_labels[perf_corner()]);
   if (perf_on())
-    rows[n++] = (entry){.label = sb_str(corner),
+    rows[n++] = (entry){.label = S("Corner"),
                         .action = PERF_CORNER,
                         .icon = ICON_IMAGE,
+                        .value = perf_corner_labels[perf_corner()],
                         .depth = 1};
   for (int i = 0; perf_on() && i < PERF_METRICS; i++)
     rows[n++] = (entry){.label = perf_labels[i],

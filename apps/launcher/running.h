@@ -43,8 +43,7 @@ bool run_controlled(const running *r);
 /* A request and its answer: the result, or -ETIMEDOUT / -EPIPE */
 int run_request(running *r, uint32_t op, int32_t arg);
 void run_pause(running *r);
-/* `raise`: it was out of sight and has to come on top again */
-void run_resume(running *r, bool raise);
+void run_resume(running *r);
 void run_quit(running *r);
 /* After its exit: reaped, channel closed, slot free. False when it ended
  * badly, not by our SIGTERM. `why` says how (also logged), until the next

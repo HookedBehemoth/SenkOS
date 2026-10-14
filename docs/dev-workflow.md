@@ -24,6 +24,7 @@ stops it (sysd's `ssh off`), and `/data/OS/dropbear/disabled` keeps it off at bo
 |---|---|
 | A whole image | `tools/ota [rootfs.squashfs-lz4]`: the latest build's slot image (or the one given) into the other slot, reboot, commit |
 | The launcher | `tools/deploy-launcher`: builds it, puts it in `/data/OS/overlay/usr/bin/launcher`, runs `overlay` and restarts it |
+| Weston's shell | `apps/shell` builds with the apps (`senkos-shell.so` in the deploy dir): into `/data/OS/overlay/usr/lib64/weston/` by a copy and a rename, then reboot (Weston has it mapped; `overlay` would write over it) |
 | corehost, mediaplayer, a core | copy it to the same path under `/data/OS/overlay` (`OS/overlay/usr/lib64/libretro/` for a core), then run `overlay` |
 | `boot.scr` ([boot.cmd](../yocto/meta-senkos/recipes-bsp/u-boot/files/boot.cmd)), the splash | `tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/rg35xx-sp/boot.scr`; not in a slot, so an OTA doesn't update them |
 | SPL/U-Boot/TF-A | `tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/rg35xx-sp/u-boot-sunxi-with-spl.bin`; shared by both slots. Recovery: flash the full `.wic.gz` from a PC |
@@ -179,11 +180,12 @@ files there but can't rename or delete root's.
 - **Settings:** the app's categories with options (System, Graphics, Audio, Input; Left/Right change one), then Power
   and Debug. Power ([power.h](../apps/launcher/power.h)): CPU and GPU clocks (Auto, or a step of the kernel's
   tables: the CPU's a cap, the GPU's pinned; per ROM, app folder or command in `launcher-power`, set while the app has
-  the screen, Auto at home), the refresh rate (Auto, or one of the panel's modes: 60, 120 Hz; switched by `frames.so`
-  through the `$XDG_RUNTIME_DIR/refresh` FIFO, corehost re-paces to it; whether the panel shows every frame:
+  the screen, Auto at home), the refresh rate (one for everything: one of the panel's modes, 60, 120 Hz; Weston's shell
+  switches it (the pixel clock alone, no modeset: kernel patch 0064), keeps it in `OS/config/refresh-rate` and sets
+  it again at start; corehost re-paces to it; whether the panel shows every frame:
   [refreshtest](../apps/refreshtest/main.c), copied to `/data/apps/benchmarks`), the backlight (also Menu + volume keys
   anywhere), and Automatic calibration: pick a frame rate (30 to the refresh rate), and back in the app the CPU's clock goes down a step while every second of five holds it, then the
-  GPU's, keeping the last that held (about a minute). Frames are counted by Weston's `frames.so`
+  GPU's, keeping the last that held (about a minute). Frames are counted by Weston's shell
   (`$XDG_RUNTIME_DIR/frames`, bumped at each repaint's latch), so any app can be calibrated; sysd sets the clocks.
   Debug: the performance overlay ([perf.h](../apps/launcher/perf.h)), its corner and lines: fps, CPU load and clock,
   GPU load (kernel patch 0058's `busy_ns`) and clock, video decoder load (0059), memory, SD throughput, temperature.
@@ -231,7 +233,7 @@ Audio the track. Where each video was left is kept in `.local/state/mediaplayer/
 Sound goes through PipeWire (ALSA's default is PipeWire; Pulse clients use pipewire-pulse). WirePlumber owns the
 volume (the default sink's drives the codec's Line Out) and restores it at start; nothing may write Line Out directly.
 The launcher reads the volume keys (evdev, whatever has the focus), steps the volume with `wpctl` and shows it in its
-`osd` window, which the patched kiosk shell keeps on top without focus. A paused app writes nothing.
+`osd` window, an overlay of Weston's shell: on top, never focused. A paused app writes nothing.
 
 ## On the desktop
 
