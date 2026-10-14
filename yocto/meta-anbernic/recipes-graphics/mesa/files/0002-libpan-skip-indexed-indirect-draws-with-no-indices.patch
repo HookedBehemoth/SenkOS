@@ -15,9 +15,11 @@ Upstream-Status: Pending
  src/panfrost/libpan/draw_helper.cl | 7 +++++--
  1 file changed, 5 insertions(+), 2 deletions(-)
 
+diff --git a/src/panfrost/libpan/draw_helper.cl b/src/panfrost/libpan/draw_helper.cl
+index 0c18596..ec32694 100644
 --- a/src/panfrost/libpan/draw_helper.cl
 +++ b/src/panfrost/libpan/draw_helper.cl
-@@ -403,8 +403,11 @@
+@@ -392,8 +392,11 @@ panlib_patch_job_type_header(global struct mali_job_header_packed *desc,
  static void
  panlib_patch_draw(struct panlib_draw_info *draw)
  {
@@ -31,3 +33,5 @@ Upstream-Status: Pending
  
     if (draw->idvs_job != NULL) {
        panlib_patch_job_type_header(
+-- 
+2.55.0

@@ -110,7 +110,7 @@ index 11c019295..2b37c58ef 100644
  	},
  };
 diff --git a/drivers/gpu/drm/sun4i/sun4i_drv.c b/drivers/gpu/drm/sun4i/sun4i_drv.c
-index 3a5a1632b..dc81e1ba8 100644
+index d76f39031..8c440ddfb 100644
 --- a/drivers/gpu/drm/sun4i/sun4i_drv.c
 +++ b/drivers/gpu/drm/sun4i/sun4i_drv.c
 @@ -31,6 +31,7 @@
@@ -129,7 +129,7 @@ index 3a5a1632b..dc81e1ba8 100644
  	INIT_LIST_HEAD(&drv->tcon_list);
  
  	ret = of_reserved_mem_device_init(dev);
-@@ -344,16 +346,64 @@ static int sun4i_drv_add_endpoints(struct device *dev,
+@@ -346,16 +348,64 @@ static int sun4i_drv_add_endpoints(struct device *dev,
  }
  
  #ifdef CONFIG_PM_SLEEP
@@ -208,7 +208,7 @@ index b7ba08061..9abbd697a 100644
  	struct list_head	tcon_list;
  };
 diff --git a/drivers/gpu/drm/sun4i/sun4i_tcon.c b/drivers/gpu/drm/sun4i/sun4i_tcon.c
-index 566a44b33..6a5f8cbf6 100644
+index b72753f7c..1c0874aa2 100644
 --- a/drivers/gpu/drm/sun4i/sun4i_tcon.c
 +++ b/drivers/gpu/drm/sun4i/sun4i_tcon.c
 @@ -40,6 +40,20 @@
@@ -232,7 +232,7 @@ index 566a44b33..6a5f8cbf6 100644
  static struct drm_connector *sun4i_tcon_get_connector(const struct drm_encoder *encoder)
  {
  	struct drm_connector *connector;
-@@ -781,17 +795,74 @@ static irqreturn_t sun4i_tcon_handler(int irq, void *private)
+@@ -783,17 +797,74 @@ static irqreturn_t sun4i_tcon_handler(int irq, void *private)
  	return IRQ_HANDLED;
  }
  
@@ -309,7 +309,7 @@ index 566a44b33..6a5f8cbf6 100644
  		if (IS_ERR(tcon->sclk0)) {
  			dev_err(dev, "Couldn't get the TCON channel 0 clock\n");
  			return PTR_ERR(tcon->sclk0);
-@@ -806,7 +877,11 @@ static int sun4i_tcon_init_clocks(struct device *dev,
+@@ -808,7 +879,11 @@ static int sun4i_tcon_init_clocks(struct device *dev,
  		}
  	}
  
@@ -322,7 +322,7 @@ index 566a44b33..6a5f8cbf6 100644
  }
  
  static int sun4i_tcon_init_irq(struct device *dev,
-@@ -826,6 +901,7 @@ static int sun4i_tcon_init_irq(struct device *dev,
+@@ -828,6 +903,7 @@ static int sun4i_tcon_init_irq(struct device *dev,
  		return ret;
  	}
  
@@ -330,7 +330,7 @@ index 566a44b33..6a5f8cbf6 100644
  	return 0;
  }
  
-@@ -1114,6 +1190,7 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
+@@ -1117,6 +1193,7 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
  	struct sunxi_engine *engine;
  	struct device_node *remote;
  	struct sun4i_tcon *tcon;
@@ -338,7 +338,7 @@ index 566a44b33..6a5f8cbf6 100644
  	struct reset_control *edp_rstc;
  	bool has_lvds_rst, has_lvds_alt, can_lvds;
  	int ret;
-@@ -1124,9 +1201,12 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
+@@ -1127,9 +1204,12 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
  		return -EPROBE_DEFER;
  	}
  
@@ -368,7 +368,7 @@ index 98bee2bd9..c9460f366 100644
  void sun4i_tcon_mode_set(struct sun4i_tcon *tcon,
  			 const struct drm_encoder *encoder,
 diff --git a/drivers/gpu/drm/sun4i/sun8i_mixer.c b/drivers/gpu/drm/sun4i/sun8i_mixer.c
-index 006852c2c..dfd6fa2de 100644
+index 03a75ffcb..39ffab2ea 100644
 --- a/drivers/gpu/drm/sun4i/sun8i_mixer.c
 +++ b/drivers/gpu/drm/sun4i/sun8i_mixer.c
 @@ -8,6 +8,7 @@
@@ -540,10 +540,10 @@ index 7abc88c89..d72b9db12 100644
  
  enum {
 diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
-index badb6609d..07f4fc9a4 100644
+index 1c083a624..00c520fad 100644
 --- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
 +++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
-@@ -219,6 +219,8 @@ static int sun8i_tcon_top_bind(struct device *dev, struct device *master,
+@@ -266,6 +266,8 @@ static int sun8i_tcon_top_bind(struct device *dev, struct device *master,
  	if (ret)
  		goto err_unregister_gates;
  
@@ -552,7 +552,7 @@ index badb6609d..07f4fc9a4 100644
  	dev_set_drvdata(dev, tcon_top);
  
  	return 0;
-@@ -246,8 +248,10 @@ static void sun8i_tcon_top_unbind(struct device *dev, struct device *master,
+@@ -293,8 +295,10 @@ static void sun8i_tcon_top_unbind(struct device *dev, struct device *master,
  		if (clk_data->hws[i])
  			clk_hw_unregister_gate(clk_data->hws[i]);
  
@@ -564,7 +564,7 @@ index badb6609d..07f4fc9a4 100644
  }
  
  static const struct component_ops sun8i_tcon_top_ops = {
-@@ -297,11 +301,43 @@ const struct of_device_id sun8i_tcon_top_of_table[] = {
+@@ -344,11 +348,43 @@ const struct of_device_id sun8i_tcon_top_of_table[] = {
  MODULE_DEVICE_TABLE(of, sun8i_tcon_top_of_table);
  EXPORT_SYMBOL(sun8i_tcon_top_of_table);
  
@@ -609,18 +609,18 @@ index badb6609d..07f4fc9a4 100644
  	},
  };
 diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.h b/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
-index 0390584a3..02d67f68d 100644
+index 2b887470a..2096feaa1 100644
 --- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
 +++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
-@@ -28,6 +28,8 @@ struct sun8i_tcon_top {
+@@ -32,6 +32,8 @@ struct sun8i_tcon_top {
  	struct clk_hw_onecell_data	*clk_data;
  	void __iomem			*regs;
  	struct reset_control		*rst;
 +	bool				system_pm;
 +	bool				suspended;
  
- 	/*
- 	 * spinlock is used to synchronize access to same
+ 	unsigned int			tcon_map;
+ 
 diff --git a/drivers/gpu/drm/sun4i/sunxi_engine.h b/drivers/gpu/drm/sun4i/sunxi_engine.h
 index 1711c274a..125fb9d2c 100644
 --- a/drivers/gpu/drm/sun4i/sunxi_engine.h
@@ -644,3 +644,5 @@ index 1711c274a..125fb9d2c 100644
  /**
   * sunxi_engine_commit() - commit all changes of the engine
   * @engine:	pointer to the engine
+-- 
+2.43.0

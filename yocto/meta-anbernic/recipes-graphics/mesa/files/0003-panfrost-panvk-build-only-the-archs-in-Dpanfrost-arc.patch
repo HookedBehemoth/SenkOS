@@ -21,14 +21,14 @@ Upstream-Status: Pending
  src/panfrost/genxml/meson.build             |   2 +-
  src/panfrost/lib/meson.build                |   2 +-
  src/panfrost/lib/pan_mod.h                  |  20 ++++
- src/panfrost/libpan/meson.build             |   2 +-
+ src/panfrost/libpan/meson.build             |   5 +-
  src/panfrost/vulkan/meson.build             |   3 +
  src/panfrost/vulkan/panvk_macros.h          | 105 +++++++++++---------
  src/panfrost/vulkan/panvk_physical_device.c |  16 +++
- 12 files changed, 183 insertions(+), 52 deletions(-)
+ 12 files changed, 186 insertions(+), 52 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index df0241e..7937bfe 100644
+index 272d900..9fed7ca 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -222,6 +222,10 @@ with_gallium_llvmpipe = gallium_drivers.contains('llvmpipe')
@@ -43,12 +43,12 @@ index df0241e..7937bfe 100644
  with_gallium_tegra = gallium_drivers.contains('tegra')
  with_gallium_crocus = gallium_drivers.contains('crocus')
 diff --git a/meson.options b/meson.options
-index 3f437d0..11d306f 100644
+index beb2837..96b10d3 100644
 --- a/meson.options
 +++ b/meson.options
-@@ -915,3 +915,12 @@ option(
-   value : false,
-   description : 'Build panfrost Rust components.'
+@@ -923,3 +923,12 @@ option(
+   value : true,
+   description : 'Build panfrost disassemblers. Explicitly setting this option to false will cause the panfrost stack to build without disassemblers. This should be left enabled for distro builds.'
  )
 +
 +option(
@@ -60,7 +60,7 @@ index 3f437d0..11d306f 100644
 +                'Each one is a copy of the per-arch code, shaders included.'
 +)
 diff --git a/src/gallium/drivers/panfrost/meson.build b/src/gallium/drivers/panfrost/meson.build
-index 54ac313..962c659 100644
+index 9f32064..aa90c50 100644
 --- a/src/gallium/drivers/panfrost/meson.build
 +++ b/src/gallium/drivers/panfrost/meson.build
 @@ -83,7 +83,7 @@ if with_perfetto
@@ -73,7 +73,7 @@ index 54ac313..962c659 100644
  
  foreach ver : panfrost_versions
 diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
-index aa4f35b..5ded855 100644
+index a841780..3027f6a 100644
 --- a/src/gallium/drivers/panfrost/pan_screen.c
 +++ b/src/gallium/drivers/panfrost/pan_screen.c
 @@ -1159,36 +1159,56 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
@@ -375,15 +375,18 @@ index a898b58..d00ac87 100644
        UNREACHABLE("Unsupported arch");
     }
 diff --git a/src/panfrost/libpan/meson.build b/src/panfrost/libpan/meson.build
-index f035f4a..025478e 100644
+index 8d62eee..de78742 100644
 --- a/src/panfrost/libpan/meson.build
 +++ b/src/panfrost/libpan/meson.build
-@@ -11,7 +11,7 @@ libpan_shader_files = files(
+@@ -11,7 +11,10 @@ libpan_shader_files = files(
  
  idep_libpan_per_arch = {}
  
--foreach ver : ['4', '5', '6', '7', '9', '10', '11', '12', '13', '14']
+-foreach ver : ['6', '7', '9', '10', '11', '12', '13', '14']
 +foreach ver : panfrost_archs
++  if ver in ['4', '5']
++    continue
++  endif
    libpan_spv = custom_target(
      input : libpan_shader_files,
      output : 'libpan_v' + ver + '.spv',
@@ -526,10 +529,10 @@ index 3052c0c..5eb87dd 100644
  
  #ifdef PAN_ARCH
 diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
-index 846cc8d..e6ade41 100644
+index 3644d06..a35dd18 100644
 --- a/src/panfrost/vulkan/panvk_physical_device.c
 +++ b/src/panfrost/vulkan/panvk_physical_device.c
-@@ -402,6 +402,22 @@ panvk_physical_device_init(struct panvk_physical_device *device,
+@@ -391,6 +391,22 @@ panvk_physical_device_init(struct panvk_physical_device *device,
        goto fail;
     }
  
@@ -554,4 +557,3 @@ index 846cc8d..e6ade41 100644
     case 7:
 -- 
 2.55.0
-

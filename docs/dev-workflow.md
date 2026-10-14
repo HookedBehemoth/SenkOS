@@ -261,7 +261,7 @@ To iterate faster, build out of tree with host clang, then swap the Image into t
 K=/mnt/multimedia/anbernic-yocto/kernel-dev    # src/ = patched source, out/ = build, bin/bc = Yocto's bc (host has none)
 cat yocto/meta-anbernic/recipes-kernel/linux/files/defconfig yocto/meta-senkos/dynamic-layers/anbernic/recipes-kernel/linux/files/splash.cfg > $K/out/.config
 (cd $K/src && PATH=$K/bin:$PATH make O=$K/out ARCH=arm64 LLVM=1 olddefconfig Image -j16)   # incremental
-cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-lz4> && cp ../out/arch/arm64/boot/Image root/boot/Image-7.2.0 && mksquashfs root t.sqfs -comp lz4 -Xhc -noappend'
+cd $K/test && podman unshare sh -c 'unsquashfs -d root <slot.squashfs-lz4> && cp ../out/arch/arm64/boot/Image root/boot/Image-7.2.10 && mksquashfs root t.sqfs -comp lz4 -Xhc -noappend'
 tools/ota $K/test/t.sqfs
 ```
 

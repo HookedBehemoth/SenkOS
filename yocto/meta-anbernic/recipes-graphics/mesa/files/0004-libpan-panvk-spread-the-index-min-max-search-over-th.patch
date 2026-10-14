@@ -18,9 +18,16 @@ rest). PPSSPP: 60 fps, vertex/tiler 50%.
 
 Upstream-Status: Pending
 ---
+ src/panfrost/libpan/draw_helper.cl         | 22 +++++++---------------
+ src/panfrost/libpan/draw_helper.h          |  3 +++
+ src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c | 14 +++++++++++---
+ 3 files changed, 21 insertions(+), 18 deletions(-)
+
+diff --git a/src/panfrost/libpan/draw_helper.cl b/src/panfrost/libpan/draw_helper.cl
+index ec32694..3d34a48 100644
 --- a/src/panfrost/libpan/draw_helper.cl
 +++ b/src/panfrost/libpan/draw_helper.cl
-@@ -597,25 +597,17 @@
+@@ -588,25 +588,17 @@ panlib_draw_index_minmax_search_helper(global uint8_t *index_buffer_ptr,
                                         uint32_t index_bytes_log2__3,
                                         uint8_t primitive_restart__2)
  {
@@ -51,7 +58,7 @@ Upstream-Status: Pending
     uint32_t local_min = ((uint64_t)1 << index_bit_size) - 1;
     uint32_t local_max = 0;
  
-@@ -623,8 +615,8 @@
+@@ -614,8 +606,8 @@ panlib_draw_index_minmax_search_helper(global uint8_t *index_buffer_ptr,
  #define MINMAX_SEARCH_CASE(sz)                                                 \
     case sz: {                                                                  \
        global uint##sz##_t *indices = (global uint##sz##_t *)index_buffer_ptr;  \
@@ -62,9 +69,11 @@ Upstream-Status: Pending
           if (primitive_restart__2 && val == UINT##sz##_MAX)                    \
              continue;                                                          \
           local_min = min(local_min, val);                                      \
+diff --git a/src/panfrost/libpan/draw_helper.h b/src/panfrost/libpan/draw_helper.h
+index baa5979..d691067 100644
 --- a/src/panfrost/libpan/draw_helper.h
 +++ b/src/panfrost/libpan/draw_helper.h
-@@ -21,6 +21,9 @@
+@@ -21,6 +21,9 @@ enum panlib_varying_buf_id {
     PANLIB_VARY_BUF_MAX,
  };
  
@@ -74,9 +83,11 @@ Upstream-Status: Pending
  struct libpan_draw_helper_index_min_max_result {
      uint32_t min;
      uint32_t max;
+diff --git a/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c b/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c
+index 0450950..5684c9f 100644
 --- a/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c
 +++ b/src/panfrost/vulkan/jm/panvk_vX_cmd_draw.c
-@@ -45,6 +45,8 @@
+@@ -45,6 +45,8 @@ struct panvk_draw_data {
     struct panvk_draw_info info;
     unsigned vertex_range;
     unsigned padded_vertex_count;
@@ -85,7 +96,7 @@ Upstream-Status: Pending
     struct mali_invocation_packed invocation;
     struct {
        uint64_t varyings;
-@@ -1600,10 +1602,15 @@
+@@ -1585,10 +1587,15 @@ panvk_cmd_draw_indirect(struct panvk_cmd_buffer *cmdbuf,
                          0, copy_desc_job_id, &write_job, false);
        util_dynarray_append(&batch->jobs, write_job.cpu);
  
@@ -104,7 +115,7 @@ Upstream-Status: Pending
  
        panlib_draw_index_minmax_search_helper_struct(
           &precomp_ctx, panlib_1d_with_jm_deps(wg_count, 0, write_job_id),
-@@ -1838,6 +1845,7 @@
+@@ -1823,6 +1830,7 @@ panvk_per_arch(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
           .indirect.stride = 0,
           .prim = panvk_get_client_prim(cmdbuf),
        },
@@ -112,3 +123,5 @@ Upstream-Status: Pending
     };
  
     panvk_cmd_draw_indirect(cmdbuf, &draw);
+-- 
+2.55.0

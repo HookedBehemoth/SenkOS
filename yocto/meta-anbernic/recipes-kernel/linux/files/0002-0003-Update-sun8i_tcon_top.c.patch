@@ -8,17 +8,18 @@ Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distri
 ---
  drivers/gpu/drm/sun4i/sun8i_tcon_top.c | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
-
 diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
-index 8adda578c..badb6609d 100644
+index 9cbd65551..1c083a624 100644
 --- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
 +++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
-@@ -179,7 +179,7 @@ static int sun8i_tcon_top_bind(struct device *dev, struct device *master,
- 	 * At least on H6, some registers have some bits set by default
- 	 * which may cause issues. Clear them here.
- 	 */
+@@ -226,7 +226,7 @@ static int sun8i_tcon_top_bind(struct device *dev, struct device *master,
+ 		goto err_assert_reset;
+ 	}
+ 
 -	writel(0, regs + TCON_TOP_PORT_SEL_REG);
 +	writel(0x20, regs + TCON_TOP_PORT_SEL_REG);
  	writel(0, regs + TCON_TOP_GATE_SRC_REG);
  
  	/*
+-- 
+2.43.0

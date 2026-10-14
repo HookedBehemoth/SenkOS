@@ -31,14 +31,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/gallium/drivers/panfrost/pan_shader.c     |  2 +-
  src/panfrost/compiler/bifrost/bi_quirks.h     |  4 +-
  .../compiler/bifrost/bifrost_compile.c        | 43 ++++++++++++++++---
- src/panfrost/compiler/bifrost/bifrost_nir.c   | 11 +++--
- src/panfrost/compiler/pan_compiler.h          | 17 ++++++++
+ src/panfrost/compiler/bifrost/bifrost_nir.c   | 19 ++++----
+ src/panfrost/compiler/pan_compiler.h          | 15 +++++++
  .../vulkan/panvk_vX_physical_device.c         | 12 +++---
  src/panfrost/vulkan/panvk_vX_shader.c         | 12 ++++--
- 8 files changed, 78 insertions(+), 25 deletions(-)
+ 8 files changed, 81 insertions(+), 28 deletions(-)
 
 diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
-index 1e2f250..aa4f35b 100644
+index e123749..a841780 100644
 --- a/src/gallium/drivers/panfrost/pan_screen.c
 +++ b/src/gallium/drivers/panfrost/pan_screen.c
 @@ -667,7 +667,7 @@ panfrost_init_compute_caps(struct panfrost_screen *screen)
@@ -46,25 +46,25 @@ index 1e2f250..aa4f35b 100644
     caps->max_clock_frequency = 800; /* MHz -- TODO */
     caps->max_compute_units = dev->core_count;
 -   caps->subgroup_sizes = pan_subgroup_size(dev->arch);
-+   caps->subgroup_sizes = pan_gpu_subgroup_size(panfrost_device_gpu_id(dev));
++   caps->subgroup_sizes = pan_gpu_subgroup_size(dev->arch, dev->model);
     caps->max_variable_threads_per_block = 1024; // TODO
  }
  
 diff --git a/src/gallium/drivers/panfrost/pan_shader.c b/src/gallium/drivers/panfrost/pan_shader.c
-index 4ab7e9e..4b7f615 100644
+index 045e937..8ee4796 100644
 --- a/src/gallium/drivers/panfrost/pan_shader.c
 +++ b/src/gallium/drivers/panfrost/pan_shader.c
-@@ -750,7 +750,7 @@ panfrost_get_compute_state_info(struct pipe_context *pipe, void *cso,
+@@ -749,7 +749,7 @@ panfrost_get_compute_state_info(struct pipe_context *pipe, void *cso,
     info->max_threads = pan_compute_max_thread_count(&dev->kmod.dev->props,
                                                      cs->info.work_reg_count);
     info->private_memory = cs->info.tls_size;
 -   info->simd_sizes = pan_subgroup_size(dev->arch);
-+   info->simd_sizes = pan_gpu_subgroup_size(panfrost_device_gpu_id(dev));
++   info->simd_sizes = pan_gpu_subgroup_size(dev->arch, dev->model);
     info->preferred_simd_size = info->simd_sizes;
  }
  
 diff --git a/src/panfrost/compiler/bifrost/bi_quirks.h b/src/panfrost/compiler/bifrost/bi_quirks.h
-index 5305db6..d289412 100644
+index 2d0bbc3..d330b5b 100644
 --- a/src/panfrost/compiler/bifrost/bi_quirks.h
 +++ b/src/panfrost/compiler/bifrost/bi_quirks.h
 @@ -21,7 +21,9 @@
@@ -79,7 +79,7 @@ index 5305db6..d289412 100644
  #define BIFROST_LIMITED_CLPER (1 << 1)
  
 diff --git a/src/panfrost/compiler/bifrost/bifrost_compile.c b/src/panfrost/compiler/bifrost/bifrost_compile.c
-index beb50b4..d9f660a 100644
+index 1ebd9ef..c496c0c 100644
 --- a/src/panfrost/compiler/bifrost/bifrost_compile.c
 +++ b/src/panfrost/compiler/bifrost/bifrost_compile.c
 @@ -1986,8 +1986,27 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
@@ -89,7 +89,7 @@ index beb50b4..d9f660a 100644
 -         bi_subgroup_from_cluster_size(pan_subgroup_size(b->shader->arch));
 -      bi_wmask_to(b, dst, bi_src_index(&instr->src[0]), subgroup, 0);
 +         bi_subgroup_from_cluster_size(
-+            pan_gpu_subgroup_size(b->shader->inputs->gpu_id));
++            pan_gpu_subgroup_size(b->shader->arch, b->shader->inputs->model));
 +
 +      if (b->shader->quirks & BIFROST_LIMITED_CLPER) {
 +         /* No WMASK: gather bit 0 of each of the 4 lanes with CLPER_OLD, which
@@ -122,7 +122,7 @@ index beb50b4..d9f660a 100644
 -                      bi_byte(bi_src_index(&instr->src[1]), 0),
 -                      inactive_result, lane_op, subgroup);
 +         bi_subgroup_from_cluster_size(
-+            pan_gpu_subgroup_size(b->shader->inputs->gpu_id));
++            pan_gpu_subgroup_size(b->shader->arch, b->shader->inputs->model));
 +
 +      if (b->shader->quirks & BIFROST_LIMITED_CLPER) {
 +         /* Implicitly inactive_result = zero, lane_op = none, subgroup4, which
@@ -140,57 +140,93 @@ index beb50b4..d9f660a 100644
     }
  
 diff --git a/src/panfrost/compiler/bifrost/bifrost_nir.c b/src/panfrost/compiler/bifrost/bifrost_nir.c
-index 58c8333..6fa5dfc 100644
+index 6c5e386..fb1c030 100644
 --- a/src/panfrost/compiler/bifrost/bifrost_nir.c
 +++ b/src/panfrost/compiler/bifrost/bifrost_nir.c
-@@ -403,7 +403,7 @@ bi_optimize_late(nir_shader *nir, uint64_t gpu_id,
+@@ -308,7 +308,7 @@ bi_optimize_loop(nir_shader *nir, unsigned arch, bool allow_copies)
+ }
+ 
+ static void
+-bi_optimize_late(nir_shader *nir, unsigned arch,
++bi_optimize_late(nir_shader *nir, unsigned arch, unsigned subgroup_size,
+                 const struct pan_shader_info *info)
+ {
+    NIR_PASS(_, nir, nir_opt_shrink_stores, false /* shrink_image_store */);
+@@ -401,7 +401,7 @@ bi_optimize_late(nir_shader *nir, unsigned arch,
+ 
     if (any_indirects) {
        nir_divergence_analysis(nir);
-       NIR_PASS(_, nir, bi_lower_divergent_indirects,
--               pan_subgroup_size(pan_arch(gpu_id)));
-+               pan_gpu_subgroup_size(gpu_id));
+-      NIR_PASS(_, nir, bi_lower_divergent_indirects, pan_subgroup_size(arch));
++      NIR_PASS(_, nir, bi_lower_divergent_indirects, subgroup_size);
     }
  }
  
-@@ -446,7 +446,6 @@ static bool
+@@ -443,7 +443,7 @@ bifrost_preprocess_nir(nir_shader *nir, unsigned arch)
+ static bool
  bi_lower_subgroups(nir_builder *b, nir_intrinsic_instr *intr, void *data)
  {
-    uint64_t gpu_id = *(uint64_t *)data;
--   unsigned int arch = pan_arch(gpu_id);
+-   unsigned int arch = *(unsigned *)data;
++   unsigned subgroup_size = *(unsigned *)data;
  
     b->cursor = nir_before_instr(&intr->instr);
  
-@@ -478,16 +477,16 @@ bi_lower_subgroups(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+@@ -475,16 +475,15 @@ bi_lower_subgroups(nir_builder *b, nir_intrinsic_instr *intr, void *data)
         * nir_udiv_imm with a power of two divisor, which pan_subgroup_size is,
         * will construct a right shift instead of an udiv.
         */
 -      val = nir_udiv_imm(b, flat_local_id, pan_subgroup_size(arch));
-+      val = nir_udiv_imm(b, flat_local_id, pan_gpu_subgroup_size(gpu_id));
++      val = nir_udiv_imm(b, flat_local_id, subgroup_size);
        break;
     }
  
     case nir_intrinsic_load_subgroup_size:
 -      val = nir_imm_int(b, pan_subgroup_size(arch));
-+      val = nir_imm_int(b, pan_gpu_subgroup_size(gpu_id));
++      val = nir_imm_int(b, subgroup_size);
        break;
  
     case nir_intrinsic_load_num_subgroups: {
 -      uint32_t subgroup_size = pan_subgroup_size(arch);
-+      uint32_t subgroup_size = pan_gpu_subgroup_size(gpu_id);
        assert(!b->shader->info.workgroup_size_variable);
        uint32_t workgroup_size =
           b->shader->info.workgroup_size[0] *
-@@ -999,7 +998,7 @@ bifrost_postprocess_nir(nir_shader *nir,
+@@ -811,6 +810,7 @@ bifrost_postprocess_nir(nir_shader *nir,
+    MESA_TRACE_FUNC();
+ 
+    const unsigned gpu_arch = inputs->arch;
++   const unsigned subgroup_size = pan_gpu_subgroup_size(gpu_arch, inputs->model);
+ 
+    if (gpu_arch >= 9)
+       NIR_PASS(_, nir, pan_nir_lower_image_64bit);
+@@ -1005,7 +1005,7 @@ bifrost_postprocess_nir(nir_shader *nir,
      * to scalar first.
      */
     const nir_lower_subgroups_options lower_subgroup_opts = {
 -      .subgroup_size = pan_subgroup_size(gpu_arch),
-+      .subgroup_size = pan_gpu_subgroup_size(gpu_id),
++      .subgroup_size = subgroup_size,
        .ballot_bit_size = 32,
        .ballot_components = 1,
        .lower_to_scalar = true,
+@@ -1036,7 +1036,7 @@ bifrost_postprocess_nir(nir_shader *nir,
+       NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+ 
+    NIR_PASS(_, nir, nir_shader_intrinsics_pass, bi_lower_subgroups,
+-            nir_metadata_control_flow, (void *) &gpu_arch);
++            nir_metadata_control_flow, (void *) &subgroup_size);
+ 
+    /* Lower constant idiv before we lower 64-bit integers */
+    NIR_PASS(_, nir, nir_opt_idiv_const, 8);
+@@ -1477,7 +1477,8 @@ bifrost_compile_shader_nir(nir_shader *nir,
+       bifrost_handle_unified_idvs_shader(nir);
+    }
+ 
+-   bi_optimize_late(nir, arch, info);
++   bi_optimize_late(nir, arch,
++                    pan_gpu_subgroup_size(arch, inputs->model), info);
+ 
+    /* Lower constants to scalar but then immediately fold so we get minimum-
+     * width vectors instead of scalars
 diff --git a/src/panfrost/compiler/pan_compiler.h b/src/panfrost/compiler/pan_compiler.h
-index ffbbc21..9c4e67c 100644
+index 371f00e..74fca98 100644
 --- a/src/panfrost/compiler/pan_compiler.h
 +++ b/src/panfrost/compiler/pan_compiler.h
 @@ -16,6 +16,7 @@
@@ -200,8 +236,8 @@ index ffbbc21..9c4e67c 100644
 +#include "panfrost/compiler/bifrost/bi_quirks.h"
  
  struct pan_shader_info;
- 
-@@ -590,6 +591,22 @@ pan_subgroup_size(unsigned arch)
+ struct pan_model;
+@@ -591,6 +592,20 @@ pan_subgroup_size(unsigned arch)
        return 1;
  }
  
@@ -211,11 +247,9 @@ index ffbbc21..9c4e67c 100644
 + * 4-wide cores are exactly the ones with the limited CLPER.
 + */
 +static inline unsigned
-+pan_gpu_subgroup_size(uint64_t gpu_id)
++pan_gpu_subgroup_size(unsigned arch, const struct pan_model *model)
 +{
-+   unsigned arch = pan_arch(gpu_id);
-+
-+   if (arch <= 7 && (bifrost_get_quirks(gpu_id) & BIFROST_LIMITED_CLPER))
++   if (arch == 7 && (bifrost_get_quirks(arch, model) & BIFROST_LIMITED_CLPER))
 +      return 4;
 +
 +   return pan_subgroup_size(arch);
@@ -225,19 +259,19 @@ index ffbbc21..9c4e67c 100644
   * Helper returning the maximum offset in bytes (exclusive) that a LD_VAR_BUF*
   * instruction can use.
 diff --git a/src/panfrost/vulkan/panvk_vX_physical_device.c b/src/panfrost/vulkan/panvk_vX_physical_device.c
-index a442d7c..7a78ed1 100644
+index 71372b0..2332763 100644
 --- a/src/panfrost/vulkan/panvk_vX_physical_device.c
 +++ b/src/panfrost/vulkan/panvk_vX_physical_device.c
-@@ -823,6 +823,8 @@ panvk_per_arch(get_physical_device_properties)(
+@@ -835,6 +835,8 @@ panvk_per_arch(get_physical_device_properties)(
     os_get_page_size(&os_page_size);
  
     const bool has_disk_cache = device->vk.disk_cache != NULL;
 +   const unsigned subgroup_size =
-+      pan_gpu_subgroup_size(device->kmod.dev->props.gpu_id);
++      pan_gpu_subgroup_size(PAN_ARCH, device->model);
  
     /* Ensure that the max threads count per workgroup is valid for Bifrost */
     assert(PAN_ARCH > 8 || device->kmod.dev->props.max_threads_per_wg <= 1024);
-@@ -1030,7 +1032,7 @@ panvk_per_arch(get_physical_device_properties)(
+@@ -1042,7 +1044,7 @@ panvk_per_arch(get_physical_device_properties)(
        .sparseResidencyStandard3DBlockShape = false,
  
        /* Vulkan 1.1 properties */
@@ -246,7 +280,7 @@ index a442d7c..7a78ed1 100644
        /* We only support VS, FS, and CS.
         *
         * The HW may spawn VS invocations for non-existing indices, which could
-@@ -1144,11 +1146,11 @@ panvk_per_arch(get_physical_device_properties)(
+@@ -1156,11 +1158,11 @@ panvk_per_arch(get_physical_device_properties)(
        .framebufferIntegerColorSampleCounts = sample_counts,
  
        /* Vulkan 1.3 properties */
@@ -261,7 +295,7 @@ index a442d7c..7a78ed1 100644
        .requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT,
        .maxInlineUniformBlockSize = MAX_INLINE_UNIFORM_BLOCK_SIZE,
        .maxPerStageDescriptorInlineUniformBlocks =
-@@ -1316,7 +1318,7 @@ panvk_per_arch(get_physical_device_properties)(
+@@ -1333,7 +1335,7 @@ panvk_per_arch(get_physical_device_properties)(
        .shaderCoreMask = device->kmod.dev->props.shader_present,
        .shaderCoreCount = util_bitcount(device->kmod.dev->props.shader_present),
        .shaderWarpsPerCore = device->kmod.dev->props.max_threads_per_core /
@@ -271,7 +305,7 @@ index a442d7c..7a78ed1 100644
        /* VK_ARM_scheduling_controls */
        .schedulingControlsFlags =
 diff --git a/src/panfrost/vulkan/panvk_vX_shader.c b/src/panfrost/vulkan/panvk_vX_shader.c
-index 678462e..e7df9ba 100644
+index f41d36d..3d4d7e4 100644
 --- a/src/panfrost/vulkan/panvk_vX_shader.c
 +++ b/src/panfrost/vulkan/panvk_vX_shader.c
 @@ -838,8 +838,10 @@ panvk_lower_nir(struct panvk_device *dev, nir_shader *nir,
@@ -282,11 +316,11 @@ index 678462e..e7df9ba 100644
 +      to_panvk_physical_device(dev->vk.physical);
     NIR_PASS(_, nir, panvk_nir_lower_cooperative_matrix,
 -            pan_subgroup_size(PAN_ARCH));
-+            pan_gpu_subgroup_size(pdev->kmod.dev->props.gpu_id));
++            pan_gpu_subgroup_size(PAN_ARCH, pdev->model));
  
     const nir_opt_access_options access_options = {
        .is_vulkan = true,
-@@ -2082,9 +2084,11 @@ panvk_shader_serialize(struct vk_device *vk_dev,
+@@ -2083,9 +2085,11 @@ panvk_shader_serialize(struct vk_device *vk_dev,
  
  static VkResult
  panvk_shader_get_executable_properties(
@@ -295,11 +329,11 @@ index 678462e..e7df9ba 100644
     uint32_t *executable_count, VkPipelineExecutablePropertiesKHR *properties)
  {
 +   const unsigned subgroup_size = pan_gpu_subgroup_size(
-+      to_panvk_physical_device(device->physical)->kmod.dev->props.gpu_id);
++      PAN_ARCH, to_panvk_physical_device(device->physical)->model);
     struct panvk_shader *shader =
        container_of(vk_shader, struct panvk_shader, vk);
  
-@@ -2102,7 +2106,7 @@ panvk_shader_get_executable_properties(
+@@ -2103,7 +2107,7 @@ panvk_shader_get_executable_properties(
        vk_outarray_append_typed(VkPipelineExecutablePropertiesKHR, &out, props)
        {
           props->stages = mesa_to_vk_shader_stage(shader->vk.stage);
@@ -308,7 +342,7 @@ index 678462e..e7df9ba 100644
  
           if (variant_name != NULL) {
              VK_PRINT_STR(props->name, "%s %s", variant_name, stage_name);
-@@ -2120,7 +2124,7 @@ panvk_shader_get_executable_properties(
+@@ -2121,7 +2125,7 @@ panvk_shader_get_executable_properties(
                                    props)
           {
              props->stages = mesa_to_vk_shader_stage(shader->vk.stage);
@@ -319,4 +353,3 @@ index 678462e..e7df9ba 100644
                 VK_PRINT_STR(props->name, "%s %s varying", variant_name,
 -- 
 2.55.0
-

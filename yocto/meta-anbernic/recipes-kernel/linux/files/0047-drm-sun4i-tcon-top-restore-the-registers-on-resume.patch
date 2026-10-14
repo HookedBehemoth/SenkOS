@@ -14,10 +14,10 @@ Upstream-Status: Pending
  2 files changed, 8 insertions(+)
 
 diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
-index 07f4fc9a4..fb4939643 100644
+index 00c520fad..b909da3bb 100644
 --- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
 +++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.c
-@@ -308,6 +308,9 @@ static int __maybe_unused sun8i_tcon_top_suspend_late(struct device *dev)
+@@ -355,6 +355,9 @@ static int __maybe_unused sun8i_tcon_top_suspend_late(struct device *dev)
  	if (!top || !top->system_pm || top->suspended)
  		return 0;
  
@@ -27,7 +27,7 @@ index 07f4fc9a4..fb4939643 100644
  	clk_disable_unprepare(top->bus);
  	top->suspended = true;
  	return 0;
-@@ -323,6 +326,9 @@ static int __maybe_unused sun8i_tcon_top_resume_early(struct device *dev)
+@@ -370,6 +373,9 @@ static int __maybe_unused sun8i_tcon_top_resume_early(struct device *dev)
  	ret = clk_prepare_enable(top->bus);
  	if (ret)
  		return ret;
@@ -38,15 +38,17 @@ index 07f4fc9a4..fb4939643 100644
  	return 0;
  }
 diff --git a/drivers/gpu/drm/sun4i/sun8i_tcon_top.h b/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
-index 02d67f68d..5813e55a8 100644
+index 2096feaa1..388b58a84 100644
 --- a/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
 +++ b/drivers/gpu/drm/sun4i/sun8i_tcon_top.h
-@@ -30,6 +30,8 @@ struct sun8i_tcon_top {
+@@ -34,6 +34,8 @@ struct sun8i_tcon_top {
  	struct reset_control		*rst;
  	bool				system_pm;
  	bool				suspended;
 +	/* TV setup, port select and gates, lost with the SoC's power (super standby) */
 +	u32				saved[3];
  
- 	/*
- 	 * spinlock is used to synchronize access to same
+ 	unsigned int			tcon_map;
+ 
+-- 
+2.43.0

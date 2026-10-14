@@ -6,12 +6,8 @@ inherit kernel
 
 COMPATIBLE_MACHINE = "h700"
 
-# 0001-0029: ROCKNIX's H700 board patches (their number is the second one in the name),
-# minus their out-of-tree joypad driver: the buttons are mainline gpio-keys.
-# 0030-0032, 0037, 0041-0059: ours (0044-0051: super standby, docs/suspend.md). 0009 (battery name)
-# and 0052 (boot splash) are the distro's, in meta-senkos.
-# 0033-0036: Cedrus H616 + VP9 from LibreELEC; 0038-0040: its P010 output for 10-bit VP9 and
-# HEVC (without them the engine writes 10-bit streams as 8-bit NV12).
+# 0001-0029: ROCKNIX's H700 patches (second number = theirs), minus their joypad driver.
+# 0033-0036, 0038-0040: Cedrus H616, VP9, P010 from LibreELEC. The rest are ours.
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://defconfig \
     file://firmware \
@@ -78,12 +74,11 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0063-drm-sun4i-latch-DE33-register-writes-at-vblank.patch \
     file://0064-drm-sun4i-switch-refresh-rate-without-a-modeset.patch \
 "
-SRC_URI[sha256sum] = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
+SRC_URI[sha256sum] = "2feaa70453e91f541be6a5c9078d8168e081af45a3d9718054850538cff2ebf3"
 
 S = "${UNPACKDIR}/linux-${PV}"
 
-# Panel init sequences + wifi/bt firmware are built into the kernel
-# (CONFIG_EXTRA_FIRMWARE) so the display comes up without an initramfs.
+# Panel init + wifi/bt firmware built in (CONFIG_EXTRA_FIRMWARE): no initramfs
 do_configure:prepend() {
     cp -rT ${UNPACKDIR}/firmware ${S}/external-firmware
 }

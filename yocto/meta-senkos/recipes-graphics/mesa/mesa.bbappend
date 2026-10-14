@@ -1,15 +1,12 @@
-# Mesa's Vulkan HUD (VK_INSTANCE_LAYERS=VK_LAYER_MESA_overlay): FPS/frame times over any Vulkan app
+# Mesa's Vulkan HUD (VK_INSTANCE_LAYERS=VK_LAYER_MESA_overlay)
 EXTRA_OEMESON += "-Dvulkan-layers=overlay"
 FILES:mesa-vulkan-drivers += "${libdir}/libVkLayer_MESA_overlay.so"
-# Release asserts off (buildtype is plain, so meson keeps them): they are in the GPU's precompiled
-# helper kernels too, which every indexed draw on JM runs (PPSSPP 45 fps with them, 60 without)
+# Asserts are in the GPU's precompiled helper kernels too, which every indexed JM draw runs (PPSSPP 45 -> 60 fps)
 EXTRA_OEMESON += "-Db_ndebug=true"
-# -Os + LTO: smaller on disk (lz4), so Weston + the launcher start sooner. Rendering is GPU-bound either
-# way (glmark2 unchanged); shader compiles without the cache take ~3% longer.
-# No exceptions or unwind tables: Mesa throws none. Only cancelling the VK_KHR_display threads would
-# unwind through Mesa, and that needs DRM master, which Weston holds.
+# -Os + LTO: smaller, so Weston and the launcher start sooner; rendering is GPU-bound either way.
+# Mesa throws nothing, so no exceptions or unwind tables.
 MESA_LTO = "-flto=auto -ffat-lto-objects -fuse-linker-plugin"
 FULL_OPTIMIZATION = "-Os ${DEBUG_LEVELFLAG} ${MESA_LTO} -fno-asynchronous-unwind-tables -fno-unwind-tables"
 TARGET_CXXFLAGS:append = " -fno-exceptions"
-# The link compiles too: same flags, and the prefix map keeps build paths out of the debug info
+# The link compiles too; the prefix map keeps build paths out of the debug info
 TARGET_LDFLAGS:append = " ${FULL_OPTIMIZATION} ${DEBUG_PREFIX_MAP}"
