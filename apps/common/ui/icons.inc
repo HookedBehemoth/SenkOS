@@ -3,6 +3,9 @@
  * Ops then their points, in the 24x24 box, y down. */
 enum { ICON_MOVE, ICON_LINE, ICON_CUBIC, ICON_CLOSE, ICON_END };
 enum {
+  ICON_BLUETOOTH_CONNECTED,
+  ICON_BLUETOOTH_OFF,
+  ICON_BLUETOOTH,
   ICON_BOOK_OPEN,
   ICON_CALENDAR_CLOCK,
   ICON_CHECK,
@@ -18,6 +21,7 @@ enum {
   ICON_GAUGE,
   ICON_GLOBE,
   ICON_HARD_DRIVE,
+  ICON_HEADPHONES,
   ICON_HOURGLASS,
   ICON_HOUSE,
   ICON_IMAGE,
@@ -55,6 +59,23 @@ enum {
 
 /* The paths: icons.c's */
 #ifdef ICON_PATHS
+static const float icon_bluetooth_connected[] = {
+    ICON_MOVE, 7.0f, 7.0f, ICON_LINE, 17.0f, 17.0f, ICON_LINE, 12.0f,
+    22.0f, ICON_LINE, 12.0f, 2.0f, ICON_LINE, 17.0f, 7.0f, ICON_LINE,
+    7.0f, 17.0f, ICON_MOVE, 18.0f, 12.0f, ICON_LINE, 21.0f, 12.0f,
+    ICON_MOVE, 3.0f, 12.0f, ICON_LINE, 6.0f, 12.0f, ICON_END,
+};
+static const float icon_bluetooth_off[] = {
+    ICON_MOVE, 17.0f, 17.0f, ICON_LINE, 12.0f, 22.0f, ICON_LINE, 12.0f,
+    12.0f, ICON_LINE, 7.0f, 17.0f, ICON_MOVE, 2.0f, 2.0f, ICON_LINE,
+    22.0f, 22.0f, ICON_MOVE, 14.500f, 9.500f, ICON_LINE, 17.0f, 7.0f,
+    ICON_LINE, 12.0f, 2.0f, ICON_LINE, 12.0f, 6.500f, ICON_END,
+};
+static const float icon_bluetooth[] = {
+    ICON_MOVE, 7.0f, 7.0f, ICON_LINE, 17.0f, 17.0f, ICON_LINE, 12.0f,
+    22.0f, ICON_LINE, 12.0f, 2.0f, ICON_LINE, 17.0f, 7.0f, ICON_LINE,
+    7.0f, 17.0f, ICON_END,
+};
 static const float icon_book_open[] = {
     ICON_MOVE, 12.0f, 7.0f, ICON_LINE, 12.0f, 21.0f, ICON_MOVE, 3.0f,
     18.0f, ICON_CUBIC, 2.448f, 18.0f, 2.0f, 17.552f, 2.0f, 17.0f,
@@ -246,6 +267,19 @@ static const float icon_hard_drive[] = {
     ICON_CUBIC, 6.481f, 4.0f, 5.788f, 4.430f, 5.450f, 5.110f, ICON_CLOSE,
     ICON_MOVE, 6.0f, 16.0f, ICON_LINE, 6.010f, 16.0f, ICON_MOVE, 10.0f,
     16.0f, ICON_LINE, 10.010f, 16.0f, ICON_END,
+};
+static const float icon_headphones[] = {
+    ICON_MOVE, 3.0f, 14.0f, ICON_LINE, 6.0f, 14.0f, ICON_CUBIC, 7.105f,
+    14.0f, 8.0f, 14.895f, 8.0f, 16.0f, ICON_LINE, 8.0f, 19.0f,
+    ICON_CUBIC, 8.0f, 20.105f, 7.105f, 21.0f, 6.0f, 21.0f, ICON_LINE,
+    5.0f, 21.0f, ICON_CUBIC, 3.895f, 21.0f, 3.0f, 20.105f, 3.0f,
+    19.0f, ICON_LINE, 3.0f, 12.0f, ICON_CUBIC, 3.0f, 7.029f, 7.029f,
+    3.0f, 12.0f, 3.0f, ICON_CUBIC, 16.971f, 3.0f, 21.0f, 7.029f,
+    21.0f, 12.0f, ICON_LINE, 21.0f, 19.0f, ICON_CUBIC, 21.0f, 20.105f,
+    20.105f, 21.0f, 19.0f, 21.0f, ICON_LINE, 18.0f, 21.0f, ICON_CUBIC,
+    16.895f, 21.0f, 16.0f, 20.105f, 16.0f, 19.0f, ICON_LINE, 16.0f,
+    16.0f, ICON_CUBIC, 16.0f, 14.895f, 16.895f, 14.0f, 18.0f, 14.0f,
+    ICON_LINE, 21.0f, 14.0f, ICON_END,
 };
 static const float icon_hourglass[] = {
     ICON_MOVE, 5.0f, 22.0f, ICON_LINE, 19.0f, 22.0f, ICON_MOVE, 5.0f,
@@ -581,6 +615,9 @@ static const float icon_zap[] = {
     11.636f, 14.159f, 11.328f, 13.999f, 11.0f, 14.0f, ICON_CLOSE, ICON_END,
 };
 static const float *const icon_paths[ICON_COUNT] = {
+    icon_bluetooth_connected,
+    icon_bluetooth_off,
+    icon_bluetooth,
     icon_book_open,
     icon_calendar_clock,
     icon_check,
@@ -596,6 +633,7 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_gauge,
     icon_globe,
     icon_hard_drive,
+    icon_headphones,
     icon_hourglass,
     icon_house,
     icon_image,

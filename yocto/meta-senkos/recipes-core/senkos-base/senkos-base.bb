@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://sdcard-mount file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://pipewire.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock"
+SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://sdcard-mount file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://backlight.rules file://pipewire.conf file://wireplumber.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
@@ -34,6 +34,7 @@ do_install() {
     install -Dm0755 ${S}/data-init.init ${D}${sysconfdir}/init.d/data-init
     install -Dm0644 ${S}/udhcpd.conf ${D}${sysconfdir}/udhcpd.conf
     install -Dm0644 ${S}/pipewire.conf ${D}${sysconfdir}/pipewire/pipewire.conf.d/10-senkos.conf
+    install -Dm0644 ${S}/wireplumber.conf ${D}${sysconfdir}/wireplumber/wireplumber.conf.d/10-senkos.conf
     install -Dm0644 ${S}/panvk.sh ${D}${sysconfdir}/profile.d/panvk.sh
     install -Dm0644 ${S}/wayland.sh ${D}${sysconfdir}/profile.d/wayland.sh
     install -Dm0644 ${S}/zz-data.sh ${D}${sysconfdir}/profile.d/zz-data.sh
@@ -44,6 +45,7 @@ do_install() {
     install -Dm0644 ${S}/usb-gadget.rules ${D}${sysconfdir}/udev/rules.d/90-usb-gadget.rules
     install -Dm0644 ${S}/uinput.rules ${D}${sysconfdir}/udev/rules.d/90-uinput.rules
     install -Dm0644 ${S}/wake.rules ${D}${sysconfdir}/udev/rules.d/90-wake.rules
+    install -Dm0644 ${S}/backlight.rules ${D}${sysconfdir}/udev/rules.d/90-backlight.rules
     install -d ${D}${sysconfdir}/rcS.d ${D}${sysconfdir}/rc5.d ${D}/uboot ${D}/data
     # The UI first (mounts /data, runs data-init, starts seatd itself); the rest after
     # populate-volatile (S37); trial timer last, once everything else came up

@@ -1,0 +1,192 @@
+From: SenkOS
+Subject: [PATCH] policy: Add ReconnectOnPower
+
+Nothing connects a bonded device when its controller gets powered: at start,
+when it's turned on again, or when it lost power in suspend and came back as a
+new controller (hci_h5's RTL parts reprobe on resume, so the suspend reconnect
+never applies). Headphones that were on all along have given up paging by then.
+
+Adapter drivers get a powered callback, and with ReconnectOnPower the policy
+plugin then connects bonded and trusted devices' ReconnectUUIDs services once,
+after ResumeDelay, as Android does when Bluetooth comes on.
+
+Upstream-Status: Pending
+---
+diff --git a/plugins/policy.c b/plugins/policy.c
+index 0e1ce5c..5763cdd 100644
+--- a/plugins/policy.c
++++ b/plugins/policy.c
+@@ -79,6 +79,9 @@ static GSList *devices = NULL;
+ static const bool default_auto_enable = true;
+ static bool auto_enable = false;
+ 
++static const bool default_reconnect_on_power = false;
++static bool reconnect_on_power = false;
++
+ struct policy_data {
+ 	struct btd_device *dev;
+ 
+@@ -904,10 +907,50 @@ static int policy_adapter_probe(struct btd_adapter *adapter)
+ 	return 0;
+ }
+ 
++static void power_reconnect(struct btd_device *dev, void *user_data)
++{
++	struct reconnect_data *reconnect = NULL;
++	char **uuid;
++
++	if (!device_is_bonded(dev, BDADDR_BREDR) ||
++			!btd_device_is_trusted(dev) ||
++			btd_device_is_connected(dev))
++		return;
++
++	for (uuid = reconnect_uuids; *uuid; uuid++) {
++		struct btd_service *service = btd_device_get_service(dev,
++									*uuid);
++
++		if (service && btd_service_get_profile(service)->auto_connect)
++			reconnect = reconnect_add(service);
++	}
++
++	if (!reconnect || reconnect->active)
++		return;
++
++	DBG("%s configured to reconnect on power", device_get_path(dev));
++
++	reconnect->reconnect = true;
++	reconnect_reset(reconnect);
++
++	/* A single attempt: conn_fail_cb gives up once attempt reaches
++	 * ReconnectAttempts, and a device that's off would be paged for long.
++	 */
++	reconnect->attempt = reconnect_attempts - 1;
++	reconnect_set_timer(reconnect, resume_delay);
++}
++
++static void policy_adapter_powered(struct btd_adapter *adapter, bool powered)
++{
++	if (powered && reconnect_on_power)
++		btd_adapter_for_each_device(adapter, power_reconnect, NULL);
++}
++
+ static struct btd_adapter_driver policy_driver = {
+ 	.name	= "policy",
+ 	.probe	= policy_adapter_probe,
+ 	.resume = policy_adapter_resume,
++	.powered = policy_adapter_powered,
+ };
+ 
+ static int policy_init(void)
+@@ -926,6 +969,7 @@ static int policy_init(void)
+ 		reconnect_intervals = util_memdup(default_intervals,
+ 						sizeof(default_intervals));
+ 		auto_enable = default_auto_enable;
++		reconnect_on_power = default_reconnect_on_power;
+ 		goto done;
+ 	}
+ 
+@@ -973,11 +1017,19 @@ static int policy_init(void)
+ 		g_clear_error(&gerr);
+ 		resume_delay = default_resume_delay;
+ 	}
++
++	reconnect_on_power = g_key_file_get_boolean(conf, "Policy",
++						"ReconnectOnPower", &gerr);
++	if (gerr) {
++		g_clear_error(&gerr);
++		reconnect_on_power = default_reconnect_on_power;
++	}
+ done:
+ 	if (reconnect_uuids && reconnect_uuids[0] && reconnect_attempts) {
+ 		btd_add_disconnect_cb(disconnect_cb);
+ 		btd_add_conn_fail_cb(conn_fail_cb);
+-	}
++	} else
++		reconnect_on_power = false;
+ 
+ 	btd_register_adapter_driver(&policy_driver);
+ 
+diff --git a/src/adapter.c b/src/adapter.c
+index fb95e85..c3b46fa 100644
+--- a/src/adapter.c
++++ b/src/adapter.c
+@@ -5881,6 +5881,18 @@ void adapter_auto_connect_remove(struct btd_adapter *adapter,
+ 	adapter->connect_list = g_slist_remove(adapter->connect_list, device);
+ }
+ 
++static void powered_notify(struct btd_adapter *adapter, bool powered)
++{
++	GSList *l;
++
++	for (l = adapter->drivers; l; l = g_slist_next(l)) {
++		struct btd_adapter_driver *driver = l->data;
++
++		if (driver->powered)
++			driver->powered(adapter, powered);
++	}
++}
++
+ static void adapter_start(struct btd_adapter *adapter)
+ {
+ 	g_dbus_emit_property_changed(dbus_conn, adapter->path,
+@@ -5890,6 +5902,8 @@ static void adapter_start(struct btd_adapter *adapter)
+ 	DBG("adapter %s has been enabled", adapter->path);
+ 
+ 	trigger_passive_scanning(adapter);
++
++	powered_notify(adapter, true);
+ }
+ 
+ static void reply_pending_requests(struct btd_adapter *adapter)
+@@ -7695,6 +7709,8 @@ static void adapter_stop(struct btd_adapter *adapter)
+ 						"PowerState");
+ 
+ 	DBG("adapter %s has been disabled", adapter->path);
++
++	powered_notify(adapter, false);
+ }
+ 
+ int btd_register_adapter_driver(const struct btd_adapter_driver *driver)
+diff --git a/src/adapter.h b/src/adapter.h
+index cdcee69..8e00bbc 100644
+--- a/src/adapter.h
++++ b/src/adapter.h
+@@ -121,6 +121,7 @@ struct btd_adapter_driver {
+ 	int (*probe)(struct btd_adapter *adapter);
+ 	void (*remove)(struct btd_adapter *adapter);
+ 	void (*resume)(struct btd_adapter *adapter);
++	void (*powered)(struct btd_adapter *adapter, bool powered);
+ 	void (*device_added)(struct btd_adapter *adapter,
+ 						struct btd_device *device);
+ 	void (*device_removed)(struct btd_adapter *adapter,
+diff --git a/src/main.c b/src/main.c
+index 59df0ad..934c9c6 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -142,6 +142,7 @@ static const char *policy_options[] = {
+ 	"ReconnectIntervals",
+ 	"AutoEnable",
+ 	"ResumeDelay",
++	"ReconnectOnPower",
+ 	NULL
+ };
+ 
+diff --git a/src/main.conf b/src/main.conf
+index 724c4b4..37f1d11 100644
+--- a/src/main.conf
++++ b/src/main.conf
+@@ -372,6 +372,14 @@
+ # Default: 2
+ #ResumeDelay = 2
+ 
++# ReconnectOnPower connects bonded and trusted devices once, ResumeDelay
++# seconds after their controller gets powered: at start, when it was turned
++# off and on again, or when it lost its power during suspend and came back as a
++# new controller. Only the services in ReconnectUUIDs are connected, with a
++# single attempt each time so that devices that are off aren't paged for long.
++# Defaults to 'false'.
++#ReconnectOnPower = false
++
+ [AdvMon]
+ # Default RSSI Sampling Period. This is used when a client registers an
+ # advertisement monitor and leaves the RSSISamplingPeriod unset.

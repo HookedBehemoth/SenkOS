@@ -1,4 +1,4 @@
-SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, Weston's shell, the media player, corehost, downloadd, refreshtest, and common/ that they share"
+SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, Weston's shell, the media player, corehost, downloadd, sysd, refreshtest, and common/ and bus/ (our D-Bus interfaces) that they share"
 # Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT, the shell (from
 # Weston's kiosk-shell) MIT. Listed so their
 # texts land in the image with ours (the launcher's Licenses screen).
@@ -16,20 +16,23 @@ inherit meson pkgconfig deploy
 
 # No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev).
 # common/ui: Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
-# shell: libweston. launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys). mediaplayer: GStreamer.
-# downloadd: curl, zstd, OpenSSL's SHA-256.
+# shell: libweston. launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys), basu (sysd's calls). mediaplayer: GStreamer.
+# downloadd: curl, zstd, OpenSSL's SHA-256. sysd: basu.
 # corehost: Vulkan, EGL (virtual/libgles2 for headers only, the functions come
 # from eglGetProcAddress), ALSA, zlib.
 DEPENDS = "weston vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
-    libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib pulseaudio curl zstd openssl \
+    libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib pulseaudio basu curl zstd openssl \
     gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
 
 # A package each, so each app brings what it needs at runtime
-PACKAGES =+ "launcher senkos-shell mediaplayer corehost downloadd refreshtest"
+PACKAGES =+ "launcher senkos-shell mediaplayer corehost downloadd sysd refreshtest"
 FILES:launcher = "${bindir}/launcher"
 FILES:senkos-shell = "${libdir}/weston/senkos-shell.so"
 RDEPENDS:senkos-shell = "weston"
 FILES:downloadd = "${bindir}/downloadd"
+# Root's side of the UI on the system bus (init starts both, busybox-inittab)
+FILES:sysd = "${sbindir}/sysd ${sbindir}/suspend ${datadir}/dbus-1/system.d"
+RDEPENDS:sysd = "dbus"
 # A test pattern, not in the image: copied to /data/apps/benchmarks to try a refresh rate
 FILES:refreshtest = "${bindir}/refreshtest"
 # TLS: the server
@@ -49,7 +52,7 @@ RDEPENDS:mediaplayer = "liberation-fonts \
 
 # The bare binaries, for tools/deploy-launcher (and by hand) to copy to /data
 do_deploy() {
-    for app in launcher mediaplayer corehost downloadd; do
+    for app in launcher mediaplayer corehost downloadd sysd; do
         install -m 0755 ${B}/$app/$app ${DEPLOYDIR}/$app
     done
     install -m 0755 ${B}/shell/senkos-shell.so ${DEPLOYDIR}/senkos-shell.so

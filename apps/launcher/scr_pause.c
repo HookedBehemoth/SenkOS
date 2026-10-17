@@ -22,15 +22,15 @@ static int settings_category(launcher_state *state) {
 
 static const entry power_entries[] = {
     {.label = S("Sleep"),
-     .command = S("suspend"),
+     .sysd = sysd_suspend,
      .action = POWER,
      .icon = ICON_MOON},
     {.label = S("Reboot"),
-     .command = S("reboot"),
+     .sysd = sysd_reboot,
      .action = POWER,
      .icon = ICON_ROTATE_CW},
     {.label = S("Power off"),
-     .command = S("poweroff"),
+     .sysd = sysd_power_off,
      .action = POWER,
      .icon = ICON_POWER},
 };
@@ -494,7 +494,7 @@ static void choose_failure(nav *ui, void *choice) {
     launcher_ignore(sb_str(failure.key)); /* fall through */
   case SLEEP_LIGHT:
     if (chosen->action == SLEEP_LIGHT)
-      sysd(S("sleep light"));
+      SYSD("Light sleep", set_light_sleep, true);
     /* fall through */
   case DISMISS:
     screen_pop(state->visible, ui);
@@ -509,7 +509,7 @@ static void choose_power_key(nav *ui, void *choice) {
   const entry *chosen = choice;
   switch (chosen->action) {
   case POWER:
-    sysd(chosen->command);
+    chosen->sysd();
     break;
   default:
     break;

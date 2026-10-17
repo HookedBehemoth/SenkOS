@@ -196,6 +196,11 @@ static void top_bar(int width, str page, const ui_status *s) {
     ui_icon(arcs[CLAMP(s->wifi, 0, 4)], BAR_ICON, (int)x, (BAR - BAR_ICON) / 2,
             s->wifi > 0 ? FG : DIM);
   }
+  if (s->bluetooth >= 0) {
+    x -= 10 + BAR_ICON;
+    ui_icon(s->bluetooth > 0 ? ICON_BLUETOOTH_CONNECTED : ICON_BLUETOOTH, BAR_ICON, (int)x,
+            (BAR - BAR_ICON) / 2, s->bluetooth > 0 ? FG : DIM);
+  }
   ui_fill(0, BAR, width, 1, DIM);
 }
 

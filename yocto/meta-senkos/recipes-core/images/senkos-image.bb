@@ -86,9 +86,10 @@ IMAGE_INSTALL += "${@'gdb gdbserver strace perf trace-cmd' if d.getVar('SENKOS_D
 IMAGE_LINGUAS = ""
 # Weston is started by senkos-base (as player, via seatd; our shell, apps/shell)
 BAD_RECOMMENDATIONS += "weston-init"
-# libdbus (ports, libpulse) recommends the daemon: no bus here, nothing talks to one. By the
-# package's name (debian renaming), not the "dbus" it provides: opkg matches that
-BAD_RECOMMENDATIONS += "dbus-1 lib32-dbus-1"
+# The system bus: sysd's org.senkos.System1 (init starts it, busybox-inittab). The 32-bit libdbus
+# recommends a daemon of its own; by the package's name (debian renaming): opkg matches that
+IMAGE_INSTALL += "dbus"
+BAD_RECOMMENDATIONS += "lib32-dbus-1"
 # Bring-up only: passwordless root on the LCD, serial and USB (ssh) consoles. Remove before anything ships.
 IMAGE_FEATURES = "empty-root-password allow-empty-password allow-root-login"
 # Slots are squashfs (lz4): cheap to decompress for U-Boot (the kernel) and Linux alike.
@@ -113,10 +114,21 @@ dropbear_key_on_data () {
 }
 
 # /etc/init.d/weston (senkos-base) starts seatd right before Weston; its own script would
-# start a second one later (and sleeps 0.1 s doing it)
-ROOTFS_POSTPROCESS_COMMAND:append = " no_seatd_initscript"
-no_seatd_initscript () {
+# start a second one later (and sleeps 0.1 s doing it). It starts the bus too, init bluetoothd
+# (busybox-inittab): not their own scripts.
+ROOTFS_POSTPROCESS_COMMAND:append = " no_daemon_initscripts"
+no_daemon_initscripts () {
 	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??seatd
+	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??dbus-1
+	rm -f ${IMAGE_ROOTFS}${sysconfdir}/rc*.d/[SK]??bluetooth
+}
+
+# Bluetooth audio (SBC); pairings on the card
+IMAGE_INSTALL += "bluez5 pipewire-spa-plugins-bluez5"
+ROOTFS_POSTPROCESS_COMMAND:append = " bluetooth_on_data"
+bluetooth_on_data () {
+	rm -rf ${IMAGE_ROOTFS}${localstatedir}/lib/bluetooth
+	ln -sfn /data/OS/bluetooth ${IMAGE_ROOTFS}${localstatedir}/lib/bluetooth
 }
 
 # The build, for system updates (downloadd asks the server for a newer one; tools/publish-os

@@ -104,8 +104,7 @@ bool launcher_input(nav *ui, int why, int value, size_t *page) {
       screen_push(launcher.visible, ui, &power_key_screen, 0);
     return true;
   case UI_REFUSED: {
-    char text[128];
-    osd_show_text(sysd_refused(text, sizeof(text)), 3000);
+    osd_show_text(bus_refused(), 3000);
     return true;
   }
   case UI_EXITED: {

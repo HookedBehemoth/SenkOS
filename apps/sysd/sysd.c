@@ -8,34 +8,35 @@
  * events, never to the state at startup, so a misread lid can't put the handheld to sleep at
  * boot.
  *
- * And what the launcher, unprivileged, asks for: a SOCK_SEQPACKET socket, /run/sysd.sock, a
- * request a connection, from shell (the launcher) or root alone (SO_PEERCRED). The reply once
- * it's done: "ok", or "err WHY". The requests: "suspend"; "cpu KHZ" caps the CPU's clock (its
+ * And what the launcher, unprivileged, asks for: org.senkos.System1 on the system bus
+ * (apps/bus/org.senkos.System1.xml), from shell (the launcher) or root alone (the bus' policy,
+ * org.senkos.System1.conf). Each is answered once it's done, an error saying why it failed.
+ * Inside, a call is a request in words: "suspend"; "cpu KHZ" caps the CPU's clock (its
  * governor is performance: it runs at the cap); "gpu HZ" pins the GPU's (simple_ondemand
- * otherwise picks lower ones, and late), "gpu 0" frees it again; "brightness N" sets the backlight; and the commands in `cmds`.
+ * otherwise picks lower ones, and late), "gpu 0" frees it again; and the commands in `cmds`. The
+ * backlight is the launcher's own (group video, a udev rule).
+ * Without the bus (not up yet, or restarted by init) the lid and the power key still work.
  */
-#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
 #include <linux/input.h>
 #include <linux/vt.h>
 #include <poll.h>
-#include <pwd.h>
+#include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/pidfd.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
 #include <sys/wait.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
-#define SOCKET "/run/sysd.sock"
+#include "system1.h"
+
 #define DROPBEAR "/etc/init.d/dropbear"
 #define SSH_OFF "/data/OS/dropbear/disabled"
 #define SSH_ALL "/data/OS/dropbear/everywhere"
@@ -83,20 +84,25 @@ static const struct cmd {
 	{"power-on", "128 512 1000 2000", {ARGV("sh", "-c", "echo $0 > " POWER_ON_MS)}},
 };
 
-/* What runs for a client, which waits for the reply */
+/* What runs for a call, which waits for the reply */
 static struct job {
 	pid_t pid;
-	int pidfd, client;
+	int pidfd;
+	sd_bus_message *call;	/* NULL: a free slot */
 	char req[64];	/* for the log */
 } jobs[MAXJOB];
 
-static void reply(int client, const char *text)
+/* "ok", or "err WHY"; `call` is let go */
+static void reply(sd_bus_message *call, const char *text)
 {
-	send(client, text, strlen(text), MSG_NOSIGNAL);
-	close(client);
+	if (strncmp(text, "err ", 4) == 0)
+		sd_bus_reply_method_errorf(call, "org.senkos.System1.Error.Failed", "%s", text + 4);
+	else
+		sd_bus_reply_method_return(call, NULL);
+	sd_bus_message_unref(call);
 }
 
-static void reply_status(int client, const char *req, int status)
+static void reply_status(sd_bus_message *call, const char *req, int status)
 {
 	char text[32] = "ok";
 
@@ -105,7 +111,7 @@ static void reply_status(int client, const char *req, int status)
 	else if (WIFSIGNALED(status))
 		snprintf(text, sizeof(text), "err signal %d", WTERMSIG(status));
 	syslog(LOG_INFO, "%s: %s", req, text);
-	reply(client, text);
+	reply(call, text);
 }
 
 /* The child's: `run`'s commands one after the other, then exits with the last one's status */
@@ -211,25 +217,10 @@ static int suspend(int lid)
 	return first;
 }
 
-/* A request from `client`; 1 when it asks for a suspend (the reply is the caller's) */
-static int request(int client, char *req, uid_t shell)
+/* A request of `call`'s (held: replying lets it go); 1 when it asks for a suspend (the reply is
+ * the caller's) */
+static int request(sd_bus_message *call, const char *req)
 {
-	struct ucred cred;
-	socklen_t len = sizeof(cred);
-
-	/* read first: closed unread, the client would get a reset rather than the reply */
-	ssize_t n = recv(client, req, 255, 0);
-	if (n <= 0) {
-		close(client);
-		return 0;
-	}
-	req[n] = '\0';
-	if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0 ||
-	    (cred.uid != 0 && cred.uid != shell)) {
-		syslog(LOG_WARNING, "uid %u denied: %s", cred.uid, req);
-		reply(client, "err denied");
-		return 0;
-	}
 	syslog(LOG_INFO, "%s", req);
 	if (strcmp(req, "suspend") == 0)
 		return 1;
@@ -251,13 +242,12 @@ static int request(int client, char *req, uid_t shell)
 		int min = write_sysfs("/sys/class/devfreq/*.gpu/min_freq", words[1]);
 		if (!err)
 			err = min;
-	} else if (nw == 2 && strcmp(words[0], "brightness") == 0)
-		err = write_sysfs("/sys/class/backlight/*/brightness", words[1]);
+	}
 	if (err >= 0) {
 		char text[64] = "ok";
 		if (err)
 			snprintf(text, sizeof(text), "err %s", strerror(err));
-		reply(client, text);
+		reply(call, text);
 		return 0;
 	}
 
@@ -279,10 +269,10 @@ static int request(int client, char *req, uid_t shell)
 
 		struct job *j = NULL;
 		for (int k = 0; k < MAXJOB && j == NULL; k++)
-			if (jobs[k].client < 0)
+			if (jobs[k].call == NULL)
 				j = &jobs[k];
 		if (j == NULL) {
-			reply(client, "err busy");
+			reply(call, "err busy");
 			return 0;
 		}
 		int nrun = c->run[1] != NULL ? 2 : 1;
@@ -293,16 +283,157 @@ static int request(int client, char *req, uid_t shell)
 		if (pidfd < 0) {
 			if (pid > 0)
 				waitpid(pid, NULL, 0);
-			reply(client, "err fork");
+			reply(call, "err fork");
 			return 0;
 		}
-		*j = (struct job){ .pid = pid, .pidfd = pidfd, .client = client };
+		*j = (struct job){ .pid = pid, .pidfd = pidfd, .call = call };
 		snprintf(j->req, sizeof(j->req), "%s", req);
 		return 0;
 	}
 	syslog(LOG_WARNING, "unknown request: %s", req);
-	reply(client, "err unknown");
+	reply(call, "err unknown");
 	return 0;
+}
+
+/* A Suspend's call, answered once awake. The press that woke us, or a second Suspend meanwhile,
+ * isn't another before `quiet_until`. */
+static sd_bus_message *asked;
+static double quiet_until;
+
+/* The bus' calls (system1.h), each a request in words: `cmds` and the scripts check them */
+static int ask(sd_bus_message *m, const char *fmt, ...)
+{
+	char req[128];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(req, sizeof(req), fmt, ap);
+	va_end(ap);
+	sd_bus_message_ref(m);
+	if (request(m, req)) {
+		if (asked == NULL && now() > quiet_until)
+			asked = m;
+		else
+			reply(m, "ok");
+	}
+	return 1;
+}
+
+/* A string argument: one word, the words after the request's go to the script as they are */
+static int ask_word(sd_bus_message *m, const char *req, const char *w)
+{
+	if (w[0] == '\0' || strpbrk(w, " \t\n") != NULL || strlen(w) > 64)
+		return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "%s: one word", req);
+	return ask(m, "%s %s", req, w);
+}
+
+int system1_suspend(sd_bus_message *m, void *userdata)
+{
+	return ask(m, "suspend");
+}
+
+int system1_reboot(sd_bus_message *m, void *userdata)
+{
+	return ask(m, "reboot");
+}
+
+int system1_power_off(sd_bus_message *m, void *userdata)
+{
+	return ask(m, "poweroff");
+}
+
+int system1_launcher_up(sd_bus_message *m, void *userdata)
+{
+	return ask(m, "up");
+}
+
+int system1_set_cpu_max(sd_bus_message *m, void *userdata, uint32_t khz)
+{
+	return ask(m, "cpu %u", khz);
+}
+
+int system1_set_gpu_freq(sd_bus_message *m, void *userdata, uint32_t hz)
+{
+	return ask(m, "gpu %u", hz);
+}
+
+int system1_set_usb(sd_bus_message *m, void *userdata, const char *state)
+{
+	return ask_word(m, "usb", state);
+}
+
+int system1_set_wifi(sd_bus_message *m, void *userdata, bool on)
+{
+	return ask(m, "wifi %s", on ? "on" : "off");
+}
+
+int system1_set_time_zone(sd_bus_message *m, void *userdata, const char *zone)
+{
+	return ask_word(m, "clock zone", zone);
+}
+
+int system1_set_ntp(sd_bus_message *m, void *userdata, bool on)
+{
+	return ask(m, "clock ntp %s", on ? "on" : "off");
+}
+
+int system1_set_time(sd_bus_message *m, void *userdata, int64_t seconds)
+{
+	return ask(m, "clock set %lld", (long long)seconds);
+}
+
+int system1_set_ssh(sd_bus_message *m, void *userdata, bool on)
+{
+	return ask(m, "ssh %s", on ? "on" : "off");
+}
+
+int system1_set_ssh_everywhere(sd_bus_message *m, void *userdata, bool on)
+{
+	return ask(m, "ssh %s", on ? "all" : "usb");
+}
+
+int system1_set_light_sleep(sd_bus_message *m, void *userdata, bool on)
+{
+	return ask(m, "sleep %s", on ? "light" : "deep");
+}
+
+int system1_set_light_theme(sd_bus_message *m, void *userdata, bool on)
+{
+	return ask(m, "theme %s", on ? "light" : "dark");
+}
+
+int system1_set_power_on_ms(sd_bus_message *m, void *userdata, uint32_t ms)
+{
+	return ask(m, "power-on %u", ms);
+}
+
+/* poll's for the bus: 0 while it has messages read and waiting (it asks for no POLLIN then) */
+static int bus_timeout(sd_bus *bus)
+{
+	uint64_t until;
+
+	if (sd_bus_get_timeout(bus, &until) < 0 || until == UINT64_MAX)
+		return -1;
+	uint64_t at = now() * 1e6;
+	return until > at ? (int)((until - at + 999) / 1000) : 0;
+}
+
+/* On the system bus as org.senkos.System1; NULL while it isn't there */
+static sd_bus *bus_open(void)
+{
+	sd_bus *bus = NULL;
+	int r = sd_bus_open_system(&bus);
+
+	if (r >= 0)
+		r = sd_bus_add_object_vtable(bus, NULL, SYSTEM1_PATH, SYSTEM1_NAME, system1_vtable, NULL);
+	if (r >= 0)
+		r = sd_bus_request_name(bus, SYSTEM1_NAME, 0);
+	if (r < 0) {
+		sd_bus_flush_close_unref(bus);
+		return NULL;
+	}
+	syslog(LOG_INFO, "on the system bus");
+	return bus;
 }
 
 int main(void)
@@ -311,7 +442,7 @@ int main(void)
 	struct pollfd pfd[MAXDEV + 1 + MAXJOB];
 	int n = 0, lid = -1;
 	/* power_down: when the key went down, 0 when up or the press woke us */
-	double quiet_until = 0, power_down = 0;
+	double power_down = 0;
 	glob_t g;
 
 	openlog("sysd", LOG_PID, LOG_DAEMON);
@@ -345,54 +476,41 @@ int main(void)
 	}
 	syslog(LOG_INFO, "lid is %s", lid < 0 ? "absent" : lid_closed(lid) ? "closed" : "open");
 
-	struct passwd *pw = getpwnam("shell");
-	uid_t shell = pw != NULL ? pw->pw_uid : 0;
-	struct sockaddr_un addr = { .sun_family = AF_UNIX, .sun_path = SOCKET };
-	int sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
-	unlink(SOCKET);
-	if (sock < 0 || bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-	    chmod(SOCKET, 0666) != 0 || listen(sock, 16) != 0) {
-		syslog(LOG_ERR, SOCKET ": %m");
-		sleep(5);	/* init starts us again */
-		return 1;
-	}
-	pfd[n] = (struct pollfd){ .fd = sock, .events = POLLIN };
-	for (int k = 0; k < MAXJOB; k++)
-		jobs[k].client = -1;
+	sd_bus *bus = NULL;
 
 	for (;;) {
 		struct input_event ev;
-		int sleep_now = 0, asked = -1;
+		int sleep_now;
 
+		/* the bus again a second after it went (init starts it again) */
+		if (bus == NULL)
+			bus = bus_open();
+		pfd[n] = (struct pollfd){ .fd = bus != NULL ? sd_bus_get_fd(bus) : -1,
+					  .events = bus != NULL ? sd_bus_get_events(bus) : 0 };
 		for (int k = 0; k < MAXJOB; k++)
-			pfd[n + 1 + k] = (struct pollfd){ .fd = jobs[k].client >= 0 ? jobs[k].pidfd : -1, .events = POLLIN };
-		if (poll(pfd, n + 1 + MAXJOB, -1) < 0)
+			pfd[n + 1 + k] = (struct pollfd){ .fd = jobs[k].call != NULL ? jobs[k].pidfd : -1, .events = POLLIN };
+		if (poll(pfd, n + 1 + MAXJOB, bus != NULL ? bus_timeout(bus) : 1000) < 0)
 			continue;
 
 		for (int k = 0; k < MAXJOB; k++) {
 			struct job *j = &jobs[k];
 			int status;
-			if (j->client < 0 || !(pfd[n + 1 + k].revents & POLLIN) || waitpid(j->pid, &status, WNOHANG) != j->pid)
+			if (j->call == NULL || !(pfd[n + 1 + k].revents & POLLIN) || waitpid(j->pid, &status, WNOHANG) != j->pid)
 				continue;
-			reply_status(j->client, j->req, status);
+			reply_status(j->call, j->req, status);
 			close(j->pidfd);
-			j->client = -1;
+			j->call = NULL;
 		}
-		if (pfd[n].revents & POLLIN) {
-			int client = accept4(sock, NULL, NULL, SOCK_CLOEXEC);
-			/* a client that connects and doesn't ask mustn't hold us up */
-			struct timeval tv = { .tv_sec = 1 };
-			char req[256];
-			if (client >= 0 && setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
-			    request(client, req, shell)) {
-				/* the press that woke us, or a second request meanwhile, isn't another */
-				if (now() > quiet_until) {
-					sleep_now = 1;
-					asked = client;
-				} else
-					reply(client, "ok");
+		if (bus != NULL) {
+			int r;
+			while ((r = sd_bus_process(bus, NULL)) > 0)
+				;
+			if (r < 0) {
+				syslog(LOG_WARNING, "system bus: %s", strerror(-r));
+				bus = sd_bus_flush_close_unref(bus);
 			}
 		}
+		sleep_now = asked != NULL;
 		for (int i = 0; i < n; i++)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
 				if (ev.type == EV_SW && ev.code == SW_LID && ev.value == 1)
@@ -408,7 +526,8 @@ int main(void)
 			continue;
 		int status = suspend(lid);
 		quiet_until = now() + 1.5;
-		if (asked >= 0)
+		if (asked != NULL)
 			reply_status(asked, "suspend", status);
+		asked = NULL;
 	}
 }

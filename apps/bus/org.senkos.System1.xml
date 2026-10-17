@@ -1,0 +1,37 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- sysd (root): what the launcher, unprivileged, asks of the system. Callers: shell and root
+     (apps/sysd/org.senkos.System1.conf). Each call is answered once it's done; a failure is an
+     org.senkos.System1.Error.Failed saying why. -->
+<node name="/org/senkos/System1">
+  <interface name="org.senkos.System1">
+    <!-- Sleep now (the lid and the power key don't ask); answered once awake -->
+    <method name="Suspend"/>
+    <method name="Reboot"/>
+    <method name="PowerOff"/>
+    <!-- The launcher is up: the slot works (ab commit), Wi-Fi comes on if it was -->
+    <method name="LauncherUp"/>
+    <!-- Caps the CPU's clock (the governor is performance: it runs at the cap) -->
+    <method name="SetCpuMax"><arg name="khz" type="u"/></method>
+    <!-- Pins the GPU's clock; 0: the governor's choice again -->
+    <method name="SetGpuFreq"><arg name="hz" type="u"/></method>
+    <!-- USB storage for a PC: on, off, mtp or smb -->
+    <method name="SetUsb"><arg name="state" type="s"/></method>
+    <method name="SetWifi"><arg name="on" type="b"/></method>
+    <!-- A zone of the tz database, or auto (guessed from the network's address) -->
+    <method name="SetTimeZone"><arg name="zone" type="s"/></method>
+    <method name="SetNtp"><arg name="on" type="b"/></method>
+    <!-- Seconds since the epoch -->
+    <method name="SetTime"><arg name="seconds" type="x"/></method>
+    <!-- SSH off for good, or on -->
+    <method name="SetSsh"><arg name="on" type="b"/></method>
+    <!-- SSH on every network, else on the USB cable's alone -->
+    <method name="SetSshEverywhere"><arg name="on" type="b"/></method>
+    <!-- Sleep never powers the SoC off -->
+    <method name="SetLightSleep"><arg name="on" type="b"/></method>
+    <!-- The UI's colors and the boot splash -->
+    <method name="SetLightTheme"><arg name="on" type="b"/></method>
+    <!-- The power key's hold to turn on: 128, 512, 1000 or 2000 -->
+    <method name="SetPowerOnMs"><arg name="ms" type="u"/></method>
+  </interface>
+</node>

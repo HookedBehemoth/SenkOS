@@ -17,12 +17,17 @@ shell_client_protocol = [
     command: [scanner, 'private-code', '@INPUT@', '@OUTPUT@']),
 ]
 
-executable('launcher', 'main.c', 'state.c', 'home_state.c', 'pad_input.c', 'session.c', 'osd.c', 'control.c', 'input.c', 'widgets.c', 'scr_home.c', 'scr_pause.c', 'scr_licenses.c', 'scr_updates.c', 'scr_wifi.c', 'scr_storage.c', 'scr_settings.c', 'apps.c', 'capture.c', 'layer.c', 'licenses.c', 'perf.c', 'power.c', 'romdb.c', 'running.c', 'sysd.c', 'clock.c', 'keyboard.c', 'keys.c', 'updates.c', 'watch.c', 'wifi.c', capture_protocol, shell_client_protocol,
+executable('launcher', 'main.c', 'state.c', 'home_state.c', 'pad_input.c', 'session.c', 'osd.c', 'control.c', 'input.c', 'widgets.c', 'scr_home.c', 'scr_pause.c', 'scr_licenses.c', 'scr_updates.c', 'scr_wifi.c', 'scr_storage.c', 'scr_settings.c', 'apps.c', 'capture.c', 'layer.c', 'licenses.c', 'perf.c', 'power.c', 'romdb.c', 'running.c', 'sysd.c', 'bus.c', 'bluetooth.c', 'bt_agent.c', 'scr_bluetooth.c', 'clock.c', 'keyboard.c', 'keys.c', 'updates.c', 'watch.c', 'wifi.c', capture_protocol, shell_client_protocol,
   dependencies: [
     common_dep,
     ui_dep,
     dependency('wayland-client'),
     dependency('zlib'),
     dependency('libpulse'),
+    system1_client_dep,
+    adapter1_client_dep,
+    device1_client_dep,
+    agentmanager1_client_dep,
+    agent1_server_dep,
   ],
   install: true)

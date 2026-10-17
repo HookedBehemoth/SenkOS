@@ -80,6 +80,11 @@ enum {
   LICENSE_OPEN,
   WIFI,
   WIFI_PICK,
+  BLUETOOTH,
+  BT_TOGGLE,
+  BT_PICK,
+  BT_PAIRING,
+  BT_PAIR,
   UPDATES,
   UPDATE_CHECK,
   UPDATE_INSTALL,
@@ -115,7 +120,8 @@ enum {
 
 typedef struct {
   str label;
-  str command;
+  /* POWER's: a call to sysd */
+  bool (*sysd)(void);
   int action;
   int icon;
   intptr_t arg;
@@ -162,6 +168,8 @@ extern const ui_screen_def licenses_screen;
 extern const ui_screen_def license_screen;
 extern const ui_screen_def updates_screen;
 extern const ui_screen_def wifi_screen;
+extern const ui_screen_def bluetooth_screen;
+extern const ui_screen_def bt_pairing_screen;
 extern const ui_screen_def keyboard_screen;
 extern const ui_screen_def storage_screen;
 extern const ui_screen_def browse_screen;

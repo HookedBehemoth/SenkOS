@@ -39,7 +39,7 @@ static size_t update_rows(entry *rows, str *said, update_label labels[2],
   *said = sb_str(text[0]);
   if (u.job == UPDATE_READY) {
     rows[n++] = (entry){.label = S("Restart to finish the update"),
-                        .command = S("reboot"),
+                        .sysd = sysd_reboot,
                         .action = POWER,
                         .icon = ICON_ROTATE_CW};
     return n;
@@ -99,7 +99,7 @@ static void choose_updates(nav *ui, void *choice) {
   const entry *chosen = choice;
   switch (chosen->action) {
   case POWER:
-    sysd(chosen->command);
+    chosen->sysd();
     break;
   case UPDATE_CHECK:
     updates_check();

@@ -40,6 +40,7 @@ typedef struct {
   int battery;
   bool charging;
   int wifi;
+  int bluetooth; /* -1 off, 0 on, 1 connected */
 } ui_status;
 
 ui_screen *screen_top(screen_stack *stack);

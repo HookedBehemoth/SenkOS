@@ -9,6 +9,8 @@ scanner = find_program(dependency('wayland-scanner', native: true)
   .get_variable(pkgconfig: 'wayland_scanner'))
 
 subdir('common')
+subdir('bus')
+subdir('sysd')
 subdir('launcher')
 subdir('mediaplayer')
 subdir('corehost')

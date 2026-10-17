@@ -44,7 +44,7 @@ static bool usb_is(int i, str word) {
 
 static size_t storage_entries(entry *out) {
   static const str modes[] = {S("MTP"), S("SMB")};
-  static const str mode_cmds[] = {S("usb mtp"), S("usb smb")};
+  static bool (*const mode_calls[])(void) = {sysd_usb_mtp, sysd_usb_smb};
   static const str mode_words[] = {S("mtp"), S("smb")};
   static const int mode_icons[] = {ICON_SMARTPHONE, ICON_NETWORK};
   const bool on = usb_is(0, S("on"));
@@ -52,13 +52,13 @@ static size_t storage_entries(entry *out) {
   out[n++] =
       (entry){.label = S("Libraries"), .action = BROWSE, .icon = ICON_LIBRARY};
   out[n++] = (entry){.label = S("USB connection"),
-                     .command = on ? S("usb off") : S("usb on"),
+                     .sysd = on ? sysd_usb_off : sysd_usb_on,
                      .action = POWER,
                      .icon = ICON_USB,
                      .checked = on};
   for (size_t i = 0; on && i < COUNTOF(modes); i++)
     out[n++] = (entry){.label = modes[i],
-                       .command = mode_cmds[i],
+                       .sysd = mode_calls[i],
                        .action = POWER,
                        .icon = mode_icons[i],
                        .checked = usb_is(1, mode_words[i]),
@@ -244,7 +244,7 @@ static void choose_storage(nav *ui, void *choice) {
     browse(ui, S(""));
     break;
   case POWER:
-    sysd(chosen->command);
+    chosen->sysd();
     break;
   default:
     break;

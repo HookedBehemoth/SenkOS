@@ -1,9 +1,11 @@
 #include "power.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "apps.h"
@@ -60,18 +62,26 @@ static long read_long(const char *pattern) {
   return v;
 }
 
-/* To sysd: "WHAT VALUE" */
-static void request(const char *what, long value) {
-  char line[64];
-  sysd((str){line, (size_t)snprintf(line, sizeof(line), "%s %ld", what, value)});
-}
-
 /* Index + 1 into the steps; 0: the CPU's highest, the GPU free (sysd) */
 static void set_clocks(int cpu, int gpu) {
   if (cpu_count > 0)
-    request("cpu", cpu_steps[cpu > 0 ? cpu - 1 : cpu_count - 1]);
+    SYSD("CPU", set_cpu_max, (uint32_t)cpu_steps[cpu > 0 ? cpu - 1 : cpu_count - 1]);
   if (gpu_count > 0)
-    request("gpu", gpu > 0 ? gpu_steps[gpu - 1] : 0);
+    SYSD("GPU", set_gpu_freq, (uint32_t)(gpu > 0 ? gpu_steps[gpu - 1] : 0));
+}
+
+/* Ours to write: group video (a udev rule, senkos-base). Saved by save-settings, at shutdown and
+ * suspend. */
+static void set_brightness(long value) {
+  glob_t g;
+  if (glob("/sys/class/backlight/*/brightness", 0, NULL, &g) != 0)
+    return;
+  FILE *f = fopen(g.gl_pathv[0], "w");
+  globfree(&g);
+  if (f != NULL)
+    fprintf(f, "%ld", value);
+  if (f == NULL || fclose(f) != 0)
+    fprintf(stderr, "launcher: brightness: %s\n", strerror(errno));
 }
 
 static int step_of(const long *steps, int count, long value) {
@@ -138,7 +148,7 @@ static void save(void) {
 
 void power_apply(void) {
   if (brightness_max > 0 && brightness > 0)
-    request("brightness", brightness);
+    set_brightness(brightness);
   set_clocks(app_cpu, app_gpu);
 }
 
@@ -245,7 +255,7 @@ void power_step(int row, int by) {
     const long steps = 100;
     const long step = (brightness * steps + brightness_max / 2) / brightness_max;
     brightness = brightness_max * CLAMP(step + by * (1 << MIN(run / 8, 3)), 1, steps) / steps;
-    request("brightness", brightness); /* saved by save-settings, at shutdown and suspend */
+    set_brightness(brightness);
     return;
   }
   }

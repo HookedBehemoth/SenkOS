@@ -18,6 +18,9 @@ if [ "$1" = session ]; then
 	(
 		first_frame
 		pipewire </dev/null >/var/log/pipewire.log 2>&1 &
+		# WirePlumber's bluez monitor needs the system bus
+		n=0
+		while [ ! -S /run/dbus/system_bus_socket ] && [ $n -lt 100 ]; do usleep 20000; n=$((n + 1)); done
 		wireplumber </dev/null >/var/log/wireplumber.log 2>&1 &
 		pipewire-pulse </dev/null >/var/log/pipewire-pulse.log 2>&1 &
 	) &
@@ -108,5 +111,9 @@ amixer -q -c 0 sset DAC unmute &
 # own (and the coldplug) after the first frame.
 udevd -d
 ui
+# The system bus, before the session's WirePlumber needs it. Not restarted: its clients would
+# lose their names anyway.
+mkdir -p /run/dbus
+dbus-daemon --system --fork --nopidfile
 first_frame
 udevadm control --exit

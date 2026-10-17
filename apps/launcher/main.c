@@ -26,6 +26,7 @@
 #include "util.h"
 #include "wake.h"
 #include "watch.h"
+#include "bluetooth.h"
 #include "wifi.h"
 
 #define SLEEP_FAILED "/run/sleep-failed"
@@ -66,6 +67,7 @@ static void read_status(ui_status *s) {
     globfree(&g);
   }
   s->wifi = wifi_signal();
+  s->bluetooth = bt_bar();
 }
 
 static void redraw(win *w) {
@@ -140,6 +142,9 @@ int main(int argc, char **argv) {
   category_names[DEBUG_PAGE] = S("Debug");
   pad_listen(true);
   pad_start();
+  /* The bus' names watched, before it's used */
+  sysd_init();
+  bt_init();
   power_init();
   perf_init();
   power_use(HOME_KEY);
@@ -204,12 +209,15 @@ int main(int argc, char **argv) {
       if (wait < 0 || left < wait)
         wait = left;
     }
+    watch_prepare(&wait);
     if (!win_wait(watch_fds, WATCH_FDS, wait))
       return 1;
     changed |= watch_changed();
     for (int why, value; win_woken(&why, &value); animating = true)
       if (!launcher_input(&ui, why, value, &page))
         return 0;
+    /* Searching and pairing while its screen is up */
+    bt_pairing(screen_contains(launcher.visible, &bt_pairing_screen));
     const uint64_t now = ms_now();
     osd_tick(now);
     if (perf_on() && now >= perf_due) {
@@ -230,7 +238,7 @@ int main(int argc, char **argv) {
     bool dirty = animating || (widgets_due() != 0 && now >= widgets_due());
     const bool second = seconds && now - status_at >= 1000;
     if (second || changed != 0) {
-      if (second && !told_up && (told_up = sysd(S("up")))) {
+      if (second && !told_up && (told_up = SYSD("Up", launcher_up))) {
         power_apply();
         const str why = str_read(fopen(SLEEP_FAILED, "r"));
         if (why.n > 0) {
@@ -248,10 +256,10 @@ int main(int argc, char **argv) {
       }
       if (second)
         status_at = now;
-      if (changed & (WATCH_MINUTE | WATCH_POWER | WATCH_WIFI)) {
+      if (changed & (WATCH_MINUTE | WATCH_POWER | WATCH_WIFI | WATCH_BLUETOOTH)) {
         const ui_status was = st;
         read_status(&st);
-        dirty |= (changed & WATCH_MINUTE) || was.battery != st.battery ||
+        dirty |= (changed & (WATCH_MINUTE | WATCH_BLUETOOTH)) || was.battery != st.battery ||
                  was.charging != st.charging || was.wifi != st.wifi;
       }
       if (changed & WATCH_USB)

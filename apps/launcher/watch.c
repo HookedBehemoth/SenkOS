@@ -12,12 +12,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "bluetooth.h"
+#include "bus.h"
 #include "wifi.h"
 
 #define TIME_DIR "/data/OS/time"
 #define WPA_CTRL "/run/wpa_supplicant/wlan0"
 
-enum { MINUTE, FILES, MOUNTS, UEVENTS, WPA };
+enum { MINUTE, FILES, MOUNTS, UEVENTS, WPA, BUS };
 struct pollfd watch_fds[WATCH_FDS];
 static int run_wd = -1, time_wd = -1, os_wd = -1;
 
@@ -77,6 +79,8 @@ void watch_init(void) {
     watch_fds[UEVENTS].fd = ue;
   attach_wpa();
 }
+
+void watch_prepare(int *timeout_ms) { watch_fds[BUS] = bus_pollfd(timeout_ms); }
 
 static unsigned files(int fd) {
   char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
@@ -144,6 +148,9 @@ unsigned watch_changed(void) {
     attach_wpa();
   else if (watch_fds[WPA].revents)
     changed |= wpa(watch_fds[WPA].fd);
+  bus_dispatch(watch_fds[BUS].revents);
+  if (bt_changed())
+    changed |= WATCH_BLUETOOTH;
   /* On or off: wpa_supplicant started or stopped */
   if (changed & WATCH_WIFI && (watch_fds[WPA].fd >= 0) != wifi_on())
     attach_wpa();

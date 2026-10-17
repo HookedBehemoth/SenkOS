@@ -8,6 +8,7 @@
 #include "power.h"
 #include "sysd.h"
 #include "updates.h"
+#include "bluetooth.h"
 #include "wifi.h"
 
 enum { BROWSE_MAX = 256 };
@@ -69,10 +70,7 @@ static str power_on_value(void) { return power_on_labels[power_on()]; }
 static void power_on_step(int by) {
   const int count = COUNTOF(power_on_times);
   power_on_at = (power_on() + by + count) % count;
-  STRBUF(32) request;
-  request.n = 0;
-  sb_fmt(request, "power-on %d", power_on_times[power_on_at]);
-  sysd(sb_str(request));
+  SYSD("Power-on hold", set_power_on_ms, (uint32_t)power_on_times[power_on_at]);
 }
 
 enum { PAGE_MAX = 8 + PERF_ROWS };
@@ -133,6 +131,7 @@ static size_t page_rows(const ui_screen_def *kind, entry *rows,
     rows[n++] = (entry){
         .label = S("Storage"), .action = STORAGE, .icon = ICON_HARD_DRIVE};
     rows[n++] = (entry){.label = S("Wi-Fi"), .action = WIFI, .icon = ICON_WIFI};
+    rows[n++] = (entry){.label = S("Bluetooth"), .action = BLUETOOTH, .icon = ICON_BLUETOOTH};
     rows[n++] = (entry){.label = S("Time"), .action = TIME, .icon = ICON_CLOCK};
     rows[n++] = (entry){.label = S("Light mode"),
                         .action = LIGHT_MODE,
@@ -213,11 +212,8 @@ static void clock_set(void) {
                  .tm_min = f[4],
                  .tm_isdst = -1};
   const time_t when = mktime(&t);
-  STRBUF(48) request;
-  request.n = 0;
-  sb_fmt(request, "clock set %lld", (long long)when);
   if (when != (time_t)-1)
-    sysd(sb_str(request));
+    SYSD("Clock", set_time, (int64_t)when);
 }
 
 static void clock_dialog(int w, int h) {
@@ -406,11 +402,14 @@ static void choose_settings(nav *ui, void *choice) {
     screen_push(state->visible, ui, &wifi_screen, 0);
     wifi_poll();
     break;
+  case BLUETOOTH:
+    screen_push(state->visible, ui, &bluetooth_screen, 0);
+    break;
   case TIME:
     open_page(state, ui, &time_screen, 0);
     break;
   case LIGHT_MODE:
-    sysd(ui_light ? S("theme dark") : S("theme light"));
+    SYSD("Theme", set_light_theme, !ui_light);
     break;
   case UPDATES:
     screen_push(state->visible, ui, &updates_screen, 0);
@@ -442,12 +441,13 @@ static void choose_zones(nav *ui, void *choice) {
   case ZONE_AUTO:
   case ZONE_PICK: {
     const str *zones;
-    STRBUF(96) request = {0};
+    STRBUF(96) zone = {0};
     if (chosen->action == ZONE_AUTO)
-      sb_set(request, S("clock zone auto"));
+      sb_set(zone, S("auto"));
     else if ((size_t)chosen->arg < clock_zones(sb_str(zone_region), &zones))
-      sb_set(request, S("clock zone "), zones[chosen->arg]);
-    sysd(sb_str(request));
+      sb_set(zone, zones[chosen->arg]);
+    if (zone.n > 0)
+      SYSD("Time zone", set_time_zone, zone.p);
     if (screen_current(state->visible) == &zone_screen)
       screen_pop(state->visible, ui);
     screen_pop(state->visible, ui);
@@ -466,7 +466,7 @@ static void choose_time(nav *ui, void *choice) {
     open_zones(state, ui, &zones_screen);
     break;
   case NTP:
-    sysd(clock_ntp() ? S("clock ntp off") : S("clock ntp on"));
+    SYSD("Network time", set_ntp, !clock_ntp());
     break;
   case CLOCK:
     clock_open(state, ui);
@@ -481,13 +481,13 @@ static void choose_debug(nav *ui, void *choice) {
   const entry *chosen = choice;
   switch (chosen->action) {
   case SSH:
-    sysd(access(SSH_OFF, F_OK) != 0 ? S("ssh off") : S("ssh on"));
+    SYSD("SSH", set_ssh, access(SSH_OFF, F_OK) == 0);
     break;
   case SSH_EVERYWHERE:
-    sysd(access(SSH_ALL, F_OK) == 0 ? S("ssh usb") : S("ssh all"));
+    SYSD("SSH everywhere", set_ssh_everywhere, access(SSH_ALL, F_OK) != 0);
     break;
   case DEEP_SLEEP:
-    sysd(access(LIGHT_SLEEP, F_OK) == 0 ? S("sleep deep") : S("sleep light"));
+    SYSD("Light sleep", set_light_sleep, access(LIGHT_SLEEP, F_OK) != 0);
     break;
   case POWER_ON:
     power_on_step(1);

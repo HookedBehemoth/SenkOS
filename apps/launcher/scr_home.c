@@ -20,15 +20,15 @@ static const entry system_entries[] = {
     {.label = S("Settings"), .action = SYSTEM_SETTINGS, .icon = ICON_COG},
     {.label = S("Power"), .action = HOME_POWER, .icon = ICON_ZAP},
     {.label = S("Sleep"),
-     .command = S("suspend"),
+     .sysd = sysd_suspend,
      .action = POWER,
      .icon = ICON_MOON},
     {.label = S("Reboot"),
-     .command = S("reboot"),
+     .sysd = sysd_reboot,
      .action = POWER,
      .icon = ICON_ROTATE_CW},
     {.label = S("Power off"),
-     .command = S("poweroff"),
+     .sysd = sysd_power_off,
      .action = POWER,
      .icon = ICON_POWER},
 };
@@ -266,7 +266,7 @@ static void choose_quick_menu(nav *ui, void *choice) {
     screen_replace(state->visible, ui, &power_screen, 0);
     break;
   case POWER:
-    sysd(chosen->command);
+    chosen->sysd();
     break;
   default:
     break;

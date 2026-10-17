@@ -1,0 +1,16 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- BlueZ's, what the launcher uses of it (doc/org.bluez.Adapter.rst) -->
+<node>
+  <interface name="org.bluez.Adapter1">
+    <annotation name="org.senkos.Service" value="org.bluez"/>
+    <method name="StartDiscovery"/>
+    <method name="StopDiscovery"/>
+    <!-- Unpairs it -->
+    <method name="RemoveDevice"><arg name="device" type="o"/></method>
+    <property name="Powered" type="b" access="readwrite"/>
+    <property name="Discovering" type="b" access="read"/>
+    <!-- Takes pairing requests (with an agent to ask) -->
+    <property name="Pairable" type="b" access="readwrite"/>
+  </interface>
+</node>

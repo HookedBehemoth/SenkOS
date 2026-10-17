@@ -1,0 +1,21 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- BlueZ's, what the launcher uses of it (doc/org.bluez.Device.rst) -->
+<node>
+  <interface name="org.bluez.Device1">
+    <annotation name="org.senkos.Service" value="org.bluez"/>
+    <method name="Connect"/>
+    <method name="Disconnect"/>
+    <method name="Pair"/>
+    <!-- What it calls itself: only once it was heard saying so -->
+    <property name="Name" type="s" access="read"/>
+    <!-- Its name, or its address -->
+    <property name="Alias" type="s" access="read"/>
+    <!-- audio-headphones, input-gaming, ... -->
+    <property name="Icon" type="s" access="read"/>
+    <property name="Paired" type="b" access="read"/>
+    <!-- May connect by itself -->
+    <property name="Trusted" type="b" access="readwrite"/>
+    <property name="Connected" type="b" access="read"/>
+  </interface>
+</node>

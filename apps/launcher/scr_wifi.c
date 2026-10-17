@@ -48,7 +48,7 @@ static void wifi_frame(ui_screen *screen, nav *ui, ui_rect content) {
   const bool on = wifi_on();
   size_t n = 0;
   rows[n++] = (entry){.label = S("Wi-Fi"),
-                      .command = on ? S("wifi off") : S("wifi on"),
+                      .sysd = on ? sysd_wifi_off : sysd_wifi_on,
                       .action = POWER,
                       .icon = on ? ICON_WIFI : ICON_WIFI_OFF,
                       .checked = on};
@@ -147,7 +147,7 @@ static void choose_wifi(nav *ui, void *choice) {
   const entry *chosen = choice;
   switch (chosen->action) {
   case POWER:
-    sysd(chosen->command);
+    chosen->sysd();
     break;
   case WIFI_PICK:
     if ((size_t)chosen->arg < wifi_count) {
