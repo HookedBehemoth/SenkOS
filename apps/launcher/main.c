@@ -179,9 +179,7 @@ int main(int argc, char **argv) {
 
   for (;;) {
     session_check_start();
-    /* Searching for networks again every so often */
-    const bool seconds =
-        !told_up || screen_contains(launcher.visible, &wifi_adding_screen);
+    const bool seconds = !told_up;
     int wait = launcher.front != NULL && !showing_pause() && !session_starting()
                    ? -1
                : animating ? 16
@@ -218,9 +216,6 @@ int main(int argc, char **argv) {
     for (int why, value; win_woken(&why, &value); animating = true)
       if (!launcher_input(&ui, why, value, &page))
         return 0;
-    /* Searching and pairing while their screens are up */
-    bt_pairing(screen_contains(launcher.visible, &bt_pairing_screen));
-    wifi_adding(screen_contains(launcher.visible, &wifi_adding_screen));
     const uint64_t now = ms_now();
     osd_tick(now);
     if (perf_on() && now >= perf_due) {

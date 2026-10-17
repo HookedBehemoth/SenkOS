@@ -3,14 +3,14 @@
 /* org.senkos.System1 has an owner */
 static bool there;
 
-static void owned(sd_bus *bus, bool owner) {
+static void owned(bus_conn *bus, bool owner) {
   (void)bus;
   there = owner;
 }
 
 void sysd_init(void) { bus_watch(SYSTEM1_SERVICE, NULL, owned); }
 
-sd_bus *sysd_bus(void) { return there ? bus_get() : NULL; }
+bus_conn *sysd_bus(void) { return there ? bus_get() : NULL; }
 
 bool sysd_suspend(void) { return SYSD("Sleep", suspend); }
 bool sysd_reboot(void) { return SYSD("Reboot", reboot); }

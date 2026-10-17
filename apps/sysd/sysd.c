@@ -88,21 +88,21 @@ static const struct cmd {
 static struct job {
 	pid_t pid;
 	int pidfd;
-	sd_bus_message *call;	/* NULL: a free slot */
+	bool used;
+	bus_req call;
 	char req[64];	/* for the log */
 } jobs[MAXJOB];
 
-/* "ok", or "err WHY"; `call` is let go */
-static void reply(sd_bus_message *call, const char *text)
+/* "ok", or "err WHY" */
+static void reply(bus_req *call, const char *text)
 {
 	if (strncmp(text, "err ", 4) == 0)
-		sd_bus_reply_method_errorf(call, "org.senkos.System1.Error.Failed", "%s", text + 4);
+		bus_reply_error(call, "org.senkos.System1.Error.Failed", text + 4);
 	else
-		sd_bus_reply_method_return(call, NULL);
-	sd_bus_message_unref(call);
+		bus_reply(call);
 }
 
-static void reply_status(sd_bus_message *call, const char *req, int status)
+static void reply_status(bus_req *call, const char *req, int status)
 {
 	char text[32] = "ok";
 
@@ -217,9 +217,9 @@ static int suspend(int lid)
 	return first;
 }
 
-/* A request of `call`'s (held: replying lets it go); 1 when it asks for a suspend (the reply is
- * the caller's) */
-static int request(sd_bus_message *call, const char *req)
+/* A request of `call`'s (copied to answer later); 1 when it asks for a suspend (the reply is the
+ * caller's) */
+static int request(bus_req *call, const char *req)
 {
 	syslog(LOG_INFO, "%s", req);
 	if (strcmp(req, "suspend") == 0)
@@ -269,7 +269,7 @@ static int request(sd_bus_message *call, const char *req)
 
 		struct job *j = NULL;
 		for (int k = 0; k < MAXJOB && j == NULL; k++)
-			if (jobs[k].call == NULL)
+			if (!jobs[k].used)
 				j = &jobs[k];
 		if (j == NULL) {
 			reply(call, "err busy");
@@ -286,7 +286,7 @@ static int request(sd_bus_message *call, const char *req)
 			reply(call, "err fork");
 			return 0;
 		}
-		*j = (struct job){ .pid = pid, .pidfd = pidfd, .call = call };
+		*j = (struct job){ .pid = pid, .pidfd = pidfd, .used = true, .call = *call };
 		snprintf(j->req, sizeof(j->req), "%s", req);
 		return 0;
 	}
@@ -297,11 +297,12 @@ static int request(sd_bus_message *call, const char *req)
 
 /* A Suspend's call, answered once awake. The press that woke us, or a second Suspend meanwhile,
  * isn't another before `quiet_until`. */
-static sd_bus_message *asked;
+static bus_req asked;
+static bool asking;
 static double quiet_until;
 
 /* The bus' calls (system1.h), each a request in words: `cmds` and the scripts check them */
-static int ask(sd_bus_message *m, const char *fmt, ...)
+static int ask(bus_req *m, const char *fmt, ...)
 {
 	char req[128];
 	va_list ap;
@@ -309,131 +310,120 @@ static int ask(sd_bus_message *m, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(req, sizeof(req), fmt, ap);
 	va_end(ap);
-	sd_bus_message_ref(m);
 	if (request(m, req)) {
-		if (asked == NULL && now() > quiet_until)
-			asked = m;
-		else
+		if (!asking && now() > quiet_until) {
+			asked = *m;
+			asking = true;
+		} else
 			reply(m, "ok");
 	}
-	return 1;
+	return 0;
 }
 
 /* A string argument: one word, the words after the request's go to the script as they are */
-static int ask_word(sd_bus_message *m, const char *req, const char *w)
+static int ask_word(bus_req *m, const char *req, const char *w)
 {
-	if (w[0] == '\0' || strpbrk(w, " \t\n") != NULL || strlen(w) > 64)
-		return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "%s: one word", req);
+	char why[64];
+
+	if (w[0] == '\0' || strpbrk(w, " \t\n") != NULL || strlen(w) > 64) {
+		snprintf(why, sizeof(why), "%s: one word", req);
+		return bus_reply_error(m, BUS_ERROR_INVALID_ARGS, why);
+	}
 	return ask(m, "%s %s", req, w);
 }
 
-int system1_suspend(sd_bus_message *m, void *userdata)
+int system1_suspend(bus_req *m, void *userdata)
 {
 	return ask(m, "suspend");
 }
 
-int system1_reboot(sd_bus_message *m, void *userdata)
+int system1_reboot(bus_req *m, void *userdata)
 {
 	return ask(m, "reboot");
 }
 
-int system1_power_off(sd_bus_message *m, void *userdata)
+int system1_power_off(bus_req *m, void *userdata)
 {
 	return ask(m, "poweroff");
 }
 
-int system1_launcher_up(sd_bus_message *m, void *userdata)
+int system1_launcher_up(bus_req *m, void *userdata)
 {
 	return ask(m, "up");
 }
 
-int system1_set_cpu_max(sd_bus_message *m, void *userdata, uint32_t khz)
+int system1_set_cpu_max(bus_req *m, void *userdata, uint32_t khz)
 {
 	return ask(m, "cpu %u", khz);
 }
 
-int system1_set_gpu_freq(sd_bus_message *m, void *userdata, uint32_t hz)
+int system1_set_gpu_freq(bus_req *m, void *userdata, uint32_t hz)
 {
 	return ask(m, "gpu %u", hz);
 }
 
-int system1_set_usb(sd_bus_message *m, void *userdata, const char *state)
+int system1_set_usb(bus_req *m, void *userdata, const char *state)
 {
 	return ask_word(m, "usb", state);
 }
 
-int system1_set_wifi(sd_bus_message *m, void *userdata, bool on)
+int system1_set_wifi(bus_req *m, void *userdata, bool on)
 {
 	return ask(m, "wifi %s", on ? "on" : "off");
 }
 
-int system1_set_time_zone(sd_bus_message *m, void *userdata, const char *zone)
+int system1_set_time_zone(bus_req *m, void *userdata, const char *zone)
 {
 	return ask_word(m, "clock zone", zone);
 }
 
-int system1_set_ntp(sd_bus_message *m, void *userdata, bool on)
+int system1_set_ntp(bus_req *m, void *userdata, bool on)
 {
 	return ask(m, "clock ntp %s", on ? "on" : "off");
 }
 
-int system1_set_time(sd_bus_message *m, void *userdata, int64_t seconds)
+int system1_set_time(bus_req *m, void *userdata, int64_t seconds)
 {
 	return ask(m, "clock set %lld", (long long)seconds);
 }
 
-int system1_set_ssh(sd_bus_message *m, void *userdata, bool on)
+int system1_set_ssh(bus_req *m, void *userdata, bool on)
 {
 	return ask(m, "ssh %s", on ? "on" : "off");
 }
 
-int system1_set_ssh_everywhere(sd_bus_message *m, void *userdata, bool on)
+int system1_set_ssh_everywhere(bus_req *m, void *userdata, bool on)
 {
 	return ask(m, "ssh %s", on ? "all" : "usb");
 }
 
-int system1_set_light_sleep(sd_bus_message *m, void *userdata, bool on)
+int system1_set_light_sleep(bus_req *m, void *userdata, bool on)
 {
 	return ask(m, "sleep %s", on ? "light" : "deep");
 }
 
-int system1_set_light_theme(sd_bus_message *m, void *userdata, bool on)
+int system1_set_light_theme(bus_req *m, void *userdata, bool on)
 {
 	return ask(m, "theme %s", on ? "light" : "dark");
 }
 
-int system1_set_power_on_ms(sd_bus_message *m, void *userdata, uint32_t ms)
+int system1_set_power_on_ms(bus_req *m, void *userdata, uint32_t ms)
 {
 	return ask(m, "power-on %u", ms);
 }
 
-/* poll's for the bus: 0 while it has messages read and waiting (it asks for no POLLIN then) */
-static int bus_timeout(sd_bus *bus)
+/* On the system bus as org.senkos.System1, or not */
+static bool bus_up(bus_conn *bus)
 {
-	uint64_t until;
-
-	if (sd_bus_get_timeout(bus, &until) < 0 || until == UINT64_MAX)
-		return -1;
-	uint64_t at = now() * 1e6;
-	return until > at ? (int)((until - at + 999) / 1000) : 0;
-}
-
-/* On the system bus as org.senkos.System1; NULL while it isn't there */
-static sd_bus *bus_open(void)
-{
-	sd_bus *bus = NULL;
-	int r = sd_bus_open_system(&bus);
-
-	if (r >= 0)
-		r = sd_bus_add_object_vtable(bus, NULL, SYSTEM1_PATH, SYSTEM1_NAME, system1_vtable, NULL);
-	if (r >= 0)
-		r = sd_bus_request_name(bus, SYSTEM1_NAME, 0);
-	if (r < 0) {
-		sd_bus_flush_close_unref(bus);
-		return NULL;
+	if (bus_open(bus, BUS_SYSTEM) < 0)
+		return false;
+	system1_serve(bus, NULL);
+	if (bus_request_name(bus, SYSTEM1_NAME) < 0) {
+		bus_close(bus);
+		return false;
 	}
 	syslog(LOG_INFO, "on the system bus");
-	return bus;
+	return true;
 }
 
 int main(void)
@@ -476,41 +466,40 @@ int main(void)
 	}
 	syslog(LOG_INFO, "lid is %s", lid < 0 ? "absent" : lid_closed(lid) ? "closed" : "open");
 
-	sd_bus *bus = NULL;
+	static bus_conn bus;
+	bool up = false;
 
 	for (;;) {
 		struct input_event ev;
 		int sleep_now;
 
 		/* the bus again a second after it went (init starts it again) */
-		if (bus == NULL)
-			bus = bus_open();
-		pfd[n] = (struct pollfd){ .fd = bus != NULL ? sd_bus_get_fd(bus) : -1,
-					  .events = bus != NULL ? sd_bus_get_events(bus) : 0 };
+		if (!up)
+			up = bus_up(&bus);
+		pfd[n] = (struct pollfd){ .fd = up ? bus_fd(&bus) : -1, .events = up ? bus_events(&bus) : 0 };
 		for (int k = 0; k < MAXJOB; k++)
-			pfd[n + 1 + k] = (struct pollfd){ .fd = jobs[k].call != NULL ? jobs[k].pidfd : -1, .events = POLLIN };
-		if (poll(pfd, n + 1 + MAXJOB, bus != NULL ? bus_timeout(bus) : 1000) < 0)
+			pfd[n + 1 + k] = (struct pollfd){ .fd = jobs[k].used ? jobs[k].pidfd : -1, .events = POLLIN };
+		if (poll(pfd, n + 1 + MAXJOB, up ? -1 : 1000) < 0)
 			continue;
 
 		for (int k = 0; k < MAXJOB; k++) {
 			struct job *j = &jobs[k];
 			int status;
-			if (j->call == NULL || !(pfd[n + 1 + k].revents & POLLIN) || waitpid(j->pid, &status, WNOHANG) != j->pid)
+			if (!j->used || !(pfd[n + 1 + k].revents & POLLIN) || waitpid(j->pid, &status, WNOHANG) != j->pid)
 				continue;
-			reply_status(j->call, j->req, status);
+			reply_status(&j->call, j->req, status);
 			close(j->pidfd);
-			j->call = NULL;
+			j->used = false;
 		}
-		if (bus != NULL) {
-			int r;
-			while ((r = sd_bus_process(bus, NULL)) > 0)
-				;
+		if (up && pfd[n].revents) {
+			int r = bus_process(&bus);
 			if (r < 0) {
 				syslog(LOG_WARNING, "system bus: %s", strerror(-r));
-				bus = sd_bus_flush_close_unref(bus);
+				bus_close(&bus);
+				up = false;
 			}
 		}
-		sleep_now = asked != NULL;
+		sleep_now = asking;
 		for (int i = 0; i < n; i++)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
 				if (ev.type == EV_SW && ev.code == SW_LID && ev.value == 1)
@@ -526,8 +515,8 @@ int main(void)
 			continue;
 		int status = suspend(lid);
 		quiet_until = now() + 1.5;
-		if (asked != NULL)
-			reply_status(asked, "suspend", status);
-		asked = NULL;
+		if (asking)
+			reply_status(&asked, "suspend", status);
+		asking = false;
 	}
 }

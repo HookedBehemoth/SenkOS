@@ -4,58 +4,60 @@
 #include "bluetooth.h"
 #include "bus.h"
 
-static int refuse(sd_bus_message *call) {
-  return sd_bus_reply_method_errorf(call, "org.bluez.Error.Rejected", "not while pairing is closed");
+static int refuse(bus_req *req) {
+  return bus_reply_error(req, "org.bluez.Error.Rejected", "not while pairing is closed");
 }
-static int yes(sd_bus_message *call) { return bt_pairing_on() ? sd_bus_reply_method_return(call, NULL) : refuse(call); }
+static int yes(bus_req *req) { return bt_pairing_on() ? bus_reply(req) : refuse(req); }
 
-int agent1_release(sd_bus_message *call, void *userdata) {
+int agent1_release(bus_req *req, void *userdata) {
   (void)userdata;
-  return sd_bus_reply_method_return(call, NULL);
+  return bus_reply(req);
 }
-int agent1_cancel(sd_bus_message *call, void *userdata) {
+int agent1_cancel(bus_req *req, void *userdata) {
   (void)userdata;
-  return sd_bus_reply_method_return(call, NULL);
+  return bus_reply(req);
 }
-int agent1_request_pin_code(sd_bus_message *call, void *userdata, const char *device) {
+int agent1_request_pin_code(bus_req *req, void *userdata, const char *device) {
   (void)userdata, (void)device;
-  return bt_pairing_on() ? agent1_request_pin_code_reply(call, "0000") : refuse(call);
+  return bt_pairing_on() ? agent1_request_pin_code_reply(req, "0000") : refuse(req);
 }
-int agent1_request_passkey(sd_bus_message *call, void *userdata, const char *device) {
+int agent1_request_passkey(bus_req *req, void *userdata, const char *device) {
   (void)userdata, (void)device;
-  return bt_pairing_on() ? agent1_request_passkey_reply(call, 0) : refuse(call);
+  return bt_pairing_on() ? agent1_request_passkey_reply(req, 0) : refuse(req);
 }
-int agent1_display_pin_code(sd_bus_message *call, void *userdata, const char *device, const char *pincode) {
+int agent1_display_pin_code(bus_req *req, void *userdata, const char *device, const char *pincode) {
   (void)userdata, (void)device, (void)pincode;
-  return sd_bus_reply_method_return(call, NULL);
+  return bus_reply(req);
 }
-int agent1_display_passkey(sd_bus_message *call, void *userdata, const char *device, uint32_t passkey,
+int agent1_display_passkey(bus_req *req, void *userdata, const char *device, uint32_t passkey,
                            uint16_t entered) {
   (void)userdata, (void)device, (void)passkey, (void)entered;
-  return sd_bus_reply_method_return(call, NULL);
+  return bus_reply(req);
 }
-int agent1_request_confirmation(sd_bus_message *call, void *userdata, const char *device, uint32_t passkey) {
+int agent1_request_confirmation(bus_req *req, void *userdata, const char *device, uint32_t passkey) {
   (void)userdata, (void)device, (void)passkey;
-  return yes(call);
+  return yes(req);
 }
-int agent1_request_authorization(sd_bus_message *call, void *userdata, const char *device) {
+int agent1_request_authorization(bus_req *req, void *userdata, const char *device) {
   (void)userdata, (void)device;
-  return yes(call);
+  return yes(req);
 }
-int agent1_authorize_service(sd_bus_message *call, void *userdata, const char *device, const char *uuid) {
+int agent1_authorize_service(bus_req *req, void *userdata, const char *device, const char *uuid) {
   (void)userdata, (void)device, (void)uuid;
-  return yes(call);
+  return yes(req);
 }
 
-void bt_agent_add(sd_bus *bus) { sd_bus_add_object_vtable(bus, NULL, AGENT1_PATH, AGENT1_NAME, agent1_vtable, NULL); }
+void bt_agent_add(bus_conn *bus) { agent1_serve(bus, NULL); }
 
-static void registered(const sd_bus_error *error, void *userdata) {
-  (void)userdata;
+static bus_call registering;
+
+/* Registered: be the default one */
+static void registered(bus_call *call, const bus_error *error) {
+  (void)call;
   if (error == NULL)
-    agentmanager1_call_request_default_agent(bus_get(), AGENT1_PATH, NULL);
+    agentmanager1_call_request_default_agent(bus_get(), AGENT1_PATH, NULL, NULL);
 }
 
-void bt_agent_register(sd_bus *bus) {
-  static const agentmanager1_register_agent_then then = {registered, NULL};
-  agentmanager1_call_register_agent(bus, AGENT1_PATH, "NoInputNoOutput", &then);
+void bt_agent_register(bus_conn *bus) {
+  agentmanager1_call_register_agent(bus, AGENT1_PATH, "NoInputNoOutput", &registering, registered);
 }

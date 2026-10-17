@@ -27,6 +27,9 @@ struct ui_screen_def {
   void (*frame)(ui_screen *screen, nav *ui, ui_rect content);
   bool (*button)(ui_screen *screen, nav *ui, int button);
   void (*text)(ui_screen *screen, nav *ui, str value);
+  /* On joining a stack, and on leaving it (what's pushed on it doesn't leave it) */
+  void (*enter)(void);
+  void (*leave)(void);
 };
 
 #define SCREEN_DEPTH 8

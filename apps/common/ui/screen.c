@@ -61,13 +61,18 @@ void screen_push(screen_stack *stack, nav *ui, const ui_screen_def *def,
   stack->generation++;
   nav_set_owner(ui, stack->items[stack->count - 1].instance);
   nav_focus(ui, 0);
+  if (def->enter != NULL)
+    def->enter();
 }
 
 void screen_pop(screen_stack *stack, nav *ui) {
   if (stack->count <= 1)
     return;
+  const ui_screen_def *gone = stack->items[stack->count - 1].def;
   nav_forget_owner(ui, stack->items[stack->count - 1].instance);
   stack->count--;
+  if (gone->leave != NULL)
+    gone->leave();
   stack->generation++;
   screen_focus_restore(stack, ui);
 }
@@ -77,11 +82,16 @@ void screen_replace(screen_stack *stack, nav *ui, const ui_screen_def *def,
   if (!stack->count)
     screen_push(stack, ui, def, arg);
   else {
+    const ui_screen_def *gone = stack->items[stack->count - 1].def;
     nav_forget_owner(ui, stack->items[stack->count - 1].instance);
+    if (gone->leave != NULL)
+      gone->leave();
     stack->items[stack->count - 1] = new_screen(def, arg);
     stack->generation++;
     nav_set_owner(ui, stack->items[stack->count - 1].instance);
     nav_focus(ui, 0);
+    if (def->enter != NULL)
+      def->enter();
   }
 }
 

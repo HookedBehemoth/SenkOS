@@ -2,8 +2,7 @@
  * Wi-Fi: on or off is `wifi`'s (sysd runs it; it says which in /run/wifi), the rest wpa_supplicant's
  * (fi.w1.wpa_supplicant1 on the system bus): a mirror of its interface and the networks it saved,
  * kept by its signals, and what the settings do with them. It saves the networks itself, where only
- * root reads them. While adding (the add screen is up) it searches; what it finds shows in the
- * order it was found.
+ * root reads them. Opening the add screen searches; what it finds shows in the order it was found.
  */
 #pragma once
 
@@ -21,6 +20,7 @@ typedef struct {
   STRBUF(128) name;
   bool current;   /* the one it's on, or getting on */
   bool connected; /* and it's on it */
+  bool busy;      /* being selected */
 } wifi_saved;
 
 /* A network found (its access points as one) */
@@ -31,6 +31,7 @@ typedef struct {
   int bars; /* 1-4, the best of them */
   bool secured;
   bool gone; /* not heard any more: kept until adding ends, so the rows stay */
+  bool busy; /* being added */
 } wifi_found;
 
 /* At start, before the bus is used */
@@ -52,8 +53,9 @@ void wifi_select(const char *path);
 /* Unsave; back on whichever saved one is there */
 void wifi_forget(const char *path);
 
-/* The add screen's, as it comes and goes; each second while it's up: searching again now and then */
-void wifi_adding(bool on);
+/* The add screen's: a search when it comes up */
+void wifi_adding_start(void);
+void wifi_adding_stop(void);
 /* What's found and not saved yet */
 size_t wifi_found_list(wifi_found *out, size_t max);
 /* Saved and on it; psk "" for an open one */

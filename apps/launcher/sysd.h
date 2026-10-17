@@ -20,13 +20,13 @@
 /* At start, before the bus is used */
 void sysd_init(void);
 /* The bus, NULL while sysd isn't on it */
-sd_bus *sysd_bus(void);
+bus_conn *sysd_bus(void);
 
-#define SYSD(what, method, ...)                                                           \
-  ({                                                                                      \
-    static const system1_##method##_then sysd_then_ = {bus_done, (void *)(what)};         \
-    sd_bus *const sysd_bus_ = sysd_bus();                                                 \
-    sysd_bus_ != NULL && system1_call_##method(sysd_bus_, ##__VA_ARGS__, &sysd_then_) >= 0; \
+#define SYSD(said, method, ...)                                                                          \
+  ({                                                                                                     \
+    static bus_said sysd_said_ = {.what = (said)};                                                      \
+    bus_conn *const sysd_bus_ = sysd_bus();                                                                \
+    sysd_bus_ != NULL && system1_call_##method(sysd_bus_, ##__VA_ARGS__, &sysd_said_.call, bus_said_done) >= 0; \
   })
 
 /* For menus' entries (entry.sysd) */

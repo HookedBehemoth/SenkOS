@@ -1,0 +1,10 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Any object's properties, what the launcher reads of them (an interface's own: NAME_props) -->
+<node>
+  <interface name="org.freedesktop.DBus.Properties">
+    <annotation name="org.senkos.Service" value=""/>
+    <method name="Get"><arg name="iface" type="s"/><arg name="name" type="s"/><arg name="value" type="v" direction="out"/></method>
+    <method name="GetAll"><arg name="iface" type="s"/><arg name="props" type="a{sv}" direction="out"/></method>
+  </interface>
+</node>

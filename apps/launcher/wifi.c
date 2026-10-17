@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "bus.h"
+#include "properties.h"
 #include "util.h"
 #include "wpa.h"
 #include "wpa_bss.h"
@@ -15,21 +16,23 @@
 
 #define IFNAME "wlan0"
 #define NETWORK "fi.w1.wpa_supplicant1.Network"
-enum { SCAN_MS = 15000, FOUND_MAX = 64 };
+enum { FOUND_MAX = 64 };
 
 static STRBUF(64) iface_path; /* "" without one */
 static wpa_iface_props iface;
 /* The link's signal (SignalPoll), dBm; 0: not known */
 static int rssi;
-/* Saved: slots that stay put, so a GetAll's answer finds its own (index and gen in its userdata);
- * shown in the order they came (seq) */
-static struct {
+/* Saved: a slot of its own while it's there, its calls in it; shown in the order they came (seq) */
+typedef struct {
   bool used;
-  unsigned gen, seq;
+  unsigned seq;
   STRBUF(64) path;
   uint8_t ssid[32];
   uint8_t ssid_len;
-} networks[WIFI_MAX];
+  bus_call get;     /* its properties */
+  bus_call call;    /* selecting it */
+} network;
+static network networks[WIFI_MAX];
 static unsigned seq;
 /* Found while adding, in the order they were */
 static struct {
@@ -39,7 +42,22 @@ static struct {
 } found[FOUND_MAX];
 static size_t found_count;
 static bool adding, added_new, dirty;
-static uint64_t scanned_at;
+/* What's being loaded or polled */
+static bus_call getting_iface;
+static bus_call loading_iface, loading_networks, polling;
+/* Forgetting: remove, save, back on another if it was the one */
+static bus_call forgetting;
+static bool forgetting_current;
+/* Adding, one at a time: AddNetwork (with WPA3, again without where it was built without), select,
+ * save */
+static struct {
+  uint8_t ssid[32];
+  uint8_t ssid_len;
+  STRBUF(64) psk;
+  bool sae;
+  bus_call making;
+  bus_call call;
+} adding_net;
 
 static void changed(void) { dirty = true; }
 
@@ -83,127 +101,98 @@ static bool completed(void) { return strcmp(iface.state, "completed") == 0; }
 
 /* Saved networks */
 
-static int network_find(const char *path) {
+static network *network_find(const char *path) {
   for (int i = 0; i < WIFI_MAX; i++)
     if (networks[i].used && strcmp(networks[i].path.p, path) == 0)
-      return i;
-  return -1;
+      return &networks[i];
+  return NULL;
 }
 
-static int network_add(const char *path) {
-  int i = network_find(path);
-  for (int k = 0; i < 0 && k < WIFI_MAX; k++)
-    if (!networks[k].used) {
-      i = k;
-      networks[i].used = true;
-      networks[i].gen++;
-      networks[i].seq = ++seq;
-      networks[i].ssid_len = 0;
-      sb_set(networks[i].path, str_c(path));
-    }
-  return i;
+static void drop(network *n) {
+  bus_call_cancel(&n->get);
+  bus_call_cancel(&n->call);
+  n->used = false;
 }
 
 /* Its name in its config: "quoted", else hex */
-static void config_ssid(int i, const char *v) {
-  size_t n = strlen(v);
-  networks[i].ssid_len = 0;
-  if (n >= 2 && v[0] == '"' && v[n - 1] == '"') {
-    n = MIN(n - 2, sizeof(networks[i].ssid));
-    memcpy(networks[i].ssid, v + 1, n);
-    networks[i].ssid_len = (uint8_t)n;
+static void config_ssid(network *n, const char *v) {
+  size_t len = strlen(v);
+  n->ssid_len = 0;
+  if (len >= 2 && v[0] == '"' && v[len - 1] == '"') {
+    len = MIN(len - 2, sizeof(n->ssid));
+    memcpy(n->ssid, v + 1, len);
+    n->ssid_len = (uint8_t)len;
     return;
   }
-  for (size_t k = 0; k + 1 < n && networks[i].ssid_len < sizeof(networks[i].ssid); k += 2) {
+  for (size_t k = 0; k + 1 < len && n->ssid_len < sizeof(n->ssid); k += 2) {
     const char two[3] = {v[k], v[k + 1], '\0'};
-    networks[i].ssid[networks[i].ssid_len++] = (uint8_t)strtoul(two, NULL, 16);
+    n->ssid[n->ssid_len++] = (uint8_t)strtoul(two, NULL, 16);
   }
 }
 
 /* A Network's a{sv}: of its Properties (its config), the ssid */
-static int network_props(int i, sd_bus_message *m) {
-  int r = sd_bus_message_enter_container(m, 'a', "{sv}");
-  while (r >= 0 && (r = sd_bus_message_enter_container(m, 'e', "sv")) > 0) {
-    const char *key, *type;
-    r = sd_bus_message_read(m, "s", &key);
-    if (r >= 0)
-      r = sd_bus_message_peek_type(m, NULL, &type);
-    if (r >= 0 && strcmp(key, "Properties") == 0 && strcmp(type, "a{sv}") == 0) {
-      r = sd_bus_message_enter_container(m, 'v', "a{sv}");
-      if (r >= 0)
-        r = sd_bus_message_enter_container(m, 'a', "{sv}");
-      while (r >= 0 && (r = sd_bus_message_enter_container(m, 'e', "sv")) > 0) {
-        const char *k, *v;
-        r = sd_bus_message_read(m, "s", &k);
-        if (r >= 0)
-          r = sd_bus_message_peek_type(m, NULL, &type);
-        if (r >= 0 && strcmp(k, "ssid") == 0 && strcmp(type, "s") == 0 && (r = sd_bus_message_read(m, "v", "s", &v)) >= 0)
-          config_ssid(i, v);
-        else if (r >= 0)
-          r = sd_bus_message_skip(m, "v");
-        if (r >= 0)
-          r = sd_bus_message_exit_container(m);
-      }
-      if (r >= 0)
-        r = sd_bus_message_exit_container(m);
-      if (r >= 0)
-        r = sd_bus_message_exit_container(m);
-    } else if (r >= 0)
-      r = sd_bus_message_skip(m, "v");
-    if (r >= 0)
-      r = sd_bus_message_exit_container(m);
+static void network_props(network *n, bus_rd *r) {
+  const uint8_t *end = bus_rd_array(r, 8);
+  const char *key, *sig;
+  uint32_t len;
+  while (bus_rd_kv(r, end, &key, &len, &sig)) {
+    if (strcmp(key, "Properties") != 0 || strcmp(sig, "a{sv}") != 0) {
+      bus_skip(r, sig);
+      continue;
+    }
+    const uint8_t *config = bus_rd_array(r, 8);
+    while (bus_rd_kv(r, config, &key, &len, &sig))
+      if (strcmp(key, "ssid") == 0 && strcmp(sig, "s") == 0)
+        config_ssid(n, bus_rd_str(r));
+      else
+        bus_skip(r, sig);
   }
-  return r < 0 ? r : sd_bus_message_exit_container(m);
 }
 
-static int network_got(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)error;
-  const uintptr_t u = (uintptr_t)userdata;
-  const size_t i = u & 0xff;
-  if (!sd_bus_message_is_method_error(m, NULL) && networks[i].used && networks[i].gen == u >> 8) {
-    network_props((int)i, m);
+static void network_got(bus_call *call, const bus_error *error, bus_rd *props) {
+  if (error == NULL) {
+    network_props(bus_call_owner(call, network, get), props);
     changed();
   }
-  return 0;
 }
 
-/* Its properties, for network_got */
-static void get_network(sd_bus *bus, int i) {
-  sd_bus_call_method_async(bus, NULL, WPA_SERVICE, networks[i].path.p, "org.freedesktop.DBus.Properties", "GetAll",
-                           network_got, (void *)(uintptr_t)(networks[i].gen << 8 | (unsigned)i), "s", NETWORK);
+/* One there, its properties asked for: a NetworkAdded's come before AddNetwork sets them */
+static void network_add(bus_conn *bus, const char *path) {
+  network *n = network_find(path);
+  for (int i = 0; n == NULL && i < WIFI_MAX; i++)
+    if (!networks[i].used) {
+      n = &networks[i];
+      *n = (network){.used = true, .seq = ++seq};
+      sb_set(n->path, str_c(path));
+    }
+  if (n == NULL)
+    return;
+  properties_call_get_all(bus, WPA_SERVICE, path, NETWORK, &n->get, network_got);
+  changed();
 }
 
-static int networks_got(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)userdata, (void)error;
-  const char *path;
-  if (sd_bus_message_is_method_error(m, NULL))
-    return 0;
-  int r = sd_bus_message_enter_container(m, 'v', "ao");
-  if (r >= 0)
-    r = sd_bus_message_enter_container(m, 'a', "o");
-  while (r >= 0 && (r = sd_bus_message_read(m, "o", &path)) > 0) {
-    const int i = network_add(path);
-    if (i >= 0)
-      get_network(sd_bus_message_get_bus(m), i);
+static void networks_got(bus_call *call, const bus_error *error, bus_rd *value) {
+  (void)call;
+  if (error != NULL || !bus_rd_variant(value, "ao"))
+    return;
+  const uint8_t *end = bus_rd_array(value, 4);
+  while (bus_rd_more(value, end)) {
+    const char *path = bus_rd_str(value);
+    if (!value->bad)
+      network_add(bus_get(), path);
   }
-  changed();
-  return 0;
 }
 
-/* Its properties come later: AddNetwork sets them once it's made */
-static void network_added(const char *object, const char *path, sd_bus_message *props) {
+static void network_added(const char *object, const char *path, bus_rd *props) {
   (void)object, (void)props;
-  const int i = network_add(path);
-  if (i >= 0)
-    get_network(bus_get(), i);
-  changed();
+  network_add(bus_get(), path);
 }
 
 static void network_removed(const char *object, const char *path) {
   (void)object;
-  const int i = network_find(path);
-  if (i >= 0)
-    networks[i].used = false;
+  network *n = network_find(path);
+  if (n != NULL)
+    drop(n);
   changed();
 }
 
@@ -216,7 +205,7 @@ static size_t found_find(const char *path) {
   return i;
 }
 
-static void bss_added(const char *object, const char *path, sd_bus_message *props) {
+static void bss_added(const char *object, const char *path, bus_rd *props) {
   (void)object;
   size_t i = found_find(path);
   if (!adding || (i == found_count && found_count == FOUND_MAX))
@@ -242,7 +231,7 @@ static void bss_removed(const char *object, const char *path) {
   changed();
 }
 
-static void bss_changed(const char *path, sd_bus_message *props) {
+static void bss_changed(const char *path, bus_rd *props) {
   uint32_t bits;
   const size_t i = found_find(path);
   if (i < found_count && wpa_bss_props_apply(&found[i].p, props, &bits) >= 0 && bits != 0)
@@ -251,52 +240,40 @@ static void bss_changed(const char *path, sd_bus_message *props) {
 
 /* The interface */
 
-static int signal_got(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)userdata, (void)error;
-  if (sd_bus_message_is_method_error(m, NULL))
-    return 0;
+static void signal_got(bus_call *call, const bus_error *error, bus_rd *args) {
+  (void)call;
   /* An a{sv}, in a variant (2.11's) */
-  int r = sd_bus_message_enter_container(m, 'v', "a{sv}");
-  if (r >= 0)
-    r = sd_bus_message_enter_container(m, 'a', "{sv}");
-  while (r >= 0 && (r = sd_bus_message_enter_container(m, 'e', "sv")) > 0) {
-    const char *key, *type;
-    int32_t v;
-    r = sd_bus_message_read(m, "s", &key);
-    if (r >= 0)
-      r = sd_bus_message_peek_type(m, NULL, &type);
-    if (r >= 0 && strcmp(key, "rssi") == 0 && strcmp(type, "i") == 0 && (r = sd_bus_message_read(m, "v", "i", &v)) >= 0)
-      rssi = v;
-    else if (r >= 0)
-      r = sd_bus_message_skip(m, "v");
-    if (r >= 0)
-      r = sd_bus_message_exit_container(m);
-  }
+  if (error != NULL || !bus_rd_variant(args, "a{sv}"))
+    return;
+  const uint8_t *end = bus_rd_array(args, 8);
+  const char *key, *sig;
+  uint32_t len;
+  while (bus_rd_kv(args, end, &key, &len, &sig))
+    if (strcmp(key, "rssi") == 0 && strcmp(sig, "i") == 0)
+      rssi = bus_rd_i32(args);
+    else
+      bus_skip(args, sig);
   changed();
-  return 0;
 }
 
 void wifi_poll_signal(void) {
-  if (bus_get() != NULL && iface_path.n > 0 && completed())
-    sd_bus_call_method_async(bus_get(), NULL, WPA_IFACE_SERVICE, iface_path.p, WPA_IFACE_NAME, "SignalPoll", signal_got,
-                             NULL, NULL);
+  if (bus_get() == NULL || iface_path.n == 0 || !completed())
+    return;
+  wpa_iface_call_signal_poll(bus_get(), iface_path.p, &polling, signal_got);
 }
 
-static int iface_got(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)userdata, (void)error;
-  if (!sd_bus_message_is_method_error(m, NULL) && wpa_iface_props_apply(&iface, m, NULL) >= 0) {
+static void iface_got(bus_call *call, const bus_error *error, bus_rd *props) {
+  (void)call;
+  if (error == NULL && wpa_iface_props_apply(&iface, props, NULL) >= 0) {
     wifi_poll_signal();
     changed();
   }
-  return 0;
 }
 
-static void load(sd_bus *bus, const char *path) {
+static void load(bus_conn *bus, const char *path) {
   sb_set(iface_path, str_c(path));
-  sd_bus_call_method_async(bus, NULL, WPA_SERVICE, path, "org.freedesktop.DBus.Properties", "GetAll", iface_got, NULL,
-                           "s", WPA_IFACE_NAME);
-  sd_bus_call_method_async(bus, NULL, WPA_SERVICE, path, "org.freedesktop.DBus.Properties", "Get", networks_got, NULL,
-                           "ss", WPA_IFACE_NAME, "Networks");
+  properties_call_get_all(bus, WPA_SERVICE, path, WPA_IFACE_NAME, &loading_iface, iface_got);
+  properties_call_get(bus, WPA_SERVICE, path, WPA_IFACE_NAME, "Networks", &loading_networks, networks_got);
 }
 
 static void clear(void) {
@@ -304,12 +281,19 @@ static void clear(void) {
   iface = (wpa_iface_props){0};
   rssi = 0;
   for (int i = 0; i < WIFI_MAX; i++)
-    networks[i].used = false;
+    drop(&networks[i]);
   found_count = 0;
+  bus_call_cancel(&getting_iface);
+  bus_call_cancel(&loading_iface);
+  bus_call_cancel(&loading_networks);
+  bus_call_cancel(&polling);
+  bus_call_cancel(&forgetting);
+  bus_call_cancel(&adding_net.making);
+  bus_call_cancel(&adding_net.call);
   changed();
 }
 
-static void iface_changed(const char *path, sd_bus_message *props) {
+static void iface_changed(const char *path, bus_rd *props) {
   uint32_t bits;
   if (strcmp(path, iface_path.p) != 0 || wpa_iface_props_apply(&iface, props, &bits) < 0 || bits == 0)
     return;
@@ -320,13 +304,13 @@ static void iface_changed(const char *path, sd_bus_message *props) {
   changed();
 }
 
-static void got_iface(const sd_bus_error *error, const char *path, void *userdata) {
-  (void)userdata;
+static void got_iface(bus_call *call, const bus_error *error, const char *path) {
+  (void)call;
   if (error == NULL)
     load(bus_get(), path);
 }
 
-static void interface_added(const char *object, const char *path, sd_bus_message *props) {
+static void interface_added(const char *object, const char *path, bus_rd *props) {
   (void)object, (void)props;
   if (iface_path.n == 0)
     load(bus_get(), path);
@@ -338,7 +322,7 @@ static void interface_removed(const char *object, const char *path) {
     clear();
 }
 
-static void connected(sd_bus *bus) {
+static void connected(bus_conn *bus) {
   wpa_watch_interface_added(bus, interface_added);
   wpa_watch_interface_removed(bus, interface_removed);
   wpa_iface_watch_properties(bus, iface_changed);
@@ -350,11 +334,10 @@ static void connected(sd_bus *bus) {
 }
 
 /* wpa_supplicant came (Wi-Fi on) or went */
-static void owned(sd_bus *bus, bool owner) {
-  static const wpa_get_interface_then then = {got_iface, NULL};
+static void owned(bus_conn *bus, bool owner) {
   clear();
   if (owner)
-    wpa_call_get_interface(bus, IFNAME, &then);
+    wpa_call_get_interface(bus, IFNAME, &getting_iface, got_iface);
 }
 
 void wifi_init(void) { bus_watch(WPA_SERVICE, connected, owned); }
@@ -365,13 +348,15 @@ int wifi_signal(void) {
   return !completed() ? 0 : rssi != 0 ? bars(rssi) : 1;
 }
 
-static int current(void) { return iface.current_network[0] != '\0' ? network_find(iface.current_network) : -1; }
+static const network *current(void) {
+  return iface.current_network[0] != '\0' ? network_find(iface.current_network) : NULL;
+}
 
 str wifi_status(char *buf, size_t size) {
   size_t n = 0;
   char name[64];
-  const int i = current();
-  const str net = i >= 0 ? name_of(networks[i].ssid, networks[i].ssid_len, name, sizeof(name)) : S("");
+  const network *on = current();
+  const str net = on != NULL ? name_of(on->ssid, on->ssid_len, name, sizeof(name)) : S("");
   if (!wifi_on())
     str_put(buf, size, &n, STR_PARTS(S("Off")));
   else if (iface_path.n == 0)
@@ -395,66 +380,91 @@ str wifi_status(char *buf, size_t size) {
 }
 
 size_t wifi_saved_list(wifi_saved *out, size_t max) {
-  int order[WIFI_MAX];
+  const network *order[WIFI_MAX];
   size_t n = 0;
   for (int i = 0; i < WIFI_MAX; i++) {
     if (!networks[i].used)
       continue;
     size_t at = n++;
-    for (; at > 0 && networks[order[at - 1]].seq > networks[i].seq; at--)
+    for (; at > 0 && order[at - 1]->seq > networks[i].seq; at--)
       order[at] = order[at - 1];
-    order[at] = i;
+    order[at] = &networks[i];
   }
-  const int on = current();
+  const network *on = current();
   for (size_t k = 0; k < n && k < max; k++) {
-    const int i = order[k];
+    const network *w = order[k];
     char name[64];
-    out[k] = (wifi_saved){.current = i == on, .connected = i == on && completed()};
-    sb_set(out[k].path, sb_str(networks[i].path));
-    sb_set(out[k].name, name_of(networks[i].ssid, networks[i].ssid_len, name, sizeof(name)));
+    out[k] = (wifi_saved){.current = w == on, .connected = w == on && completed(), .busy = bus_call_pending(&w->call)};
+    sb_set(out[k].path, sb_str(w->path));
+    sb_set(out[k].name, name_of(w->ssid, w->ssid_len, name, sizeof(name)));
   }
   return MIN(n, max);
 }
 
+static void selected(bus_call *call, const bus_error *error) {
+  (void)call;
+  if (error != NULL)
+    bus_tell(error, "Couldn't connect");
+  changed();
+}
+
 void wifi_select(const char *path) {
-  static const wpa_iface_select_network_then then = {bus_done, "Couldn't connect"};
-  if (bus_get() != NULL && iface_path.n > 0)
-    wpa_iface_call_select_network(bus_get(), iface_path.p, path, &then);
-}
-
-static void forgot(const sd_bus_error *error, void *userdata) {
-  (void)userdata;
-  if (error != NULL) {
-    bus_done(error, "Couldn't forget");
-    return;
-  }
-  /* Back on whichever saved one is there */
-  wpa_iface_call_save_config(bus_get(), iface_path.p, NULL);
-  wpa_iface_call_reassociate(bus_get(), iface_path.p, NULL);
-}
-
-void wifi_forget(const char *path) {
-  static const wpa_iface_remove_network_then then = {forgot, NULL};
-  if (bus_get() != NULL && iface_path.n > 0)
-    wpa_iface_call_remove_network(bus_get(), iface_path.p, path, &then);
-}
-
-void wifi_adding(bool on) {
-  if (on != adding) {
-    adding = on;
-    found_count = 0;
-    scanned_at = 0;
-    /* What it knew is shown as it's found again: no BSSAdded for what it has */
-    if (on && bus_get() != NULL && iface_path.n > 0)
-      wpa_iface_call_flush_bss(bus_get(), iface_path.p, 0, NULL);
+  network *n = network_find(path);
+  if (n != NULL && bus_get() != NULL && iface_path.n > 0 &&
+      wpa_iface_call_select_network(bus_get(), iface_path.p, path, &n->call, selected) >= 0)
     changed();
-  }
-  if (adding && bus_get() != NULL && iface_path.n > 0 && (scanned_at == 0 || ms_now() - scanned_at >= SCAN_MS)) {
-    sd_bus_call_method_async(bus_get(), NULL, WPA_IFACE_SERVICE, iface_path.p, WPA_IFACE_NAME, "Scan", NULL, NULL,
-                             "a{sv}", 1, "Type", "s", "active");
-    scanned_at = ms_now();
-  }
 }
+
+static void reassociated(bus_call *call, const bus_error *error) {
+  (void)call;
+  if (error != NULL)
+    bus_tell(error, "Couldn't connect again");
+}
+
+static void forget_saved(bus_call *call, const bus_error *error) {
+  if (error != NULL)
+    bus_tell(error, "Couldn't save the networks");
+  /* Back on whichever saved one is there */
+  else if (forgetting_current)
+    wpa_iface_call_reassociate(bus_get(), iface_path.p, call, reassociated);
+}
+
+static void forgot(bus_call *call, const bus_error *error) {
+  if (error != NULL)
+    bus_tell(error, "Couldn't forget");
+  else
+    wpa_iface_call_save_config(bus_get(), iface_path.p, call, forget_saved);
+}
+
+/* Not the network's call: it goes with the network */
+void wifi_forget(const char *path) {
+  if (bus_get() == NULL || iface_path.n == 0)
+    return;
+  forgetting_current = strcmp(path, iface.current_network) == 0;
+  wpa_iface_call_remove_network(bus_get(), iface_path.p, path, &forgetting, forgot);
+}
+
+static void scan_args(bus_wr *w, const void *ctx) {
+  (void)ctx;
+  const bus_wr_arr a = bus_wr_array(w, 8);
+  bus_wr_kv(w, "Type", "s");
+  bus_wr_str(w, "active");
+  bus_wr_array_end(w, a);
+}
+
+/* One search: opening the screen again searches again */
+static void adding_set(bool on) {
+  adding = on;
+  found_count = 0;
+  /* What it knew is shown as it's found again: no BSSAdded for what it has */
+  if (on && bus_get() != NULL && iface_path.n > 0) {
+    wpa_iface_call_flush_bss(bus_get(), iface_path.p, 0, NULL, NULL);
+    wpa_iface_call_scan(bus_get(), iface_path.p, scan_args, NULL, NULL, NULL);
+  }
+  changed();
+}
+void wifi_adding_start(void) { adding_set(true); }
+void wifi_adding_stop(void) { adding_set(false); }
 
 static bool saved(const uint8_t *ssid, size_t n) {
   for (int i = 0; i < WIFI_MAX; i++)
@@ -464,6 +474,7 @@ static bool saved(const uint8_t *ssid, size_t n) {
 }
 
 size_t wifi_found_list(wifi_found *out, size_t max) {
+  const bool busy = bus_call_pending(&adding_net.making) || bus_call_pending(&adding_net.call);
   size_t n = 0;
   for (size_t i = 0; i < found_count; i++) {
     const wpa_bss_props *p = &found[i].p;
@@ -480,6 +491,8 @@ size_t wifi_found_list(wifi_found *out, size_t max) {
       out[n] = (wifi_found){.ssid_len = MIN(p->ssid_len, sizeof(out[n].ssid)), .gone = true};
       memcpy(out[n].ssid, p->ssid, out[n].ssid_len);
       sb_set(out[n].name, name_of(p->ssid, p->ssid_len, name, sizeof(name)));
+      out[n].busy = busy && adding_net.ssid_len == out[n].ssid_len &&
+                    memcmp(adding_net.ssid, out[n].ssid, out[n].ssid_len) == 0;
       n++;
     }
     out[k].bars = MAX(out[k].bars, bars(p->signal));
@@ -489,75 +502,67 @@ size_t wifi_found_list(wifi_found *out, size_t max) {
   return n;
 }
 
-/* One at a time: tried with WPA3 too, again without where it was built without */
-static struct {
-  uint8_t ssid[32];
-  uint8_t ssid_len;
-  STRBUF(64) psk;
-  bool sae;
-} adding_net;
+static void add_saved(bus_call *call, const bus_error *error) {
+  (void)call;
+  if (error != NULL)
+    bus_tell(error, "Couldn't save the network");
+  added_new = true;
+  changed();
+}
+
+static void add_selected(bus_call *call, const bus_error *error) {
+  if (error != NULL)
+    bus_tell(error, "Couldn't connect");
+  wpa_iface_call_save_config(bus_get(), iface_path.p, call, add_saved);
+}
 
 static void add_network(void);
 
-static int network_made(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)userdata, (void)error;
-  const sd_bus_error *e = sd_bus_message_get_error(m);
-  const char *path;
-  if (e != NULL && adding_net.sae && sd_bus_error_has_name(e, "fi.w1.wpa_supplicant1.InvalidArgs")) {
+static void network_made(bus_call *call, const bus_error *error, const char *path) {
+  (void)call;
+  if (error != NULL && adding_net.sae && strcmp(error->name, "fi.w1.wpa_supplicant1.InvalidArgs") == 0) {
     adding_net.sae = false;
     add_network();
-  } else if (e != NULL)
-    bus_done(e, "Couldn't add the network");
-  else if (sd_bus_message_read(m, "o", &path) >= 0) {
-    static const wpa_iface_select_network_then then = {bus_done, "Couldn't connect"};
-    wpa_iface_call_select_network(bus_get(), iface_path.p, path, &then);
-    wpa_iface_call_save_config(bus_get(), iface_path.p, NULL);
-    added_new = true;
-    changed();
+  } else if (error != NULL)
+    bus_tell(error, "Couldn't add the network");
+  else
+    wpa_iface_call_select_network(bus_get(), iface_path.p, path, &adding_net.call, add_selected);
+  changed();
+}
+
+/* AddNetwork's a{sv}: the name, and the key (with WPA3 where it may) or none */
+static void network_args(bus_wr *w, const void *ctx) {
+  (void)ctx;
+  const bool secured = adding_net.psk.n > 0;
+  const bus_wr_arr a = bus_wr_array(w, 8);
+  bus_wr_kv(w, "ssid", "ay");
+  bus_wr_bytes(w, adding_net.ssid, adding_net.ssid_len);
+  bus_wr_kv(w, "key_mgmt", "s");
+  bus_wr_str(w, !secured ? "NONE" : adding_net.sae ? "WPA-PSK SAE" : "WPA-PSK");
+  if (secured) {
+    bus_wr_kv(w, "psk", "s");
+    bus_wr_strn(w, adding_net.psk.p, adding_net.psk.n);
   }
-  return 0;
+  if (secured && adding_net.sae) {
+    bus_wr_kv(w, "ieee80211w", "u");
+    bus_wr_u32(w, 1);
+  }
+  bus_wr_array_end(w, a);
 }
 
 static void add_network(void) {
-  sd_bus_message *m = NULL;
-  const bool secured = adding_net.psk.n > 0;
-  int r = sd_bus_message_new_method_call(bus_get(), &m, WPA_IFACE_SERVICE, iface_path.p, WPA_IFACE_NAME, "AddNetwork");
-  if (r >= 0)
-    r = sd_bus_message_open_container(m, 'a', "{sv}");
-  if (r >= 0)
-    r = sd_bus_message_open_container(m, 'e', "sv");
-  if (r >= 0)
-    r = sd_bus_message_append(m, "s", "ssid");
-  if (r >= 0)
-    r = sd_bus_message_open_container(m, 'v', "ay");
-  if (r >= 0)
-    r = sd_bus_message_append_array(m, 'y', adding_net.ssid, adding_net.ssid_len);
-  if (r >= 0)
-    r = sd_bus_message_close_container(m);
-  if (r >= 0)
-    r = sd_bus_message_close_container(m);
-  if (r >= 0 && secured)
-    r = sd_bus_message_append(m, "{sv}{sv}", "psk", "s", adding_net.psk.p, "key_mgmt", "s",
-                              adding_net.sae ? "WPA-PSK SAE" : "WPA-PSK");
-  if (r >= 0 && secured && adding_net.sae)
-    r = sd_bus_message_append(m, "{sv}", "ieee80211w", "u", 1u);
-  if (r >= 0 && !secured)
-    r = sd_bus_message_append(m, "{sv}", "key_mgmt", "s", "NONE");
-  if (r >= 0)
-    r = sd_bus_message_close_container(m);
-  if (r >= 0)
-    r = sd_bus_call_async(bus_get(), NULL, m, network_made, NULL, 0);
-  sd_bus_message_unref(m);
+  wpa_iface_call_add_network(bus_get(), iface_path.p, network_args, NULL, &adding_net.making, network_made);
 }
 
 void wifi_add(const wifi_found *net, str psk) {
-  if (bus_get() == NULL || iface_path.n == 0)
+  if (bus_get() == NULL || iface_path.n == 0 || bus_call_pending(&adding_net.making) || bus_call_pending(&adding_net.call))
     return;
   memcpy(adding_net.ssid, net->ssid, net->ssid_len);
   adding_net.ssid_len = net->ssid_len;
   sb_set(adding_net.psk, psk);
   adding_net.sae = true;
   add_network();
+  changed();
 }
 
 bool wifi_added_new(void) {

@@ -12,6 +12,12 @@
     <method name="Reassociate"/>
     <!-- Forgets what it found longer than age seconds ago (0: all) -->
     <method name="FlushBSS"><arg name="age" type="u"/></method>
+    <!-- Searches: Type active or passive, ... -->
+    <method name="Scan"><arg name="args" type="a{sv}"/></method>
+    <!-- A network to save: ssid, psk, key_mgmt, ...; InvalidArgs for a key it was built without -->
+    <method name="AddNetwork"><arg name="args" type="a{sv}"/><arg name="path" type="o" direction="out"/></method>
+    <!-- The link: rssi (i, dBm), ...; an a{sv} in a variant (2.11's) -->
+    <method name="SignalPoll"><arg name="args" type="v" direction="out"/></method>
     <!-- disconnected, scanning, associating, 4way_handshake, completed, ... -->
     <property name="State" type="s" access="read"/>
     <property name="CurrentNetwork" type="o" access="read"/>

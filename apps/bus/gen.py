@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-A D-Bus interface as C for basu (sd-bus), from its introspection XML:
+A D-Bus interface as C over conn.h (our own connection, no sd-bus), from its introspection XML:
 
     gen.py INTERFACE.xml OUTDIR
 
@@ -8,44 +8,56 @@ writes NAME.h, NAME-server.c and NAME-client.c, NAME the interface's last elemen
 (org.senkos.System1: system1). The XML is one <node name="/path"> with one <interface>: the
 service owns the interface's name on the bus and serves it at the node's path. Another service's
 (org.bluez.Device1): <annotation name="org.senkos.Service" value="org.bluez"/> in the interface;
-a node without a name, and each call takes the object's path. <annotation name="org.senkos.Prefix"
-value="wpa_iface"/> names it otherwise. A comment right before a method, property or signal is its
-documentation, copied into NAME.h.
+a node without a name, and each call takes the object's path. A Service of "" (a standard
+interface anyone serves: org.freedesktop.DBus.Properties): each call takes the service too.
+<annotation name="org.senkos.Prefix" value="wpa_iface"/> names it otherwise. A comment right
+before a method, property or signal is its documentation, copied into NAME.h.
 
-Server (NAME-server.c): NAME_vtable, for sd_bus_add_object_vtable. A call runs the service's
+Signatures are parsed here, not at run time: each argument becomes its run of wire.h reads or
+writes. Basic types are C values (a string points into the message: valid while the callback runs).
+Anything else is read as a bus_rd at its value, to read with wire.h (an a{sv}: bus_rd_kv), and
+written by a bus_put the caller passes with its context.
 
-    int NAME_METHOD(sd_bus_message *call, void *userdata, IN...);
+Server (NAME-server.c): NAME_serve(bus, [path,] userdata) serves it. A call runs the service's
 
-which replies now or later (holding the call: sd_bus_message_ref), with NAME_METHOD_reply(call,
-OUT...) or an error; a negative errno replies with that error. A string argument is the call's:
-keep the call or copy it.
+    int NAME_METHOD(bus_req *req, void *userdata, IN...);
+
+which answers now or later (copying *req), with NAME_METHOD_reply(req, OUT...), bus_reply or
+bus_reply_error; a negative errno answers with that error.
 
 Client (NAME-client.c), nothing allocated per call:
 
-    int NAME_call_METHOD(sd_bus *bus, [const char *path,] IN..., const NAME_METHOD_then *then);
+    int NAME_call_METHOD(bus_conn *bus, [const char *service,] [const char *path,] IN..., bus_call *call, NAME_METHOD_done *done);
 
-`then` (or NULL: no answer wanted) is the caller's until the answer, {done, userdata}: done runs
-once from sd_bus_process with the error (NULL: none) and OUT... (zero after an error).
+`call` (conn.h; NULL: no answer wanted) is the caller's, in what it's about: done(call, error, OUT...)
+runs once from bus_process, the error NULL or the call's (OUT... zero then).
 
 Properties (<property>, basic types and ay; strings and byte arrays cut at 64 bytes, an ay's
 length in PROP_len): NAME_props, NAME_props_apply for an a{sv} (GetManagedObjects,
-InterfacesAdded, PropertiesChanged: the keys it has, a NAME_PROP_* bit each that changed),
-NAME_set_PROP for the writable ones, and NAME_watch_properties for the PropertiesChanged signals.
+InterfacesAdded, PropertiesChanged, GetAll: the keys it has, a NAME_PROP_* bit each that changed),
+NAME_set_PROP(bus, [path,] value, call, done) for the writable ones, and NAME_watch_properties for
+the PropertiesChanged signals.
 
-Signals (<signal>, basic types, an a{sv} last): NAME_watch_SIGNAL(bus, fn), fn(object, ARGS...)
-with the a{sv} still to read (NAME_props_apply).
-
-Methods' types: basic ones alone so far.
+Signals: NAME_watch_SIGNAL(bus, fn), fn(object, ARGS...). One fn per signal per program: watching
+again replaces it. Watches go with the connection: again on each new one.
 """
 import re
 import sys
 import xml.etree.ElementTree as ET
 
-# D-Bus type: C type
-TYPES = {'b': 'bool', 'y': 'uint8_t', 'n': 'int16_t', 'q': 'uint16_t', 'i': 'int32_t',
-         'u': 'uint32_t', 'x': 'int64_t', 't': 'uint64_t', 'd': 'double',
-         's': 'const char *', 'o': 'const char *', 'g': 'const char *'}
 STRING = 64
+# D-Bus type: C type, wire.h's reader and writer
+BASIC = {'y': ('uint8_t', 'u8'), 'b': ('bool', 'bool'), 'n': ('int16_t', 'i16'), 'q': ('uint16_t', 'u16'),
+         'i': ('int32_t', 'i32'), 'u': ('uint32_t', 'u32'), 'x': ('int64_t', 'i64'), 't': ('uint64_t', 'u64'),
+         'd': ('double', 'f64'), 's': ('const char *', 'str'), 'o': ('const char *', 'str'),
+         'g': ('const char *', 'sig')}
+ALIGN = {'y': 1, 'g': 1, 'v': 1, 'n': 2, 'q': 2, 'b': 4, 'i': 4, 'u': 4, 's': 4, 'o': 4, 'a': 4,
+         'x': 8, 't': 8, 'd': 8, '(': 8, '{': 8}
+PROPERTIES = 'org.freedesktop.DBus.Properties'
+# What generated functions call their own, beside arguments: a method's in, its out, a signal's
+RESERVED_IN = {'bus', 'service', 'path', 'call', 'done', 'wr', 'req', 'userdata', 'msg', 'rd'}
+RESERVED_OUT = {'call', 'msg', 'buf', 'err', 'rd', 'req', 'wr'}
+RESERVED_SIGNAL = {'object', 'match', 'msg', 'rd'}
 
 
 def fail(why):
@@ -56,26 +68,102 @@ def snake(name):
     return re.sub(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', '_', name).lower()
 
 
-def ctype(t):
-    if t not in TYPES:
-        fail(f'type {t}: only basic types so far')
-    return TYPES[t]
+def parse(sig, at=0):
+    """One complete type of `sig` from `at`: (code, children), past it"""
+    if at >= len(sig):
+        fail(f'signature {sig!r} ends early')
+    code = sig[at]
+    at += 1
+    if code in BASIC or code == 'v':
+        return (code, []), at
+    if code == 'a':
+        child, at = parse(sig, at)
+        return ('a', [child]), at
+    if code in '({':
+        close = ')' if code == '(' else '}'
+        children = []
+        while at < len(sig) and sig[at] != close:
+            child, at = parse(sig, at)
+            children.append(child)
+        if at >= len(sig) or not children or (code == '{' and (len(children) != 2 or children[0][0] not in BASIC)):
+            fail(f'invalid signature {sig!r}')
+        return (code, children), at + 1
+    fail(f'type {code!r} in {sig!r}: not so far')
 
 
-def var(t, n):
-    c = ctype(t)
+def single(sig):
+    node, at = parse(sig)
+    if at != len(sig):
+        fail(f'{sig!r}: one complete type an argument')
+    return node
+
+
+def skip(node, rd):
+    """C statements past one value of `node`, its type known now"""
+    code, children = node
+    if code in 'sog':
+        return [f'bus_rd_{BASIC[code][1]}({rd});']
+    if code in BASIC:
+        return [f'bus_rd_take({rd}, {ALIGN[code]}, {ALIGN[code]});']
+    if code == 'v':
+        return [f'bus_skip({rd}, bus_rd_sig({rd}));']
+    if code == 'a':
+        return [f'bus_rd_skip_to({rd}, bus_rd_array({rd}, {ALIGN[children[0][0]]}));']
+    return [f'bus_rd_align({rd}, 8);'] + [s for c in children for s in skip(c, rd)]
+
+
+def rtype(t):
+    """What a reader gets for `t`: a C value, or a cursor at it"""
+    return BASIC[t][0] if t in BASIC else 'bus_rd *'
+
+
+def wparam(t, n):
+    if t in BASIC:
+        c = BASIC[t][0]
+        return f'{c}{"" if c.endswith("*") else " "}{n}'
+    return f'bus_put *{n}, const void *{n}_ctx'
+
+
+def rparam(t, n):
+    c = rtype(t)
     return f'{c}{"" if c.endswith("*") else " "}{n}'
 
 
-def decl(args):
-    return ''.join(f', {var(t, n)}' for t, n in args)
+def check(args, reserved, what):
+    for t, n in args:
+        single(t)
+        if n in reserved:
+            fail(f'{what}: an argument named {n}, generated code\'s own')
 
 
-def read_vars(args):
-    """Locals to read `args` into (a bool is read as an int), and their addresses"""
-    lines = [f'  {"int" if t == "b" else ctype(t)}{"" if ctype(t).endswith("*") else " "}{n} = {"NULL" if ctype(t).endswith("*") else "0"};'
-             for t, n in args]
-    return lines, ', '.join(f'&{n}' for _, n in args)
+def reads(args, rd):
+    """Locals for `args` read off `rd` (cursors left at complex ones), and what to pass on"""
+    lines, passed = [], []
+    for i, (t, n) in enumerate(args):
+        if t in BASIC:
+            c, fn = BASIC[t]
+            lines.append(f'  {c}{"" if c.endswith("*") else " "}{n} = bus_rd_{fn}(&{rd});')
+            passed.append(n)
+        else:
+            lines.append(f'  bus_rd {n} = {rd};')
+            if i < len(args) - 1:
+                lines += ['  ' + s for s in skip(single(t), '&' + rd)]
+            passed.append(f'&{n}')
+    return lines, passed
+
+
+def writes(args, wr):
+    out = []
+    for t, n in args:
+        if t in BASIC:
+            out.append(f'  bus_wr_{BASIC[t][1]}({wr}, {n});')
+        else:
+            out.append(f'  {n}({wr}, {n}_ctx);')
+    return out
+
+
+def sig_of(args):
+    return ''.join(t for t, _ in args)
 
 
 def main():
@@ -88,7 +176,6 @@ def main():
         fail('one <node> with one <interface>')
     iface = ifaces[0].get('name')
     prefix = iface.rsplit('.', 1)[-1].lower()
-    upper = prefix.upper()
     service = iface
 
     methods, props, signals, doc = [], [], [], None
@@ -100,188 +187,193 @@ def main():
             service = el.get('value')
         elif el.tag == 'annotation' and el.get('name') == 'org.senkos.Prefix':
             prefix = el.get('value')
-            upper = prefix.upper()
         elif el.tag == 'method':
             args = {'in': [], 'out': []}
             for a in el.findall('arg'):
                 args[a.get('direction', 'in')].append((a.get('type'), a.get('name') or f'arg{len(args["in"]) + len(args["out"])}'))
+            check(args['in'], RESERVED_IN, el.get('name'))
+            check(args['out'], RESERVED_OUT, el.get('name'))
             methods.append((el.get('name'), snake(el.get('name')), args['in'], args['out'], doc))
         elif el.tag == 'property':
-            if el.get('type') != 'ay':
-                ctype(el.get('type'))
-            props.append((el.get('name'), snake(el.get('name')), el.get('type'), 'write' in el.get('access', ''), doc))
+            t = el.get('type')
+            if t not in BASIC and t != 'ay':
+                fail(f'{el.get("name")}: properties of basic types and ay alone so far')
+            props.append((el.get('name'), snake(el.get('name')), t, 'write' in el.get('access', ''), doc))
         elif el.tag == 'signal':
             args = [(a.get('type'), a.get('name') or f'arg{i}') for i, a in enumerate(el.findall('arg'))]
-            for i, (t, _) in enumerate(args):
-                if t != 'a{sv}' or i != len(args) - 1:
-                    ctype(t)
+            check(args, RESERVED_SIGNAL, el.get('name'))
             signals.append((el.get('name'), snake(el.get('name')), args, doc))
         else:
             fail(f'<{el.tag}>: methods, properties and signals alone so far')
         doc = None
+    upper = prefix.upper()
 
     out = sys.argv[2]
     src = sys.argv[1].rsplit('/', 1)[-1]
-    head = f'/* Generated by apps/bus/gen.py from {src}: not to be edited */\n'
-    at = '' if path is not None else ', const char *path'
-    at_arg = 'path' if path is None else upper + '_PATH'
+    head = f'/* Generated by apps/bus/gen.py from {src}: not to be edited */'
+    svc_param = ', const char *service' if service == '' else ''
+    svc_arg = 'service' if service == '' else f'{upper}_SERVICE'
+    path_param = ', const char *path' if path is None else ''
+    path_arg = 'path' if path is None else f'{upper}_PATH'
+    at = svc_param + path_param
+    sender = '' if service == '' else f'sender=\'" {upper}_SERVICE "\','
 
-    h = [head, '#pragma once', '', '#include <basu/sd-bus.h>', '#include <stdbool.h>', '#include <stdint.h>', '',
-         f'#define {upper}_NAME "{iface}"', f'#define {upper}_SERVICE "{service}"']
+    # The header
+    h = [head, '#pragma once', '', '#include "conn.h"', '', f'#define {upper}_NAME "{iface}"']
+    if service != '':
+        h.append(f'#define {upper}_SERVICE "{service}"')
     if path is not None:
         h.append(f'#define {upper}_PATH "{path}"')
-    h += ['', '/* The service\'s */', f'extern const sd_bus_vtable {prefix}_vtable[];']
+    h += ['', '/* The service\'s: served at the path (kept) for each call to run */',
+          f'void {prefix}_serve(bus_conn *bus{path_param}, void *userdata);']
     for name, sn, ins, outs, d in methods:
         h.append('')
         if d:
             h.append(f'/* {d} */')
-        h.append(f'int {prefix}_{sn}(sd_bus_message *call, void *userdata{decl(ins)});')
+        h.append(f'int {prefix}_{sn}(bus_req *req, void *userdata{"".join(", " + rparam(t, n) for t, n in ins)});')
         if outs:
-            h.append(f'int {prefix}_{sn}_reply(sd_bus_message *call{decl(outs)});')
+            h.append(f'int {prefix}_{sn}_reply(bus_req *req{"".join(", " + wparam(t, n) for t, n in outs)});')
     h += ['', '/* The client\'s */']
     for name, sn, ins, outs, _ in methods:
-        h.append(f'typedef void {prefix}_{sn}_done(const sd_bus_error *error{decl(outs)}, void *userdata);')
-        h.append(f'typedef struct {{ {prefix}_{sn}_done *done; void *userdata; }} {prefix}_{sn}_then;')
-        h.append(f'int {prefix}_call_{sn}(sd_bus *bus{at}{decl(ins)}, const {prefix}_{sn}_then *then);')
+        h.append(f'typedef void {prefix}_{sn}_done(bus_call *call, const bus_error *error{"".join(", " + rparam(t, n) for t, n in outs)});')
+        h.append(f'int {prefix}_call_{sn}(bus_conn *bus{at}{"".join(", " + wparam(t, n) for t, n in ins)}, bus_call *call, {prefix}_{sn}_done *done);')
     if props:
         h += ['', '/* Its properties as last told */', 'typedef struct {']
         for name, sn, t, _, d in props:
             field = (f'uint8_t {sn}[{STRING}]; uint8_t {sn}_len' if t == 'ay'
-                     else f'char {sn}[{STRING}]' if ctype(t).endswith('*') else var(t, sn))
+                     else f'char {sn}[{STRING}]' if t in 'sog' else f'{BASIC[t][0]} {sn}')
             h.append(f'  {field};{f" /* {d} */" if d else ""}')
         h += [f'}} {prefix}_props;', 'enum {']
         h += [f'  {upper}_PROP_{sn.upper()} = 1u << {i},' for i, (_, sn, _, _, _) in enumerate(props)]
         h += ['};',
               f'/* An a{{sv}}, read through: the keys it has; in *changed (or NULL), a {upper}_PROP_* bit each',
-              f' * that changed */',
-              f'int {prefix}_props_apply({prefix}_props *p, sd_bus_message *m, uint32_t *changed);',
-              f'/* PropertiesChanged of {iface}\'s objects: `changed` with the a{{sv}} for {prefix}_props_apply */',
-              f'typedef void {prefix}_changed(const char *path, sd_bus_message *props);',
-              f'int {prefix}_watch_properties(sd_bus *bus, {prefix}_changed *changed);']
+              ' * that changed */',
+              f'int {prefix}_props_apply({prefix}_props *p, bus_rd *rd, uint32_t *changed);',
+              '/* PropertiesChanged: the object, its a{sv} to apply */',
+              f'typedef void {prefix}_changed(const char *path, bus_rd *props);',
+              f'int {prefix}_watch_properties(bus_conn *bus, {prefix}_changed *changed);']
         if any(w for *_, w, _ in props):
-            h += [f'typedef void {prefix}_set_done(const sd_bus_error *error, void *userdata);',
-                  f'typedef struct {{ {prefix}_set_done *done; void *userdata; }} {prefix}_set_then;']
+            h.append(f'typedef void {prefix}_set_done(bus_call *call, const bus_error *error);')
             for name, sn, t, w, _ in props:
                 if w and t == 'ay':
                     fail(f'{name}: writable byte arrays not so far')
                 if w:
-                    h.append(f'int {prefix}_set_{sn}(sd_bus *bus{at}, {var(t, "value")}, const {prefix}_set_then *then);')
-
+                    h.append(f'int {prefix}_set_{sn}(bus_conn *bus{at}, {wparam(t, "value")}, bus_call *call, {prefix}_set_done *done);')
     for name, sn, args, d in signals:
         h.append('')
         if d:
             h.append(f'/* {d} */')
-        params = ''.join(', sd_bus_message *props' if t == 'a{sv}' else f', {var(t, n)}' for t, n in args)
-        h.append(f'typedef void {prefix}_{sn}_fn(const char *object{params});')
-        h.append(f'int {prefix}_watch_{sn}(sd_bus *bus, {prefix}_{sn}_fn *fn);')
+        h.append(f'typedef void {prefix}_{sn}_fn(const char *object{"".join(", " + rparam(t, n) for t, n in args)});')
+        h.append(f'int {prefix}_watch_{sn}(bus_conn *bus, {prefix}_{sn}_fn *fn);')
 
-    s = [head, f'#include "{prefix}.h"', '']
+    # The service's
+    s = [head, '#include <string.h>', '', f'#include "{prefix}.h"', '',
+         'static int dispatch(bus_req *req, const bus_msg *msg, void *userdata) {', '  bus_rd rd = msg->body;',
+         '  (void)rd, (void)userdata;', '  switch (strlen(msg->member)) {']
+    for length in sorted({len(m[0]) for m in methods}):
+        s.append(f'  case {length}:')
+        for name, sn, ins, outs, _ in methods:
+            if len(name) != length:
+                continue
+            lines, passed = reads(ins, 'rd')
+            s += [f'    if (memcmp(msg->member, "{name}", {length}) == 0) {{',
+                  f'      if (strcmp(msg->sig, "{sig_of(ins)}") != 0)',
+                  f'        return bus_reply_error(req, BUS_ERROR_INVALID_ARGS, "{name} takes ({sig_of(ins)})");']
+            s += ['    ' + l for l in lines]
+            s += ['      if (rd.bad)', f'        return bus_reply_error(req, BUS_ERROR_INVALID_ARGS, "{name}: malformed");',
+                  f'      return {prefix}_{sn}(req, userdata{"".join(", " + p for p in passed)});', '    }']
+        s.append('    break;')
+    s.append('  }')
+    s += ['  return bus_reply_error(req, "org.freedesktop.DBus.Error.UnknownMethod", msg->member);', '}', '',
+          f'static bus_object object = {{.iface = {upper}_NAME, .dispatch = dispatch}};', '',
+          f'void {prefix}_serve(bus_conn *bus{path_param}, void *userdata) {{',
+          f'  object.path = {path_arg};', '  object.userdata = userdata;', '  bus_add_object(bus, &object);', '}']
     for name, sn, ins, outs, _ in methods:
-        sig = ''.join(t for t, _ in ins)
-        s.append(f'static int on_{sn}(sd_bus_message *m, void *userdata, sd_bus_error *error) {{')
-        s.append('  (void)error;')
-        if ins:
-            lines, addrs = read_vars(ins)
-            s += lines
-            s.append(f'  const int r = sd_bus_message_read(m, "{sig}", {addrs});')
-            s.append(f'  return r < 0 ? r : {prefix}_{sn}(m, userdata, {", ".join(n for _, n in ins)});')
+        if outs:
+            s += ['', f'int {prefix}_{sn}_reply(bus_req *req{"".join(", " + wparam(t, n) for t, n in outs)}) {{',
+                  f'  bus_wr *wr = bus_reply_begin(req, "{sig_of(outs)}");', *writes(outs, 'wr'),
+                  '  return bus_reply_end(req);', '}']
+
+    # The client's
+    c = [head, '#include <errno.h>', '#include <string.h>', '', f'#include "{prefix}.h"']
+    for name, sn, ins, outs, _ in methods:
+        lines, passed = reads(outs, 'rd')
+        zero = [f'    {n} = {"(bus_rd){.bad = true}" if t not in BASIC else "NULL" if t in "sog" else "0"};' for t, n in outs]
+        c += ['', f'static void {sn}_replied(bus_call *call, const bus_msg *msg) {{', '  bus_error buf;',
+              '  const bus_error *err = bus_msg_error(msg, &buf);', '  bus_rd rd = msg->body;',
+              f'  if (err == NULL && strcmp(msg->sig, "{sig_of(outs)}") != 0)', '    err = &bus_malformed;']
+        if outs:
+            c += ['  if (err != NULL)', '    rd.bad = true;', *lines, '  if (err == NULL && rd.bad)', '    err = &bus_malformed;',
+                  '  if (err != NULL) {', *zero, '  }']
         else:
-            s.append(f'  return {prefix}_{sn}(m, userdata);')
-        s += ['}', '']
-        if outs:
-            s.append(f'int {prefix}_{sn}_reply(sd_bus_message *call{decl(outs)}) {{')
-            s.append(f'  return sd_bus_reply_method_return(call, "{"".join(t for t, _ in outs)}", {", ".join(n for _, n in outs)});')
-            s += ['}', '']
-    s.append(f'const sd_bus_vtable {prefix}_vtable[] = {{')
-    s.append('    SD_BUS_VTABLE_START(0),')
-    s.append('    /* Who may call is the bus\' policy\'s say */')
-    for name, sn, ins, outs, _ in methods:
-        s.append(f'    SD_BUS_METHOD("{name}", "{"".join(t for t, _ in ins)}", "{"".join(t for t, _ in outs)}", on_{sn}, SD_BUS_VTABLE_UNPRIVILEGED),')
-    s += ['    SD_BUS_VTABLE_END,', '};']
+            c.append('  (void)rd;')
+        c += [f'  (({prefix}_{sn}_done *)call->done)(call, err{"".join(", " + p for p in passed)});', '}', '',
+              f'int {prefix}_call_{sn}(bus_conn *bus{at}{"".join(", " + wparam(t, n) for t, n in ins)}, bus_call *call, {prefix}_{sn}_done *done) {{',
+              f'  bus_wr *wr = bus_call_begin(bus, {svc_arg}, {path_arg}, {upper}_NAME, "{name}", "{sig_of(ins)}", call != NULL);',
+              *writes(ins, 'wr')]
+        if not ins:
+            c.append('  (void)wr;')
+        c += [f'  return bus_call_end(bus, call, {sn}_replied, (void (*)(void))done);', '}']
 
-    c = [head, '#include <stdio.h>', '#include <string.h>', '', f'#include "{prefix}.h"', '']
-    if any(outs for _, _, _, outs, _ in methods):
-        c += ['static const sd_bus_error malformed = SD_BUS_ERROR_MAKE_CONST(SD_BUS_ERROR_INVALID_ARGS, "a reply of other types");', '']
-    for name, sn, ins, outs, _ in methods:
-        c.append(f'static int {sn}_replied(sd_bus_message *m, void *userdata, sd_bus_error *error) {{')
-        c += ['  (void)error;', f'  const {prefix}_{sn}_then *then = userdata;',
-              '  const sd_bus_error *e = sd_bus_message_get_error(m);']
-        if outs:
-            lines, addrs = read_vars(outs)
-            c += lines
-            c.append(f'  if (e == NULL && sd_bus_message_read(m, "{"".join(t for t, _ in outs)}", {addrs}) < 0)')
-            c.append('    e = &malformed;')
-        c.append(f'  then->done(e, {"".join(n + ", " for _, n in outs)}then->userdata);')
-        c += ['  return 0;', '}', '']
-        c.append(f'int {prefix}_call_{sn}(sd_bus *bus{at}{decl(ins)}, const {prefix}_{sn}_then *then) {{')
-        sig = ''.join(t for t, _ in ins)
-        args = ''.join(f', {"(int)" if t == "b" else ""}{n}' for t, n in ins)
-        c.append(f'  return sd_bus_call_method_async(bus, NULL, {upper}_SERVICE, {at_arg}, {upper}_NAME, "{name}", '
-                 f'then != NULL ? {sn}_replied : NULL, (void *)then, {f"{chr(34)}{sig}{chr(34)}" if sig else "NULL"}{args});')
-        c += ['}', '']
     if props:
-        c.append(f'int {prefix}_props_apply({prefix}_props *p, sd_bus_message *m, uint32_t *changed) {{')
-        c += ['  uint32_t bits = 0;', '  int r = sd_bus_message_enter_container(m, \'a\', "{sv}");',
-              '  while (r >= 0 && (r = sd_bus_message_enter_container(m, \'e\', "sv")) > 0) {',
-              '    const char *key, *type;', '    r = sd_bus_message_read(m, "s", &key);',
-              '    if (r >= 0)', '      r = sd_bus_message_peek_type(m, NULL, &type);', '    if (r < 0)', '      break;']
-        first = True
-        for name, sn, t, _, _ in props:
-            c.append(f'    {"" if first else "} else "}if (strcmp(key, "{name}") == 0 && strcmp(type, "{t}") == 0) {{')
-            first = False
-            if t == 'ay':
-                c += ['      const void *v = NULL;', '      size_t n = 0;', '      r = sd_bus_message_enter_container(m, \'v\', "ay");',
-                      '      if (r >= 0)', '        r = sd_bus_message_read_array(m, \'y\', &v, &n);',
-                      '      if (r >= 0)', '        r = sd_bus_message_exit_container(m);',
-                      f'      n = n < sizeof(p->{sn}) ? n : sizeof(p->{sn});',
-                      f'      if (r >= 0 && (n != p->{sn}_len || (n > 0 && memcmp(p->{sn}, v, n) != 0))) {{',
-                      f'        if (n > 0)', f'          memcpy(p->{sn}, v, n);', f'        p->{sn}_len = (uint8_t)n;',
-                      f'        bits |= {upper}_PROP_{sn.upper()};', '      }']
-            elif ctype(t).endswith('*'):
-                c += ['      const char *v = "";', f'      r = sd_bus_message_read(m, "v", "{t}", &v);',
-                      f'      if (r >= 0 && strncmp(p->{sn}, v, sizeof(p->{sn}) - 1) != 0) {{',
-                      f'        snprintf(p->{sn}, sizeof(p->{sn}), "%s", v);', f'        bits |= {upper}_PROP_{sn.upper()};', '      }']
-            else:
-                c += [f'      {"int" if t == "b" else ctype(t)} v = 0;', f'      r = sd_bus_message_read(m, "v", "{t}", &v);',
-                      f'      if (r >= 0 && p->{sn} != v) {{', f'        p->{sn} = v;', f'        bits |= {upper}_PROP_{sn.upper()};', '      }']
-        c += ['    } else', '      r = sd_bus_message_skip(m, "v");', '    if (r >= 0)', '      r = sd_bus_message_exit_container(m);', '  }',
-              '  if (r >= 0)', '    r = sd_bus_message_exit_container(m);', '  if (changed != NULL)', '    *changed = bits;',
-              '  return r;', '}', '']
-        c += ['static int properties_changed(sd_bus_message *m, void *userdata, sd_bus_error *error) {', '  (void)error;',
-              '  const char *iface;', '  if (sd_bus_message_read(m, "s", &iface) >= 0)',
-              f'    (({prefix}_changed *)userdata)(sd_bus_message_get_path(m), m);', '  return 0;', '}', '',
-              f'int {prefix}_watch_properties(sd_bus *bus, {prefix}_changed *changed) {{',
-              f'  return sd_bus_add_match(bus, NULL, "type=\'signal\',sender=\'" {upper}_SERVICE "\',"',
-              '                          "interface=\'org.freedesktop.DBus.Properties\',member=\'PropertiesChanged\',"',
-              f'                          "arg0=\'" {upper}_NAME "\'", properties_changed, (void *)changed);', '}', '']
+        c += ['', f'int {prefix}_props_apply({prefix}_props *p, bus_rd *rd, uint32_t *changed) {{', '  uint32_t bits = 0, n;',
+              '  const char *key, *sig;', '  const uint8_t *end = bus_rd_array(rd, 8);',
+              '  while (bus_rd_kv(rd, end, &key, &n, &sig)) {', '    switch (n) {']
+        for length in sorted({len(name) for name, *_ in props}):
+            c.append(f'    case {length}:')
+            for name, sn, t, _, _ in props:
+                if len(name) != length:
+                    continue
+                bit = f'{upper}_PROP_{sn.upper()}'
+                c.append(f'      if (memcmp(key, "{name}", {length}) == 0 && strcmp(sig, "{t}") == 0) {{')
+                if t == 'ay':
+                    c += ['        size_t vn;', '        const uint8_t *v = bus_rd_bytes(rd, &vn);',
+                          f'        vn = vn < sizeof(p->{sn}) ? vn : sizeof(p->{sn});',
+                          f'        if (vn != p->{sn}_len || (vn > 0 && memcmp(p->{sn}, v, vn) != 0)) {{',
+                          f'          memcpy(p->{sn}, v, vn);', f'          p->{sn}_len = (uint8_t)vn;', f'          bits |= {bit};', '        }']
+                elif t in 'sog':
+                    c += ['        uint32_t vn;', f'        const char *v = bus_rd_{"sig" if t == "g" else "strn"}(rd{"" if t == "g" else ", &vn"});']
+                    if t == 'g':
+                        c.append('        vn = (uint32_t)strlen(v);')
+                    c += [f'        vn = vn < sizeof(p->{sn}) ? vn : sizeof(p->{sn}) - 1;',
+                          f'        if (strncmp(p->{sn}, v, vn) != 0 || p->{sn}[vn] != \'\\0\') {{',
+                          f'          memcpy(p->{sn}, v, vn);', f'          p->{sn}[vn] = \'\\0\';', f'          bits |= {bit};', '        }']
+                else:
+                    c += [f'        const {BASIC[t][0]} v = bus_rd_{BASIC[t][1]}(rd);',
+                          f'        if (p->{sn} != v) {{', f'          p->{sn} = v;', f'          bits |= {bit};', '        }']
+                c += ['        continue;', '      }']
+            c.append('      break;')
+        c += ['    }', '    bus_skip(rd, sig);', '  }', '  if (changed != NULL)', '    *changed = bits;',
+              '  return rd->bad ? -EBADMSG : 0;', '}', '',
+              'static void properties_changed(bus_match *match, const bus_msg *msg) {', '  bus_rd rd = msg->body;',
+              '  uint32_t n;', '  const char *iface = bus_rd_strn(&rd, &n);',
+              f'  if (strcmp(msg->sig, "sa{{sv}}as") == 0 && n == sizeof({upper}_NAME) - 1 && memcmp(iface, {upper}_NAME, n) == 0 && !rd.bad)',
+              f'    (({prefix}_changed *)match->user)(msg->path, &rd);', '}', '',
+              f'static bus_match properties_match = {{.iface = "{PROPERTIES}", .member = "PropertiesChanged", .fn = properties_changed}};', '',
+              f'int {prefix}_watch_properties(bus_conn *bus, {prefix}_changed *changed) {{',
+              '  properties_match.user = (void (*)(void))changed;',
+              f'  return bus_add_match(bus, &properties_match, "type=\'signal\',{sender}interface=\'{PROPERTIES}\',"',
+              f'                       "member=\'PropertiesChanged\',arg0=\'" {upper}_NAME "\'");', '}']
         if any(w for *_, w, _ in props):
-            c += ['static int set_replied(sd_bus_message *m, void *userdata, sd_bus_error *error) {', '  (void)error;',
-                  f'  const {prefix}_set_then *then = userdata;', '  then->done(sd_bus_message_get_error(m), then->userdata);',
-                  '  return 0;', '}', '']
+            c += ['', 'static void set_replied(bus_call *call, const bus_msg *msg) {', '  bus_error buf;',
+                  f'  (({prefix}_set_done *)call->done)(call, bus_msg_error(msg, &buf));', '}']
             for name, sn, t, w, _ in props:
                 if w:
-                    c.append(f'int {prefix}_set_{sn}(sd_bus *bus{at}, {var(t, "value")}, const {prefix}_set_then *then) {{')
-                    c.append(f'  return sd_bus_call_method_async(bus, NULL, {upper}_SERVICE, {at_arg}, "org.freedesktop.DBus.Properties", "Set",')
-                    c.append(f'                                  then != NULL ? set_replied : NULL, (void *)then, "ssv", {upper}_NAME, "{name}", "{t}", '
-                             f'{"(int)" if t == "b" else ""}value);')
-                    c += ['}', '']
+                    c += ['', f'int {prefix}_set_{sn}(bus_conn *bus{at}, {wparam(t, "value")}, bus_call *call, {prefix}_set_done *done) {{',
+                          f'  bus_wr *wr = bus_call_begin(bus, {svc_arg}, {path_arg}, "{PROPERTIES}", "Set", "ssv", call != NULL);',
+                          f'  bus_wr_str(wr, {upper}_NAME);', f'  bus_wr_str(wr, "{name}");', f'  bus_wr_sig(wr, "{t}");',
+                          *writes([(t, 'value')], 'wr'), '  return bus_call_end(bus, call, set_replied, (void (*)(void))done);', '}']
 
     for name, sn, args, _ in signals:
-        basic = [(t, n) for t, n in args if t != 'a{sv}']
-        c.append(f'static int on_{sn}(sd_bus_message *m, void *userdata, sd_bus_error *error) {{')
-        c.append('  (void)error;')
-        call = ', '.join(['sd_bus_message_get_path(m)'] + [n for _, n in basic] + (['m'] if len(basic) < len(args) else []))
-        if basic:
-            lines, addrs = read_vars(basic)
-            c += lines
-            c.append(f'  if (sd_bus_message_read(m, "{"".join(t for t, _ in basic)}", {addrs}) >= 0)')
-            c.append(f'    (({prefix}_{sn}_fn *)userdata)({call});')
-        else:
-            c.append(f'  (({prefix}_{sn}_fn *)userdata)({call});')
-        c += ['  return 0;', '}', '',
-              f'int {prefix}_watch_{sn}(sd_bus *bus, {prefix}_{sn}_fn *fn) {{',
-              f'  return sd_bus_add_match(bus, NULL, "type=\'signal\',sender=\'" {upper}_SERVICE "\',interface=\'" {upper}_NAME "\',"',
-              f'                          "member=\'{name}\'", on_{sn}, (void *)fn);', '}', '']
+        lines, passed = reads(args, 'rd')
+        c += ['', f'static void {sn}_signalled(bus_match *match, const bus_msg *msg) {{', '  bus_rd rd = msg->body;',
+              f'  if (strcmp(msg->sig, "{sig_of(args)}") != 0)', '    return;', *lines, '  if (!rd.bad)',
+              f'    (({prefix}_{sn}_fn *)match->user)(msg->path{"".join(", " + p for p in passed)});', '}', '',
+              f'static bus_match {sn}_match = {{.iface = {upper}_NAME, .member = "{name}", .fn = {sn}_signalled}};', '',
+              f'int {prefix}_watch_{sn}(bus_conn *bus, {prefix}_{sn}_fn *fn) {{',
+              f'  {sn}_match.user = (void (*)(void))fn;',
+              f'  return bus_add_match(bus, &{sn}_match, "type=\'signal\',{sender}interface=\'" {upper}_NAME "\',member=\'{name}\'");',
+              '}']
 
     for suffix, lines in (('.h', h), ('-server.c', s), ('-client.c', c)):
         with open(f'{out}/{prefix}{suffix}', 'w') as f:

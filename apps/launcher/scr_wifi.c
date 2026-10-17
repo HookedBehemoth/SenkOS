@@ -72,7 +72,9 @@ static void wifi_frame(ui_screen *screen, nav *ui, ui_rect content) {
   for (size_t i = 0; i < count; i++) {
     const wifi_saved *w = &saved[i];
     sb_set(labels[i], sb_str(w->name),
-           w->connected ? S("  ·  connected") : w->current ? S("  ·  …") : S(""));
+           w->connected            ? S("  \u00b7  connected")
+           : w->busy || w->current ? S("  \u00b7  \u2026")
+                                   : S(""));
     choices[n] = (choice){.action = WIFI_PICK};
     sb_set(choices[n].path, sb_str(w->path));
     rows[n++] = (entry){.label = sb_str(labels[i]), .action = WIFI_PICK,
@@ -80,7 +82,7 @@ static void wifi_frame(ui_screen *screen, nav *ui, ui_rect content) {
   }
   if (on) {
     choices[n] = (choice){.action = WIFI_ADDING};
-    rows[n++] = (entry){.label = S("Add network…"), .action = WIFI_ADDING, .icon = ICON_SEARCH};
+    rows[n++] = (entry){.label = S("Add network\u2026"), .action = WIFI_ADDING, .icon = ICON_SEARCH};
   }
   status_line(&content);
   pick(ui, rows, n, content, choices);
@@ -129,13 +131,17 @@ static void adding_frame(ui_screen *screen, nav *ui, ui_rect content) {
   const size_t count = wifi_found_list(found, WIFI_MAX);
   for (size_t i = 0; i < count; i++) {
     const wifi_found *w = &found[i];
-    sb_set(labels[i], sb_str(w->name), w->gone ? S("  ·  gone") : !w->secured ? S("  ·  open") : S(""));
+    sb_set(labels[i], sb_str(w->name),
+           w->busy       ? S("  \u00b7  adding\u2026")
+           : w->gone     ? S("  \u00b7  gone")
+           : !w->secured ? S("  \u00b7  open")
+                         : S(""));
     choices[i] = (choice){.action = WIFI_ADD, .net = *w};
     rows[i] = (entry){.label = sb_str(labels[i]), .action = WIFI_ADD, .icon = arcs[CLAMP(w->bars, 0, 4)]};
   }
   const int line = ui_text_height(ROW_TEXT) + MARGIN;
   ui_text(ROW_TEXT, MARGIN * 2, (int)content.y + MARGIN,
-          !wifi_on() ? S("Wi-Fi is off") : S("Searching…"), DIM);
+          !wifi_on() ? S("Wi-Fi is off") : S("Searching\u2026"), DIM);
   content.y += line;
   content.h -= line;
   pick(ui, rows, count, content, choices);
@@ -224,8 +230,12 @@ const ui_screen_def wifi_screen = {.name = "wifi",
                                    .button = wifi_button,
                                    .title_text = S("Wi-Fi"),
                                    .hint = wifi_hint};
-const ui_screen_def wifi_adding_screen = {
-    .name = "wifi-adding", .frame = adding_frame, .title_text = S("Add network"), .text = adding_text};
+const ui_screen_def wifi_adding_screen = {.name = "wifi-adding",
+                                         .frame = adding_frame,
+                                         .title_text = S("Add network"),
+                                         .text = adding_text,
+                                         .enter = wifi_adding_start,
+                                         .leave = wifi_adding_stop};
 const ui_screen_def keyboard_screen = {.name = "keyboard",
                                        .frame = keyboard_frame,
                                        .button = keyboard_button,

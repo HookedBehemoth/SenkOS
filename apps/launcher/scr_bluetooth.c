@@ -33,13 +33,14 @@ static void pick(nav *ui, const entry *rows, size_t n, ui_rect content, const bt
   nav_defer(ui, choose, &c, sizeof(c));
 }
 
-/* The paired ones, rows from 1 (0 is on or off); `of` each row's device */
+/* The paired ones, in order */
 static size_t known(const bt_device **of, size_t max) {
-  size_t count, n = 0;
-  const bt_device *all = bt_devices(&count);
+  const bt_device *all[BT_MAX];
+  const size_t count = bt_list(all, BT_MAX);
+  size_t n = 0;
   for (size_t i = 0; i < count && n < max; i++)
-    if (all[i].p.paired)
-      of[n++] = &all[i];
+    if (all[i]->p.paired)
+      of[n++] = all[i];
   return n;
 }
 
@@ -64,14 +65,14 @@ static void bluetooth_frame(ui_screen *screen, nav *ui, ui_rect content) {
     if (d->p.connected && connected == NULL)
       connected = d;
     sb_set(labels[i], str_c(d->p.alias),
-           bt_busy(d->path.p) ? S("  ·  …") : d->p.connected ? S("  ·  connected") : S(""));
+           bus_call_pending(&d->call) ? S("  \u00b7  \u2026") : d->p.connected ? S("  \u00b7  connected") : S(""));
     of[n] = d;
     rows[n++] = (entry){.label = sb_str(labels[i]), .action = BT_PICK, .icon = icons[bt_kind(d)],
                         .checked = d->p.connected};
   }
   if (on > 0) {
     of[n] = NULL;
-    rows[n++] = (entry){.label = S("Pair new device…"), .action = BT_PAIRING, .icon = ICON_SEARCH};
+    rows[n++] = (entry){.label = S("Pair new device\u2026"), .action = BT_PAIRING, .icon = ICON_SEARCH};
   }
   STRBUF(96) status;
   if (connected != NULL)
@@ -116,28 +117,30 @@ static void pairing_frame(ui_screen *screen, nav *ui, ui_rect content) {
   row_label *labels = NAV_FRAME(ui, row_label, BT_MAX);
   const bt_device **of = NAV_FRAME(ui, const bt_device *, BT_MAX);
 
-  size_t count, n = 0;
-  const bt_device *all = bt_devices(&count);
+  const bt_device *all[BT_MAX];
+  const size_t count = bt_list(all, BT_MAX);
   const bt_device *pairing = NULL;
+  size_t n = 0;
   /* As they were heard, named ones */
   for (size_t i = 0; i < count; i++) {
-    const bt_device *d = &all[i];
+    const bt_device *d = all[i];
+    const bool busy = bus_call_pending(&d->call);
     if (d->p.paired || d->p.name[0] == '\0')
       continue;
-    if (bt_busy(d->path.p))
+    if (busy)
       pairing = d;
     sb_set(labels[n], str_c(d->p.name),
-           bt_busy(d->path.p) ? S("  ·  pairing…") : d->gone ? S("  ·  gone") : S(""));
+           busy ? S("  \u00b7  pairing\u2026") : d->gone ? S("  \u00b7  gone") : S(""));
     of[n] = d;
     rows[n] = (entry){.label = sb_str(labels[n]), .action = BT_PAIR, .icon = icons[bt_kind(d)]};
     n++;
   }
   STRBUF(96) status;
   if (pairing != NULL)
-    sb_set(status, S("Pairing with "), str_c(pairing->p.name), S("…"));
+    sb_set(status, S("Pairing with "), str_c(pairing->p.name), S("\u2026"));
   else
     sb_set(status, bt_powered() <= 0 ? S("Bluetooth is off")
-                   : bt_searching()  ? S("Searching… Put the device in pairing mode.")
+                   : bt_searching()  ? S("Searching\u2026 Put the device in pairing mode.")
                                      : S("Not searching"));
   status_line(&content, sb_str(status));
   pick(ui, rows, n, content, of);
@@ -169,4 +172,8 @@ const ui_screen_def bluetooth_screen = {.name = "bluetooth",
                                         .button = bluetooth_button,
                                         .title_text = S("Bluetooth"),
                                         .hint = bluetooth_hint};
-const ui_screen_def bt_pairing_screen = {.name = "bt-pairing", .frame = pairing_frame, .title_text = S("Pair new device")};
+const ui_screen_def bt_pairing_screen = {.name = "bt-pairing",
+                                        .frame = pairing_frame,
+                                        .title_text = S("Pair new device"),
+                                        .enter = bt_pairing_start,
+                                        .leave = bt_pairing_stop};
