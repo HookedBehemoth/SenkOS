@@ -7,8 +7,8 @@
  *   /data/OS/time (`clock`): inotify.
  * - A card in or out: /proc/self/mountinfo.
  * - Power: the kernel's power_supply uevents (the charger; the AXP717's battery IRQs).
- * - Wi-Fi: wpa_supplicant's events (connected, disconnected), while it's on.
- * - The system bus (bus.h), dispatched here: Bluetooth's mirror of BlueZ changed (bluetooth.h).
+ * - The system bus (bus.h), dispatched here: the mirrors of BlueZ (bluetooth.h) and wpa_supplicant
+ *   (wifi.h) changed. The Wi-Fi signal is asked for each minute: nothing tells it.
  */
 #pragma once
 
@@ -23,7 +23,7 @@ enum {
   WATCH_POWER = 32,
   WATCH_BLUETOOTH = 64
 };
-enum { WATCH_FDS = 6 };
+enum { WATCH_FDS = 5 };
 extern struct pollfd watch_fds[WATCH_FDS];
 
 void watch_init(void);

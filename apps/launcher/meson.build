@@ -29,5 +29,8 @@ executable('launcher', 'main.c', 'state.c', 'home_state.c', 'pad_input.c', 'sess
     device1_client_dep,
     agentmanager1_client_dep,
     agent1_server_dep,
+    wpa_client_dep,
+    wpa_iface_client_dep,
+    wpa_bss_client_dep,
   ],
   install: true)

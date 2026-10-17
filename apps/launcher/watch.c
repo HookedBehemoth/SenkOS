@@ -3,12 +3,10 @@
 #include <fcntl.h>
 #include <linux/netlink.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
-#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -17,9 +15,8 @@
 #include "wifi.h"
 
 #define TIME_DIR "/data/OS/time"
-#define WPA_CTRL "/run/wpa_supplicant/wlan0"
 
-enum { MINUTE, FILES, MOUNTS, UEVENTS, WPA, BUS };
+enum { MINUTE, FILES, MOUNTS, UEVENTS, BUS };
 struct pollfd watch_fds[WATCH_FDS];
 static int run_wd = -1, time_wd = -1, os_wd = -1;
 
@@ -39,28 +36,6 @@ static void watch_time(void) {
     os_wd = inotify_add_watch(watch_fds[FILES].fd, "/data/OS", IN_CREATE | IN_MOVED_TO);
 }
 
-/* wpa_supplicant's events on a socket of their own (the requests' would get them mixed in
- * with the answers), while Wi-Fi is on */
-static void attach_wpa(void) {
-  if (watch_fds[WPA].fd >= 0)
-    close(watch_fds[WPA].fd);
-  watch_fds[WPA].fd = -1;
-  if (!wifi_on())
-    return;
-  const char *run = getenv("XDG_RUNTIME_DIR");
-  struct sockaddr_un local = {.sun_family = AF_UNIX}, remote = {.sun_family = AF_UNIX, .sun_path = WPA_CTRL};
-  snprintf(local.sun_path, sizeof(local.sun_path), "%s/wpa-launcher-events", run != NULL ? run : "/tmp");
-  unlink(local.sun_path);
-  const int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-  if (fd < 0 || bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0 ||
-      connect(fd, (struct sockaddr *)&remote, sizeof(remote)) != 0 || send(fd, "ATTACH", 6, 0) != 6) {
-    if (fd >= 0)
-      close(fd);
-    return;
-  }
-  watch_fds[WPA].fd = fd;
-}
-
 void watch_init(void) {
   for (int i = 0; i < WATCH_FDS; i++)
     watch_fds[i] = (struct pollfd){.fd = -1, .events = POLLIN};
@@ -77,7 +52,6 @@ void watch_init(void) {
     close(ue);
   else
     watch_fds[UEVENTS].fd = ue;
-  attach_wpa();
 }
 
 void watch_prepare(int *timeout_ms) { watch_fds[BUS] = bus_pollfd(timeout_ms); }
@@ -116,18 +90,6 @@ static unsigned uevents(int fd) {
   return changed;
 }
 
-/* "<3>CTRL-EVENT-CONNECTED - Connection to ..."; scans and the rest change nothing shown */
-static unsigned wpa(int fd) {
-  char buf[512];
-  unsigned changed = 0;
-  for (ssize_t n; (n = recv(fd, buf, sizeof(buf) - 1, 0)) > 0;) {
-    buf[n] = '\0';
-    if (strstr(buf, "CTRL-EVENT-CONNECTED") != NULL || strstr(buf, "CTRL-EVENT-DISCONNECTED") != NULL)
-      changed |= WATCH_WIFI;
-  }
-  return changed;
-}
-
 unsigned watch_changed(void) {
   unsigned changed = 0;
   if (watch_fds[MINUTE].revents) {
@@ -136,6 +98,8 @@ unsigned watch_changed(void) {
     const ssize_t n = read(watch_fds[MINUTE].fd, &expired, sizeof(expired));
     (void)n;
     arm_minute();
+    /* The signal tells nothing by itself */
+    wifi_poll_signal();
     changed |= WATCH_MINUTE;
   }
   if (watch_fds[FILES].revents)
@@ -144,16 +108,11 @@ unsigned watch_changed(void) {
     changed |= WATCH_MOUNTS;
   if (watch_fds[UEVENTS].revents)
     changed |= uevents(watch_fds[UEVENTS].fd);
-  if (watch_fds[WPA].revents & (POLLERR | POLLHUP))
-    attach_wpa();
-  else if (watch_fds[WPA].revents)
-    changed |= wpa(watch_fds[WPA].fd);
   bus_dispatch(watch_fds[BUS].revents);
   if (bt_changed())
     changed |= WATCH_BLUETOOTH;
-  /* On or off: wpa_supplicant started or stopped */
-  if (changed & WATCH_WIFI && (watch_fds[WPA].fd >= 0) != wifi_on())
-    attach_wpa();
+  if (wifi_changed())
+    changed |= WATCH_WIFI;
   for (int i = 0; i < WATCH_FDS; i++)
     watch_fds[i].revents = 0;
   return changed;

@@ -400,7 +400,6 @@ static void choose_settings(nav *ui, void *choice) {
     break;
   case WIFI:
     screen_push(state->visible, ui, &wifi_screen, 0);
-    wifi_poll();
     break;
   case BLUETOOTH:
     screen_push(state->visible, ui, &bluetooth_screen, 0);

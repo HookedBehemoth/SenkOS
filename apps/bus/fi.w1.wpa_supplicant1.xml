@@ -1,0 +1,11 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- wpa_supplicant's (doc/dbus.doxygen), what the launcher uses of it: started with -u by `wifi` -->
+<node name="/fi/w1/wpa_supplicant1">
+  <interface name="fi.w1.wpa_supplicant1">
+    <annotation name="org.senkos.Prefix" value="wpa"/>
+    <method name="GetInterface"><arg name="ifname" type="s"/><arg name="path" type="o" direction="out"/></method>
+    <signal name="InterfaceAdded"><arg name="path" type="o"/><arg name="properties" type="a{sv}"/></signal>
+    <signal name="InterfaceRemoved"><arg name="path" type="o"/></signal>
+  </interface>
+</node>

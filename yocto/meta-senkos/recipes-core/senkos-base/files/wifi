@@ -1,9 +1,9 @@
 #!/bin/sh
 # Wi-Fi: the RTL8821CS on SDIO, its vendor driver (rtl8821cs) a module loaded when Wi-Fi is turned on.
 # The launcher's Wi-Fi settings: sysd runs `wifi on|off` on "wifi on|off", and
-# the networks go through wpa_supplicant's control socket, /run/wpa_supplicant/wlan0 (group
-# shell: the launcher's, not the apps'). Saved in /data/OS/wifi, root's alone (0700): wpa_supplicant.conf, the networks (its
-# SAVE_CONFIG writes them), and `enabled`. In effect in /run/wifi (what the launcher shows): on|off.
+# the networks go through wpa_supplicant on the system bus (fi.w1.wpa_supplicant1, -u; the launcher,
+# shell, may: wpa_supplicant-launcher.conf). Saved in /data/OS/wifi, root's alone (0700): wpa_supplicant.conf, the networks (its
+# SaveConfig writes them), and `enabled`. In effect in /run/wifi (what the launcher shows): on|off.
 #   wifi                 once the launcher is up (sysd): on if it was
 #   wifi on|off
 #   wifi wlan0 CONNECTED|DISCONNECTED     wpa_cli's events: DHCP (udhcpc.d/90ntp sets the clock)
@@ -25,7 +25,7 @@ up() {
 		usleep 100000; i=$((i + 1))
 	done
 	[ -e /run/wpa_supplicant.pid ] && kill -0 $(cat /run/wpa_supplicant.pid) 2>/dev/null && return 0
-	wpa_supplicant -B -s -i wlan0 -c $d/wpa_supplicant.conf -P /run/wpa_supplicant.pid || return 1
+	wpa_supplicant -B -s -u -i wlan0 -c $d/wpa_supplicant.conf -P /run/wpa_supplicant.pid || return 1
 	wpa_cli -B -i wlan0 -p $run -a /usr/sbin/wifi -P /run/wpa_cli.pid
 }
 

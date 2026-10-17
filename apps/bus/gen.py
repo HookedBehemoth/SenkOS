@@ -8,8 +8,9 @@ writes NAME.h, NAME-server.c and NAME-client.c, NAME the interface's last elemen
 (org.senkos.System1: system1). The XML is one <node name="/path"> with one <interface>: the
 service owns the interface's name on the bus and serves it at the node's path. Another service's
 (org.bluez.Device1): <annotation name="org.senkos.Service" value="org.bluez"/> in the interface;
-a node without a name, and each call takes the object's path. A comment right before a method is
-its documentation, copied into NAME.h.
+a node without a name, and each call takes the object's path. <annotation name="org.senkos.Prefix"
+value="wpa_iface"/> names it otherwise. A comment right before a method, property or signal is its
+documentation, copied into NAME.h.
 
 Server (NAME-server.c): NAME_vtable, for sd_bus_add_object_vtable. A call runs the service's
 
@@ -26,12 +27,15 @@ Client (NAME-client.c), nothing allocated per call:
 `then` (or NULL: no answer wanted) is the caller's until the answer, {done, userdata}: done runs
 once from sd_bus_process with the error (NULL: none) and OUT... (zero after an error).
 
-Properties (<property>, basic types; strings cut at 64 bytes): NAME_props, NAME_props_apply for
-an a{sv} (GetManagedObjects, InterfacesAdded, PropertiesChanged: the keys it has, a NAME_PROP_*
-bit each that changed), NAME_set_PROP for the writable ones, and NAME_watch_properties for the
-PropertiesChanged signals.
+Properties (<property>, basic types and ay; strings and byte arrays cut at 64 bytes, an ay's
+length in PROP_len): NAME_props, NAME_props_apply for an a{sv} (GetManagedObjects,
+InterfacesAdded, PropertiesChanged: the keys it has, a NAME_PROP_* bit each that changed),
+NAME_set_PROP for the writable ones, and NAME_watch_properties for the PropertiesChanged signals.
 
-Methods' and properties' types: basic ones alone so far.
+Signals (<signal>, basic types, an a{sv} last): NAME_watch_SIGNAL(bus, fn), fn(object, ARGS...)
+with the a{sv} still to read (NAME_props_apply).
+
+Methods' types: basic ones alone so far.
 """
 import re
 import sys
@@ -49,7 +53,7 @@ def fail(why):
 
 
 def snake(name):
-    return re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', name).lower()
+    return re.sub(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', '_', name).lower()
 
 
 def ctype(t):
@@ -87,23 +91,33 @@ def main():
     upper = prefix.upper()
     service = iface
 
-    methods, props, doc = [], [], None
+    methods, props, signals, doc = [], [], [], None
     for el in ifaces[0]:
         if el.tag is ET.Comment:
             doc = ' '.join(el.text.split())
             continue
         if el.tag == 'annotation' and el.get('name') == 'org.senkos.Service':
             service = el.get('value')
+        elif el.tag == 'annotation' and el.get('name') == 'org.senkos.Prefix':
+            prefix = el.get('value')
+            upper = prefix.upper()
         elif el.tag == 'method':
             args = {'in': [], 'out': []}
             for a in el.findall('arg'):
                 args[a.get('direction', 'in')].append((a.get('type'), a.get('name') or f'arg{len(args["in"]) + len(args["out"])}'))
             methods.append((el.get('name'), snake(el.get('name')), args['in'], args['out'], doc))
         elif el.tag == 'property':
-            ctype(el.get('type'))
+            if el.get('type') != 'ay':
+                ctype(el.get('type'))
             props.append((el.get('name'), snake(el.get('name')), el.get('type'), 'write' in el.get('access', ''), doc))
+        elif el.tag == 'signal':
+            args = [(a.get('type'), a.get('name') or f'arg{i}') for i, a in enumerate(el.findall('arg'))]
+            for i, (t, _) in enumerate(args):
+                if t != 'a{sv}' or i != len(args) - 1:
+                    ctype(t)
+            signals.append((el.get('name'), snake(el.get('name')), args, doc))
         else:
-            fail(f'<{el.tag}>: methods and properties alone so far')
+            fail(f'<{el.tag}>: methods, properties and signals alone so far')
         doc = None
 
     out = sys.argv[2]
@@ -132,7 +146,8 @@ def main():
     if props:
         h += ['', '/* Its properties as last told */', 'typedef struct {']
         for name, sn, t, _, d in props:
-            field = f'char {sn}[{STRING}]' if ctype(t).endswith('*') else var(t, sn)
+            field = (f'uint8_t {sn}[{STRING}]; uint8_t {sn}_len' if t == 'ay'
+                     else f'char {sn}[{STRING}]' if ctype(t).endswith('*') else var(t, sn))
             h.append(f'  {field};{f" /* {d} */" if d else ""}')
         h += [f'}} {prefix}_props;', 'enum {']
         h += [f'  {upper}_PROP_{sn.upper()} = 1u << {i},' for i, (_, sn, _, _, _) in enumerate(props)]
@@ -147,8 +162,18 @@ def main():
             h += [f'typedef void {prefix}_set_done(const sd_bus_error *error, void *userdata);',
                   f'typedef struct {{ {prefix}_set_done *done; void *userdata; }} {prefix}_set_then;']
             for name, sn, t, w, _ in props:
+                if w and t == 'ay':
+                    fail(f'{name}: writable byte arrays not so far')
                 if w:
                     h.append(f'int {prefix}_set_{sn}(sd_bus *bus{at}, {var(t, "value")}, const {prefix}_set_then *then);')
+
+    for name, sn, args, d in signals:
+        h.append('')
+        if d:
+            h.append(f'/* {d} */')
+        params = ''.join(', sd_bus_message *props' if t == 'a{sv}' else f', {var(t, n)}' for t, n in args)
+        h.append(f'typedef void {prefix}_{sn}_fn(const char *object{params});')
+        h.append(f'int {prefix}_watch_{sn}(sd_bus *bus, {prefix}_{sn}_fn *fn);')
 
     s = [head, f'#include "{prefix}.h"', '']
     for name, sn, ins, outs, _ in methods:
@@ -204,7 +229,15 @@ def main():
         for name, sn, t, _, _ in props:
             c.append(f'    {"" if first else "} else "}if (strcmp(key, "{name}") == 0 && strcmp(type, "{t}") == 0) {{')
             first = False
-            if ctype(t).endswith('*'):
+            if t == 'ay':
+                c += ['      const void *v = NULL;', '      size_t n = 0;', '      r = sd_bus_message_enter_container(m, \'v\', "ay");',
+                      '      if (r >= 0)', '        r = sd_bus_message_read_array(m, \'y\', &v, &n);',
+                      '      if (r >= 0)', '        r = sd_bus_message_exit_container(m);',
+                      f'      n = n < sizeof(p->{sn}) ? n : sizeof(p->{sn});',
+                      f'      if (r >= 0 && (n != p->{sn}_len || (n > 0 && memcmp(p->{sn}, v, n) != 0))) {{',
+                      f'        if (n > 0)', f'          memcpy(p->{sn}, v, n);', f'        p->{sn}_len = (uint8_t)n;',
+                      f'        bits |= {upper}_PROP_{sn.upper()};', '      }']
+            elif ctype(t).endswith('*'):
                 c += ['      const char *v = "";', f'      r = sd_bus_message_read(m, "v", "{t}", &v);',
                       f'      if (r >= 0 && strncmp(p->{sn}, v, sizeof(p->{sn}) - 1) != 0) {{',
                       f'        snprintf(p->{sn}, sizeof(p->{sn}), "%s", v);', f'        bits |= {upper}_PROP_{sn.upper()};', '      }']
@@ -232,6 +265,23 @@ def main():
                     c.append(f'                                  then != NULL ? set_replied : NULL, (void *)then, "ssv", {upper}_NAME, "{name}", "{t}", '
                              f'{"(int)" if t == "b" else ""}value);')
                     c += ['}', '']
+
+    for name, sn, args, _ in signals:
+        basic = [(t, n) for t, n in args if t != 'a{sv}']
+        c.append(f'static int on_{sn}(sd_bus_message *m, void *userdata, sd_bus_error *error) {{')
+        c.append('  (void)error;')
+        call = ', '.join(['sd_bus_message_get_path(m)'] + [n for _, n in basic] + (['m'] if len(basic) < len(args) else []))
+        if basic:
+            lines, addrs = read_vars(basic)
+            c += lines
+            c.append(f'  if (sd_bus_message_read(m, "{"".join(t for t, _ in basic)}", {addrs}) >= 0)')
+            c.append(f'    (({prefix}_{sn}_fn *)userdata)({call});')
+        else:
+            c.append(f'  (({prefix}_{sn}_fn *)userdata)({call});')
+        c += ['  return 0;', '}', '',
+              f'int {prefix}_watch_{sn}(sd_bus *bus, {prefix}_{sn}_fn *fn) {{',
+              f'  return sd_bus_add_match(bus, NULL, "type=\'signal\',sender=\'" {upper}_SERVICE "\',interface=\'" {upper}_NAME "\',"',
+              f'                          "member=\'{name}\'", on_{sn}, (void *)fn);', '}', '']
 
     for suffix, lines in (('.h', h), ('-server.c', s), ('-client.c', c)):
         with open(f'{out}/{prefix}{suffix}', 'w') as f:

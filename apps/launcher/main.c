@@ -145,6 +145,7 @@ int main(int argc, char **argv) {
   /* The bus' names watched, before it's used */
   sysd_init();
   bt_init();
+  wifi_init();
   power_init();
   perf_init();
   power_use(HOME_KEY);
@@ -178,8 +179,9 @@ int main(int argc, char **argv) {
 
   for (;;) {
     session_check_start();
+    /* Searching for networks again every so often */
     const bool seconds =
-        !told_up || screen_contains(launcher.visible, &wifi_screen);
+        !told_up || screen_contains(launcher.visible, &wifi_adding_screen);
     int wait = launcher.front != NULL && !showing_pause() && !session_starting()
                    ? -1
                : animating ? 16
@@ -216,8 +218,9 @@ int main(int argc, char **argv) {
     for (int why, value; win_woken(&why, &value); animating = true)
       if (!launcher_input(&ui, why, value, &page))
         return 0;
-    /* Searching and pairing while its screen is up */
+    /* Searching and pairing while their screens are up */
     bt_pairing(screen_contains(launcher.visible, &bt_pairing_screen));
+    wifi_adding(screen_contains(launcher.visible, &wifi_adding_screen));
     const uint64_t now = ms_now();
     osd_tick(now);
     if (perf_on() && now >= perf_due) {
@@ -259,17 +262,14 @@ int main(int argc, char **argv) {
       if (changed & (WATCH_MINUTE | WATCH_POWER | WATCH_WIFI | WATCH_BLUETOOTH)) {
         const ui_status was = st;
         read_status(&st);
-        dirty |= (changed & (WATCH_MINUTE | WATCH_BLUETOOTH)) || was.battery != st.battery ||
+        /* Wi-Fi and Bluetooth: their screens show more than the bar */
+        dirty |= (changed & (WATCH_MINUTE | WATCH_WIFI | WATCH_BLUETOOTH)) || was.battery != st.battery ||
                  was.charging != st.charging || was.wifi != st.wifi;
       }
       if (changed & WATCH_USB)
         dirty |= storage_refresh_usb();
       if (changed & WATCH_TIME) {
         clock_refresh();
-        dirty = true;
-      }
-      if (second && screen_contains(launcher.visible, &wifi_screen)) {
-        wifi_poll();
         dirty = true;
       }
       const uint64_t now_present =

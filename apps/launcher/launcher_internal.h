@@ -80,6 +80,8 @@ enum {
   LICENSE_OPEN,
   WIFI,
   WIFI_PICK,
+  WIFI_ADDING,
+  WIFI_ADD,
   BLUETOOTH,
   BT_TOGGLE,
   BT_PICK,
@@ -168,6 +170,7 @@ extern const ui_screen_def licenses_screen;
 extern const ui_screen_def license_screen;
 extern const ui_screen_def updates_screen;
 extern const ui_screen_def wifi_screen;
+extern const ui_screen_def wifi_adding_screen;
 extern const ui_screen_def bluetooth_screen;
 extern const ui_screen_def bt_pairing_screen;
 extern const ui_screen_def keyboard_screen;
