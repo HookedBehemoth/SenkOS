@@ -18,9 +18,7 @@ typedef STRBUF(64) update_label;
 typedef STRBUF(700) update_text;
 static size_t update_rows(entry *rows, str *said, update_label labels[2],
                           update_text text[1]) {
-  pthread_mutex_lock(&updates_lock);
   const update_state u = updates;
-  pthread_mutex_unlock(&updates_lock);
   size_t n = 0;
   sb_set(text[0], S("This system: "), updates_build(), S(". "));
   if (!u.connected)

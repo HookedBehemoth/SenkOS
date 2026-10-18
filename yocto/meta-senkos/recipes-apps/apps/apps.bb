@@ -29,14 +29,14 @@ PACKAGES =+ "launcher senkos-shell mediaplayer corehost downloadd sysd refreshte
 FILES:launcher = "${bindir}/launcher"
 FILES:senkos-shell = "${libdir}/weston/senkos-shell.so"
 RDEPENDS:senkos-shell = "weston"
-FILES:downloadd = "${bindir}/downloadd"
+FILES:downloadd = "${bindir}/downloadd ${datadir}/dbus-1/system.d/org.senkos.Updates1.conf"
 # Root's side of the UI on the system bus (init starts both, busybox-inittab)
-FILES:sysd = "${sbindir}/sysd ${sbindir}/suspend ${datadir}/dbus-1/system.d"
+FILES:sysd = "${sbindir}/sysd ${sbindir}/suspend ${datadir}/dbus-1/system.d/org.senkos.System1.conf"
 RDEPENDS:sysd = "dbus"
 # A test pattern, not in the image: copied to /data/apps/benchmarks to try a refresh rate
 FILES:refreshtest = "${bindir}/refreshtest"
 # TLS: the server
-RDEPENDS:downloadd = "ca-certificates"
+RDEPENDS:downloadd = "ca-certificates dbus"
 FILES:mediaplayer = "${bindir}/mediaplayer"
 FILES:corehost = "${bindir}/corehost ${datadir}/corehost"
 # The image's fallback UI needs a font to find

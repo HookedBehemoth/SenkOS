@@ -11,6 +11,7 @@
 #include "device1.h"
 #include "properties.h"
 #include "system1.h"
+#include "updates1.h"
 #include "wpa_bss.h"
 
 static void offline(void) {
@@ -77,7 +78,7 @@ static void offline(void) {
 }
 
 static bus_conn server, client;
-static int suspended, cpu, answered, owned;
+static int suspended, cpu, answered, owned, heard;
 static bus_req held;
 
 int system1_suspend(bus_req *req, void *userdata) {
@@ -99,23 +100,43 @@ int system1_set_usb(bus_req *req, void *userdata, str state) {
   return str_eq(state, S("on")) ? bus_reply(req) : bus_reply_error(req, S("org.senkos.System1.Error.Failed"), state);
 }
 #define NO(name, ...)                                                                                                  \
-  int system1_##name(bus_req *req, void *userdata __VA_OPT__(, ) __VA_ARGS__) {                                         \
+  int name(bus_req *req, void *userdata __VA_OPT__(, ) __VA_ARGS__) {                                         \
     (void)userdata;                                                                                                    \
     return -ENOSYS;                                                                                                    \
   }
-NO(reboot)
-NO(power_off)
-NO(launcher_up)
-NO(set_gpu_freq, uint32_t hz)
-NO(set_wifi, bool on)
-NO(set_time_zone, str zone)
-NO(set_ntp, bool on)
-NO(set_time, int64_t seconds)
-NO(set_ssh, bool on)
-NO(set_ssh_everywhere, bool on)
-NO(set_light_sleep, bool on)
-NO(set_light_theme, bool on)
-NO(set_power_on_ms, uint32_t ms)
+NO(system1_reboot)
+NO(system1_power_off)
+NO(system1_launcher_up)
+NO(system1_set_gpu_freq, uint32_t hz)
+NO(system1_set_wifi, bool on)
+NO(system1_set_time_zone, str zone)
+NO(system1_set_ntp, bool on)
+NO(system1_set_time, int64_t seconds)
+NO(system1_set_ssh, bool on)
+NO(system1_set_ssh_everywhere, bool on)
+NO(system1_set_light_sleep, bool on)
+NO(system1_set_light_theme, bool on)
+NO(system1_set_power_on_ms, uint32_t ms)
+NO(updates1_check)
+NO(updates1_update)
+NO(updates1_pack, str name)
+NO(updates1_cancel, str id)
+
+static void put_jobs(bus_wr *w, const void *ctx) {
+  (void)ctx;
+  const bus_wr_arr a = bus_wr_array(w, 8);
+  bus_wr_align(w, 8);
+  bus_wr_str(w, S("pack:Nintendo_-_Game_Boy"));
+  bus_wr_str(w, S("done"));
+  bus_wr_u64(w, 3);
+  bus_wr_u64(w, 3);
+  bus_wr_str(w, S(""));
+  bus_wr_array_end(w, a);
+}
+int updates1_jobs(bus_req *req, void *userdata) {
+  (void)userdata;
+  return updates1_jobs_reply(req, put_jobs, NULL);
+}
 
 static void ok(bus_call *call, const bus_error *error) {
   (void)call;
@@ -162,12 +183,35 @@ static void got(bus_call *call, const bus_error *error, bus_rd *value) {
   answered++;
 }
 
+static void listed(bus_call *call, const bus_error *error, bus_rd *jobs) {
+  (void)call;
+  assert(error == NULL);
+  const uint8_t *end = bus_rd_array(jobs, 8);
+  int n = 0;
+  while (bus_rd_more(jobs, end)) {
+    bus_rd_align(jobs, 8);
+    const str id = bus_rd_str(jobs), state = bus_rd_str(jobs);
+    const uint64_t done = bus_rd_u64(jobs), total = bus_rd_u64(jobs);
+    const str message = bus_rd_str(jobs);
+    assert(str_eq(id, S("pack:Nintendo_-_Game_Boy")) && str_eq(state, S("done")) && done == 3 && total == 3 &&
+           message.n == 0);
+    n++;
+  }
+  assert(!jobs->bad && n == 1);
+  answered++;
+}
+static void job_heard(str object, str id, str state, uint64_t done, uint64_t total, str message) {
+  assert(str_eq(object, S(UPDATES1_PATH)) && str_eq(id, S("os")) && str_eq(state, S("downloading")) && done == 5 &&
+         total == 10 && str_eq(message, S("half")));
+  heard++;
+}
+
 static void owner_changed(bus_match *match, const bus_msg *m) {
   (void)match;
   bus_rd r = m->body;
   const str name = bus_rd_str(&r), before = bus_rd_str(&r), now = bus_rd_str(&r);
   (void)before;
-  if (!r.bad && str_eq(name, S(SYSTEM1_NAME)) && now.n > 0)
+  if (!r.bad && (str_eq(name, S(SYSTEM1_NAME)) || str_eq(name, S(UPDATES1_NAME))) && now.n > 0)
     owned++;
 }
 static bus_match owner_match = {.iface = S("org.freedesktop.DBus"), .member = S("NameOwnerChanged"), .fn = owner_changed};
@@ -196,6 +240,8 @@ int main(void) {
 
   bus_add_match(&client, &owner_match, S("type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',"
                                          "member='NameOwnerChanged',arg0='" SYSTEM1_NAME "'"));
+  bus_add_match(&client, &owner_match, S("type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',"
+                                         "member='NameOwnerChanged',arg0='" UPDATES1_NAME "'"));
   /* Its rule in before the name changes hands */
   bus_call sync = {0};
   assert(properties_call_get(&client, S("org.freedesktop.DBus"), S("/org/freedesktop/DBus"), S("org.freedesktop.DBus"),
@@ -223,11 +269,21 @@ int main(void) {
   assert(bus_reply(&held) == 0);
   run_until(&answered, 7);
 
+  /* A reply of a(sstts); a signal sent, heard once its match is in (Jobs answered after it) */
+  updates1_serve(&server, NULL);
+  assert(bus_request_name(&server, S(UPDATES1_NAME)) == 0);
+  run_until(&owned, 2);
+  static bus_call listing;
+  assert(updates1_watch_job(&client, job_heard) == 0 && updates1_call_jobs(&client, &listing, listed) == 0);
+  run_until(&answered, 8);
+  assert(updates1_emit_job(&server, S("os"), S("downloading"), 5, 10, S("half")) == 0);
+  run_until(&heard, 1);
+
   /* Pending when the connection goes: its error */
   static bus_call orphan;
   assert(system1_call_suspend(&client, &orphan, gone) == 0);
   bus_close(&client);
-  assert(answered == 8 && !bus_call_pending(&orphan));
+  assert(answered == 9 && !bus_call_pending(&orphan));
   bus_close(&server);
   puts("ok");
   return 0;

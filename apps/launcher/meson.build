@@ -25,6 +25,7 @@ executable('launcher', 'main.c', 'state.c', 'home_state.c', 'pad_input.c', 'sess
     dependency('zlib'),
     dependency('libpulse'),
     system1_client_dep,
+    updates1_client_dep,
     properties_client_dep,
     adapter1_client_dep,
     device1_client_dep,

@@ -1,7 +1,7 @@
-/* Update service state and commands. */
+/* downloadd (org.senkos.Updates1 on the system bus): system updates and game packs. Its news wakes
+ * the UI (UI_UPDATES; UI_RELOAD once a pack is there). */
 #pragma once
 
-#include <pthread.h>
 #include <stdbool.h>
 
 #include "str.h"
@@ -17,16 +17,17 @@ typedef struct {
   STRBUF(32) job_state;    /* downloadd's word */
   unsigned long long done, total;
   STRBUF(200) job_message;
-  bool connected;
+  bool connected;          /* downloadd is on the bus */
   STRBUF(96) pack;         /* the pack asked for, until it's sent */
   STRBUF(32) pack_news;    /* a pack's job's latest state, for a toast; taken by the loop */
   STRBUF(200) pack_why;    /* and why it failed */
 } update_state;
 
 extern update_state updates;
-extern pthread_mutex_t updates_lock;
 
-/* The thread, once; each call asks again */
+/* At start, before the bus is used */
+void updates_init(void);
+/* Each asks again */
 void updates_check(void);
 void updates_install(void);
 /* A .system file's Pack from the server into OS/assets/thumbnails ("reload" when it's there) */

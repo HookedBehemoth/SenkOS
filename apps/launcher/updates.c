@@ -1,21 +1,15 @@
 #include "updates.h"
 
-#include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
+#include <string.h>
 
-#include "util.h"
+#include "bus.h"
+#include "updates1.h"
 #include "wake.h"
 #include "win.h"
 
-#define SOCKET "/run/downloadd.sock"
-
 update_state updates;
-pthread_mutex_t updates_lock = PTHREAD_MUTEX_INITIALIZER;
-static int fd = -1;
+static bus_call checking, installing, listing;
 
 str updates_reason(str why) {
   const size_t scheme = str_find(why, ':');
@@ -41,134 +35,117 @@ str updates_build(void) {
   return sb_str(build);
 }
 
-/* "os available BUILD SIZE NOTES | os current | os failed WHY" and "job os STATE DONE TOTAL [MESSAGE]" */
-static void line(str l) {
-  const str what = str_cut(&l, ' ');
-  if (str_eq(what, S("os"))) {
-    const str word = str_cut(&l, ' ');
-    if (str_eq(word, S("available"))) {
-      updates.check = UPDATE_AVAILABLE;
-      sb_set(updates.build, str_cut(&l, ' '));
-      updates.size = strtoull(str_cut(&l, ' ').p, NULL, 10);
-      sb_set(updates.notes, l);
-    } else if (str_eq(word, S("current"))) {
-      updates.check = UPDATE_CURRENT;
-    } else {
-      updates.check = UPDATE_FAILED;
-      sb_set(updates.notes, l);
-    }
-    return;
-  }
-  if (!str_eq(what, S("job")))
-    return;
-  const str id = str_cut(&l, ' ');
+/* A job's news (its Job signal, or Jobs' at connecting) */
+static void job(str object, str id, str state, uint64_t done, uint64_t total, str message) {
+  (void)object;
   if (id.n > 5 && memcmp(id.p, "pack:", 5) == 0) {
-    sb_set(updates.pack_news, str_cut(&l, ' '));
-    str_cut(&l, ' ');
-    str_cut(&l, ' ');
-    sb_set(updates.pack_why, l);
+    sb_set(updates.pack_news, state);
+    sb_set(updates.pack_why, message);
+    if (str_eq(state, S("done")))
+      win_wake(UI_RELOAD, 0);
   } else if (str_eq(id, S("os"))) {
-    const str state = str_cut(&l, ' ');
     sb_set(updates.job_state, state);
-    updates.done = strtoull(str_cut(&l, ' ').p, NULL, 10);
-    updates.total = strtoull(str_cut(&l, ' ').p, NULL, 10);
-    sb_set(updates.job_message, l);
-    updates.job = str_eq(state, S("done"))                                            ? UPDATE_READY
+    updates.done = done;
+    updates.total = total;
+    sb_set(updates.job_message, message);
+    updates.job = str_eq(state, S("done"))                                     ? UPDATE_READY
                   : str_eq(state, S("failed")) || str_eq(state, S("canceled")) ? UPDATE_IDLE
-                                                                                     : UPDATE_RUNNING;
+                                                                               : UPDATE_RUNNING;
+  }
+  win_wake(UI_UPDATES, 0);
+}
+
+/* a(sstts): each as Job says it */
+static void listed(bus_call *call, const bus_error *error, bus_rd *jobs) {
+  (void)call;
+  if (error != NULL)
+    return;
+  const uint8_t *end = bus_rd_array(jobs, 8);
+  while (bus_rd_more(jobs, end)) {
+    bus_rd_align(jobs, 8);
+    const str id = bus_rd_str(jobs), state = bus_rd_str(jobs);
+    const uint64_t done = bus_rd_u64(jobs), total = bus_rd_u64(jobs);
+    const str message = bus_rd_str(jobs);
+    if (!jobs->bad)
+      job(S(""), id, state, done, total, message);
   }
 }
 
-static void ask(const char *request, size_t n);
+static void checked(bus_call *call, const bus_error *error, bool newer, str build, uint64_t size, str notes) {
+  (void)call;
+  if (error != NULL) {
+    updates.check = UPDATE_FAILED;
+    sb_set(updates.notes, error->message);
+  } else if (newer) {
+    updates.check = UPDATE_AVAILABLE;
+    sb_set(updates.build, build);
+    updates.size = size;
+    sb_set(updates.notes, notes);
+  } else
+    updates.check = UPDATE_CURRENT;
+  win_wake(UI_UPDATES, 0);
+}
 
-/* Under updates_lock */
-static void ask_pack(void) {
-  STRBUF(128) request;
-  sb_set(request, S("pack "), sb_str(updates.pack), S("\n"));
-  ask(request.p, request.n);
+static void installed(bus_call *call, const bus_error *error) {
+  (void)call;
+  if (error == NULL)
+    return;
+  updates.job = UPDATE_IDLE;
+  sb_set(updates.job_state, S("failed"));
+  sb_set(updates.job_message, error->message);
+  win_wake(UI_UPDATES, 0);
+}
+
+static void ask_check(bus_conn *bus) {
+  if (updates1_call_check(bus, &checking, checked) < 0) {
+    updates.check = UPDATE_FAILED;
+    sb_set(updates.notes, S("can't ask downloadd"));
+  }
+}
+
+static void ask_pack(bus_conn *bus) {
+  updates1_call_pack(bus, sb_str(updates.pack), NULL, NULL);
   updates.pack.n = 0;
 }
 
-static void *thread(void *arg) {
-  (void)arg;
-  for (;;) {
-    const int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    struct sockaddr_un addr = {.sun_family = AF_UNIX, .sun_path = SOCKET};
-    if (s < 0 || connect(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-      if (s >= 0)
-        close(s);
-      sleep(3);
-      continue;
-    }
-    pthread_mutex_lock(&updates_lock);
-    fd = s;
-    updates.connected = true;
+static void connected(bus_conn *bus) { updates1_watch_job(bus, job); }
+
+static void owned(bus_conn *bus, bool owner) {
+  updates.connected = owner;
+  if (owner) {
+    updates1_call_jobs(bus, &listing, listed);
     /* Asked before it was there */
-    if (updates.check == UPDATE_CHECKING && write(fd, "check\n", 6) != 6)
-      updates.check = UPDATE_FAILED;
+    if (updates.check == UPDATE_CHECKING)
+      ask_check(bus);
     if (updates.pack.n > 0)
-      ask_pack();
-    pthread_mutex_unlock(&updates_lock);
-    win_wake(UI_UPDATES, 0);
-    char buf[2048];
-    size_t n = 0;
-    for (ssize_t got; (got = read(s, buf + n, sizeof(buf) - n)) > 0;) {
-      n += (size_t)got;
-      pthread_mutex_lock(&updates_lock);
-      for (char *end; (end = memchr(buf, '\n', n)) != NULL;) {
-        line((str){buf, (size_t)(end - buf)});
-        n -= (size_t)(end + 1 - buf);
-        memmove(buf, end + 1, n);
-      }
-      pthread_mutex_unlock(&updates_lock);
-      if (n == sizeof(buf))
-        n = 0;
-      win_wake(UI_UPDATES, 0);
-    }
-    pthread_mutex_lock(&updates_lock);
-    close(s);
-    fd = -1;
-    updates.connected = false;
-    pthread_mutex_unlock(&updates_lock);
-    win_wake(UI_UPDATES, 0);
-    sleep(1);
+      ask_pack(bus);
   }
-  return NULL;
+  win_wake(UI_UPDATES, 0);
 }
 
-static void start(void) {
-  static bool started;
-  if (!started)
-    started = spawn("updates", thread, NULL);
-}
+void updates_init(void) { bus_watch(S(UPDATES1_SERVICE), connected, owned); }
 
-static void ask(const char *request, size_t n) {
-  if (fd >= 0 && write(fd, request, n) != (ssize_t)n)
-    fprintf(stderr, "launcher: downloadd: %s\n", strerror(errno));
-}
+/* The bus, NULL while downloadd isn't on it */
+static bus_conn *downloadd(void) { return updates.connected ? bus_get() : NULL; }
 
 void updates_check(void) {
-  start();
-  pthread_mutex_lock(&updates_lock);
   updates.check = UPDATE_CHECKING;
-  ask("check\n", 6);
-  pthread_mutex_unlock(&updates_lock);
+  bus_conn *bus = downloadd();
+  if (bus != NULL)
+    ask_check(bus);
 }
 
 void updates_install(void) {
-  start();
-  pthread_mutex_lock(&updates_lock);
+  bus_conn *bus = downloadd();
   updates.job = UPDATE_RUNNING;
   sb_set(updates.job_state, S("queued"));
-  ask("update\n", 7);
-  pthread_mutex_unlock(&updates_lock);
+  if (bus == NULL || updates1_call_update(bus, &installing, installed) < 0)
+    installed(NULL, &(bus_error){S(""), S("downloadd isn't running")});
 }
 
 void updates_pack(str name) {
-  start();
-  pthread_mutex_lock(&updates_lock);
   sb_set(updates.pack, name);
-  if (fd >= 0)
-    ask_pack();
-  pthread_mutex_unlock(&updates_lock);
+  bus_conn *bus = downloadd();
+  if (bus != NULL)
+    ask_pack(bus);
 }

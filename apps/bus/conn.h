@@ -122,4 +122,8 @@ int bus_reply_end(bus_req *req);
 int bus_reply(bus_req *req);
 int bus_reply_error(bus_req *req, str name, str message);
 
+/* A signal to everyone listening: bus_signal_begin, its body, bus_signal_end */
+bus_wr *bus_signal_begin(bus_conn *c, str path, str iface, str member, const char *sig);
+int bus_signal_end(bus_conn *c);
+
 #define BUS_ERROR_INVALID_ARGS "org.freedesktop.DBus.Error.InvalidArgs"

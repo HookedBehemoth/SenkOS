@@ -51,15 +51,15 @@ tools/publish packs /mnt/multimedia/anbernic-thumbnails/out/*.pack      # tools/
 `/etc/updates` (root's; `/data/OS/overlay/etc/updates` for another) names the server: `[Updates] Server=`, `Channel=`.
 
 **downloadd** ([apps/downloadd](../apps/downloadd/main.c), root, respawned by init) does every download, one at
-a time, each in a process of its own: a pack's as `player`, the system's as root. It listens on
-`/run/downloadd.sock` (root:player 0660), lines in both directions: `pack NAME`, `cancel ID`, `check`, `update`;
-`job ID STATE DONE TOTAL [MESSAGE]` (queued, downloading, installing, done, failed, canceled) and
-`os available BUILD SIZE NOTES | os current | os failed WHY`. A client hears every job's state when it connects,
-and the answer to every check. By hand: `downloadd pack NAME`, `downloadd check`, `downloadd send update`, ….
+a time, each in a process of its own: a pack's as `player`, the system's as root. It's `org.senkos.Updates1` on
+the system bus ([its interface](../apps/bus/org.senkos.Updates1.xml); shell and root may call it): `Check`
+(answered once the server said), `Update`, `Pack NAME`, `Cancel ID`, `Jobs`, and a `Job` signal for each change
+(queued, downloading, installing, done, failed, canceled). By hand, one job without the daemon:
+`downloadd pack NAME`, `downloadd check`, `downloadd os`.
 
 - A box art pack (a `.system` file's `Pack`, job id `pack:NAME` with `_` for spaces): its `[NAME]` in the server's
-  `/v1/packs`, downloaded as the player into `OS/assets/thumbnails/NAME.pack`, checked against its SHA-256, then
-  "reload" on the launcher's FIFO. Select on a game whose system's pack isn't on the card offers it (Download box
+  `/v1/packs`, downloaded as the player into `OS/assets/thumbnails/NAME.pack`, checked against its SHA-256; the
+  launcher reloads when its Job says done. Select on a game whose system's pack isn't on the card offers it (Download box
   art); the launcher says how it went in a toast.
 - The system: the newest build past `/etc/build`, decompressed straight into the other slot (`ab write`), checked
   against its SHA-256, then armed (`ab arm`). Rebooting tries it ([dev-workflow.md](dev-workflow.md), A/B slots); once the

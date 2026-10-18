@@ -8,6 +8,7 @@ bus_dep = declare_dependency(link_with: bus_lib, include_directories: bus_inc, d
 
 foreach name, xml : {
     'system1': 'org.senkos.System1.xml',    # sysd's, for the launcher
+    'updates1': 'org.senkos.Updates1.xml',  # downloadd's, for the launcher
     'properties': 'org.freedesktop.DBus.Properties.xml',
     'adapter1': 'org.bluez.Adapter1.xml',   # BlueZ's, for the launcher's Bluetooth settings
     'device1': 'org.bluez.Device1.xml',
@@ -25,4 +26,4 @@ endforeach
 
 # Encodes, decodes and talks to a real bus (the session's, when there is one)
 test('bus', executable('bus-test', 'test.c', build_by_default: false, dependencies: [system1_server_dep, system1_client_dep,
-  properties_client_dep, wpa_bss_client_dep, device1_client_dep], c_args: '-Wno-unused-parameter'))
+  properties_client_dep, wpa_bss_client_dep, device1_client_dep, updates1_server_dep, updates1_client_dep], c_args: '-Wno-unused-parameter'))

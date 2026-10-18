@@ -1,7 +1,6 @@
 /* Keyboard and wake event dispatch. */
 #include <limits.h>
 #include <linux/input.h>
-#include <pthread.h>
 #include <stdio.h>
 
 #include "keys.h"
@@ -121,7 +120,6 @@ bool launcher_input(nav *ui, int why, int value, size_t *page) {
     break;
   case UI_UPDATES: {
     STRBUF(256) said = {0};
-    pthread_mutex_lock(&updates_lock);
     const str news = sb_str(updates.pack_news);
     if (str_eq(news, S("downloading")))
       sb_set(said, S("Downloading box art"));
@@ -130,7 +128,6 @@ bool launcher_input(nav *ui, int why, int value, size_t *page) {
     else if (str_eq(news, S("failed")))
       sb_set(said, S("No box art: "), updates_reason(sb_str(updates.pack_why)));
     updates.pack_news.n = 0;
-    pthread_mutex_unlock(&updates_lock);
     if (said.n > 0)
       osd_show_text(sb_str(said), RESULT_MS);
     return true;

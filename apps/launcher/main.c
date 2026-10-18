@@ -27,6 +27,7 @@
 #include "wake.h"
 #include "watch.h"
 #include "bluetooth.h"
+#include "updates.h"
 #include "wifi.h"
 
 #define SLEEP_FAILED "/run/sleep-failed"
@@ -146,6 +147,7 @@ int main(int argc, char **argv) {
   sysd_init();
   bt_init();
   wifi_init();
+  updates_init();
   power_init();
   perf_init();
   power_use(HOME_KEY);

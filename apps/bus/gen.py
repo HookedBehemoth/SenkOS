@@ -39,7 +39,8 @@ InterfacesAdded, PropertiesChanged, GetAll: the keys it has, a NAME_PROP_* bit e
 NAME_set_PROP(bus, [path,] value, call, done) for the writable ones, and NAME_watch_properties for
 the PropertiesChanged signals.
 
-Signals: NAME_watch_SIGNAL(bus, fn), fn(object, ARGS...). One fn per signal per program: watching
+Signals: the service sends one with NAME_emit_SIGNAL(bus, [object,] ARGS...); callers
+NAME_watch_SIGNAL(bus, fn), fn(object, ARGS...). One fn per signal per program: watching
 again replaces it. Watches go with the connection: again on each new one.
 """
 import re
@@ -57,7 +58,7 @@ PROPERTIES = 'org.freedesktop.DBus.Properties'
 # What generated functions call their own, beside arguments: a method's in, its out, a signal's
 RESERVED_IN = {'bus', 'service', 'path', 'call', 'done', 'wr', 'req', 'userdata', 'msg', 'rd'}
 RESERVED_OUT = {'call', 'msg', 'buf', 'err', 'rd', 'req', 'wr'}
-RESERVED_SIGNAL = {'object', 'match', 'msg', 'rd'}
+RESERVED_SIGNAL = {'object', 'match', 'msg', 'rd', 'bus', 'wr'}
 
 
 def fail(why):
@@ -216,6 +217,9 @@ def main():
     path_param = ', str path' if path is None else ''
     path_arg = 'path' if path is None else f'S({upper}_PATH)'
     at = svc_param + path_param
+    # A signal's object: `object`, as watchers get it (a signal may have an argument named path)
+    emit_param = ', str object' if path is None else ''
+    emit_arg = 'object' if path is None else path_arg
     sender = '' if service == '' else f'sender=\'" {upper}_SERVICE "\','
 
     # The header
@@ -233,6 +237,8 @@ def main():
         h.append(f'int {prefix}_{sn}(bus_req *req, void *userdata{"".join(", " + rparam(t, n) for t, n in ins)});')
         if outs:
             h.append(f'int {prefix}_{sn}_reply(bus_req *req{"".join(", " + wparam(t, n) for t, n in outs)});')
+    for name, sn, args, d in signals:
+        h.append(f'int {prefix}_emit_{sn}(bus_conn *bus{emit_param}{"".join(", " + wparam(t, n) for t, n in args)});')
     h += ['', '/* The client\'s */']
     for name, sn, ins, outs, _ in methods:
         h.append(f'typedef void {prefix}_{sn}_done(bus_call *call, const bus_error *error{"".join(", " + rparam(t, n) for t, n in outs)});')
@@ -293,6 +299,10 @@ def main():
             s += ['', f'int {prefix}_{sn}_reply(bus_req *req{"".join(", " + wparam(t, n) for t, n in outs)}) {{',
                   f'  bus_wr *wr = bus_reply_begin(req, "{sig_of(outs)}");', *writes(outs, 'wr'),
                   '  return bus_reply_end(req);', '}']
+    for name, sn, args, _ in signals:
+        s += ['', f'int {prefix}_emit_{sn}(bus_conn *bus{emit_param}{"".join(", " + wparam(t, n) for t, n in args)}) {{',
+              f'  bus_wr *wr = bus_signal_begin(bus, {emit_arg}, S({upper}_NAME), S("{name}"), "{sig_of(args)}");',
+              *writes(args, 'wr'), '  return bus_signal_end(bus);', '}']
 
     # The client's
     c = [head, '#include <errno.h>', '#include <string.h>', '', f'#include "{prefix}.h"']

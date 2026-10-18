@@ -193,6 +193,15 @@ int bus_reply_end(bus_req *req) {
   return r < 0 ? (int)r : 0;
 }
 
+bus_wr *bus_signal_begin(bus_conn *c, str path, str iface, str member, const char *sig) {
+  return begin(c, BUS_SIGNAL, BUS_NO_REPLY_EXPECTED, S(""), path, iface, member, S(""), 0, sig);
+}
+
+int bus_signal_end(bus_conn *c) {
+  const int64_t r = commit(c);
+  return r < 0 ? (int)r : 0;
+}
+
 int bus_reply(bus_req *req) {
   bus_reply_begin(req, "");
   return bus_reply_end(req);
