@@ -49,9 +49,9 @@ str wifi_status(char *buf, size_t size);
 
 /* In the order it saved them */
 size_t wifi_saved_list(wifi_saved *out, size_t max);
-void wifi_select(const char *path);
+void wifi_select(str path);
 /* Unsave; back on whichever saved one is there */
-void wifi_forget(const char *path);
+void wifi_forget(str path);
 
 /* The add screen's: a search when it comes up */
 void wifi_adding_start(void);

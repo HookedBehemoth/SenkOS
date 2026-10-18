@@ -3,8 +3,8 @@
 # callers'. NAME_server_dep and NAME_client_dep each.
 gen = find_program('gen.py')
 bus_inc = include_directories('.')
-bus_lib = static_library('bus', 'conn.c', include_directories: bus_inc)
-bus_dep = declare_dependency(link_with: bus_lib, include_directories: bus_inc)
+bus_lib = static_library('bus', 'conn.c', include_directories: bus_inc, dependencies: str_dep)
+bus_dep = declare_dependency(link_with: bus_lib, include_directories: bus_inc, dependencies: str_dep)
 
 foreach name, xml : {
     'system1': 'org.senkos.System1.xml',    # sysd's, for the launcher
@@ -25,4 +25,4 @@ endforeach
 
 # Encodes, decodes and talks to a real bus (the session's, when there is one)
 test('bus', executable('bus-test', 'test.c', build_by_default: false, dependencies: [system1_server_dep, system1_client_dep,
-  properties_client_dep, wpa_bss_client_dep], c_args: '-Wno-unused-parameter'))
+  properties_client_dep, wpa_bss_client_dep, device1_client_dep], c_args: '-Wno-unused-parameter'))

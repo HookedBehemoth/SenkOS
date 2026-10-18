@@ -446,7 +446,7 @@ static void choose_zones(nav *ui, void *choice) {
     else if ((size_t)chosen->arg < clock_zones(sb_str(zone_region), &zones))
       sb_set(zone, zones[chosen->arg]);
     if (zone.n > 0)
-      SYSD("Time zone", set_time_zone, zone.p);
+      SYSD("Time zone", set_time_zone, sb_str(zone));
     if (screen_current(state->visible) == &zone_screen)
       screen_pop(state->visible, ui);
     screen_pop(state->visible, ui);

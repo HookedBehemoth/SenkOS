@@ -45,13 +45,13 @@ void bt_pairing_start(void);
 void bt_pairing_stop(void);
 bool bt_pairing_on(void);
 /* Connect, or disconnect when connected */
-void bt_connect(const char *path);
+void bt_connect(str path);
 /* Pair, trust, connect */
-void bt_pair(const char *path);
+void bt_pair(str path);
 /* Once true after a pairing went through */
 bool bt_paired_new(void);
 /* Unpair */
-void bt_forget(const char *path);
+void bt_forget(str path);
 
 /* bt_agent.c: on each connection, and whenever bluetoothd comes */
 void bt_agent_add(bus_conn *bus);

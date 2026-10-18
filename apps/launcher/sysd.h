@@ -24,7 +24,7 @@ bus_conn *sysd_bus(void);
 
 #define SYSD(said, method, ...)                                                                          \
   ({                                                                                                     \
-    static bus_said sysd_said_ = {.what = (said)};                                                      \
+    static bus_said sysd_said_ = {.what = S(said)};                                                      \
     bus_conn *const sysd_bus_ = sysd_bus();                                                                \
     sysd_bus_ != NULL && system1_call_##method(sysd_bus_, ##__VA_ARGS__, &sysd_said_.call, bus_said_done) >= 0; \
   })

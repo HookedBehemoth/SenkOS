@@ -18,7 +18,7 @@ static bool paired_new, dirty;
 /* GetManagedObjects; the adapter's own calls */
 static bus_call loading;
 static bus_call search;
-static bus_said power_said, forget_said = {.what = "Couldn't forget"};
+static bus_said power_said, forget_said = {.what = S("Couldn't forget")};
 
 static void changed(void) { dirty = true; }
 
@@ -38,9 +38,9 @@ bool bt_changed(void) {
   return was;
 }
 
-static bt_device *find(const char *path) {
+static bt_device *find(str path) {
   for (size_t i = 0; i < BT_MAX; i++)
-    if (devices[i].used && strcmp(devices[i].path.p, path) == 0)
+    if (devices[i].used && str_eq(sb_str(devices[i].path), path))
       return &devices[i];
   return NULL;
 }
@@ -61,32 +61,32 @@ static void sync_adapter(bus_conn *bus) {
   if (bus == NULL || adapter_path.n == 0)
     return;
   if (adapter.pairable != pairing)
-    adapter1_set_pairable(bus, adapter_path.p, pairing, NULL, NULL);
+    adapter1_set_pairable(bus, sb_str(adapter_path), pairing, NULL, NULL);
   if (pairing && adapter.powered && !adapter.discovering && !searching)
-    searching = adapter1_call_start_discovery(bus, adapter_path.p, &search, searched) >= 0;
+    searching = adapter1_call_start_discovery(bus, sb_str(adapter_path), &search, searched) >= 0;
   else if (!pairing && searching) {
-    adapter1_call_stop_discovery(bus, adapter_path.p, NULL, NULL);
+    adapter1_call_stop_discovery(bus, sb_str(adapter_path), NULL, NULL);
     searching = false;
   }
 }
 
-static void added(const char *path, const char *iface, bus_rd *props) {
-  if (strcmp(iface, ADAPTER1_NAME) == 0) {
+static void added(str path, str iface, bus_rd *props) {
+  if (str_eq(iface, S(ADAPTER1_NAME))) {
     if (adapter_path.n == 0)
-      sb_set(adapter_path, str_c(path));
-    if (strcmp(adapter_path.p, path) != 0)
+      sb_set(adapter_path, path);
+    if (!str_eq(sb_str(adapter_path), path))
       return;
     adapter1_props_apply(&adapter, props, NULL);
     if (!adapter.powered && wanted_on())
       bt_power(true);
     sync_adapter(bus_get());
-  } else if (strcmp(iface, DEVICE1_NAME) == 0) {
+  } else if (str_eq(iface, S(DEVICE1_NAME))) {
     bt_device *d = find(path);
     for (size_t i = 0; d == NULL && i < BT_MAX; i++)
       if (!devices[i].used) {
         d = &devices[i];
         *d = (bt_device){.used = true, .seq = ++seq};
-        sb_set(d->path, str_c(path));
+        sb_set(d->path, path);
       }
     if (d == NULL)
       return;
@@ -97,12 +97,12 @@ static void added(const char *path, const char *iface, bus_rd *props) {
   changed();
 }
 
-static void removed(const char *path, const char *iface) {
-  if (strcmp(iface, ADAPTER1_NAME) == 0 && strcmp(adapter_path.p, path) == 0) {
+static void removed(str path, str iface) {
+  if (str_eq(iface, S(ADAPTER1_NAME)) && str_eq(sb_str(adapter_path), path)) {
     adapter_path.n = 0;
     adapter = (adapter1_props){0};
     searching = false;
-  } else if (strcmp(iface, DEVICE1_NAME) == 0) {
+  } else if (str_eq(iface, S(DEVICE1_NAME))) {
     bt_device *d = find(path);
     if (d == NULL)
       return;
@@ -114,9 +114,9 @@ static void removed(const char *path, const char *iface) {
   changed();
 }
 
-static void adapter_changed(const char *path, bus_rd *props) {
+static void adapter_changed(str path, bus_rd *props) {
   uint32_t bits;
-  if (strcmp(adapter_path.p, path) != 0 || adapter1_props_apply(&adapter, props, &bits) < 0 || bits == 0)
+  if (!str_eq(sb_str(adapter_path), path) || adapter1_props_apply(&adapter, props, &bits) < 0 || bits == 0)
     return;
   /* Its search ended (or someone else's): ours to start again */
   if ((bits & ADAPTER1_PROP_DISCOVERING) && !adapter.discovering)
@@ -125,7 +125,7 @@ static void adapter_changed(const char *path, bus_rd *props) {
   changed();
 }
 
-static void device_changed(const char *path, bus_rd *props) {
+static void device_changed(str path, bus_rd *props) {
   uint32_t bits;
   bt_device *d = find(path);
   if (d != NULL && device1_props_apply(&d->p, props, &bits) >= 0 && bits != 0)
@@ -135,7 +135,7 @@ static void device_changed(const char *path, bus_rd *props) {
 static void connected(bus_conn *bus) {
   adapter1_watch_properties(bus, adapter_changed);
   device1_watch_properties(bus, device_changed);
-  bus_watch_objects(bus, "org.bluez", added, removed);
+  bus_watch_objects(bus, S("org.bluez"), added, removed);
   bt_agent_add(bus);
 }
 
@@ -149,13 +149,13 @@ static void owned(bus_conn *bus, bool owner) {
   bus_call_cancel(&search);
   bus_call_cancel(&loading);
   if (owner) {
-    bus_get_objects(bus, "org.bluez", added, &loading);
+    bus_get_objects(bus, S("org.bluez"), added, &loading);
     bt_agent_register(bus);
   }
   changed();
 }
 
-void bt_init(void) { bus_watch("org.bluez", connected, owned); }
+void bt_init(void) { bus_watch(S("org.bluez"), connected, owned); }
 
 size_t bt_list(const bt_device **out, size_t max) {
   const bt_device *all[BT_MAX];
@@ -174,9 +174,8 @@ size_t bt_list(const bt_device **out, size_t max) {
 }
 
 int bt_kind(const bt_device *d) {
-  return strncmp(d->p.icon, "audio-", 6) == 0      ? BT_AUDIO
-         : strcmp(d->p.icon, "input-gaming") == 0 ? BT_PAD
-                                                  : BT_OTHER;
+  const str icon = sb_str(d->p.icon);
+  return str_eq(str_head(icon, 6), S("audio-")) ? BT_AUDIO : str_eq(icon, S("input-gaming")) ? BT_PAD : BT_OTHER;
 }
 
 int bt_powered(void) { return adapter_path.n == 0 ? -1 : adapter.powered; }
@@ -198,9 +197,9 @@ void bt_power(bool on) {
     fputs(on ? "on\n" : "off\n", f);
     fclose(f);
   }
-  power_said.what = on ? "Couldn't turn Bluetooth on" : "Couldn't turn Bluetooth off";
+  power_said.what = on ? S("Couldn't turn Bluetooth on") : S("Couldn't turn Bluetooth off");
   if (bus_get() != NULL && adapter_path.n > 0)
-    adapter1_set_powered(bus_get(), adapter_path.p, on, &power_said.call, bus_said_done);
+    adapter1_set_powered(bus_get(), sb_str(adapter_path), on, &power_said.call, bus_said_done);
 }
 
 static void pairing_set(bool on) {
@@ -219,31 +218,31 @@ void bt_pairing_stop(void) { pairing_set(false); }
 static void connected_done(bus_call *call, const bus_error *error) {
   const bt_device *d = bus_call_owner(call, bt_device, call);
   if (error != NULL)
-    bus_tell(error, d->p.connected ? "Couldn't disconnect" : "Couldn't connect");
+    bus_tell(error, d->p.connected ? S("Couldn't disconnect") : S("Couldn't connect"));
   changed();
 }
 
 static void trusted(bus_call *call, const bus_error *error) {
   bt_device *d = bus_call_owner(call, bt_device, call);
   if (error != NULL)
-    bus_tell(error, "Couldn't trust it");
+    bus_tell(error, S("Couldn't trust it"));
   /* Connected anyway: only it may not connect by itself */
-  device1_call_connect(bus_get(), d->path.p, &d->call, connected_done);
+  device1_call_connect(bus_get(), sb_str(d->path), &d->call, connected_done);
 }
 
 static void paired(bus_call *call, const bus_error *error) {
   bt_device *d = bus_call_owner(call, bt_device, call);
   if (error != NULL) {
-    bus_tell(error, "Couldn't pair");
+    bus_tell(error, S("Couldn't pair"));
     changed();
     return;
   }
   paired_new = true;
   /* Ours to connect again, and it may connect by itself */
-  device1_set_trusted(bus_get(), d->path.p, true, &d->call, trusted);
+  device1_set_trusted(bus_get(), sb_str(d->path), true, &d->call, trusted);
 }
 
-void bt_connect(const char *path) {
+void bt_connect(str path) {
   bt_device *d = find(path);
   if (d == NULL || bus_call_pending(&d->call) || bus_get() == NULL)
     return;
@@ -254,7 +253,7 @@ void bt_connect(const char *path) {
   changed();
 }
 
-void bt_pair(const char *path) {
+void bt_pair(str path) {
   bt_device *d = find(path);
   if (d == NULL || bus_call_pending(&d->call) || bus_get() == NULL)
     return;
@@ -269,7 +268,7 @@ bool bt_paired_new(void) {
 }
 
 /* Not the device's call: it goes with the device */
-void bt_forget(const char *path) {
+void bt_forget(str path) {
   if (bus_get() != NULL && adapter_path.n > 0)
-    adapter1_call_remove_device(bus_get(), adapter_path.p, path, &forget_said.call, bus_said_done);
+    adapter1_call_remove_device(bus_get(), sb_str(adapter_path), path, &forget_said.call, bus_said_done);
 }

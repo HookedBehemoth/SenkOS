@@ -5,7 +5,7 @@
  * signature but bus_skip, for what a variant holds that nobody asked for.
  *
  * Readers and writers go bad instead of failing call by call: check `bad` once at the end. A bad
- * reader reads 0 and "", a bad writer writes nothing more. Alignment is from `base`, the
+ * reader reads 0 and S(""), a bad writer writes nothing more. Alignment is from `base`, the
  * message's first byte, so buffers can be anywhere.
  */
 #pragma once
@@ -14,6 +14,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#include "str.h"
 
 typedef struct {
   const uint8_t *p, *end, *base;
@@ -73,7 +75,7 @@ static inline bool bus_rd_bool(bus_rd *r) {
 }
 
 /* `len` bytes and their NUL */
-static inline const char *bus_rd_text(bus_rd *r, size_t len, uint32_t *n) {
+static inline str bus_rd_text(bus_rd *r, size_t len) {
   const uint8_t *p = bus_rd_take(r, 1, len + 1);
   if (p == bus_zero)
     len = 0;
@@ -83,15 +85,12 @@ static inline const char *bus_rd_text(bus_rd *r, size_t len, uint32_t *n) {
     p = bus_zero;
     len = 0;
   }
-  if (n != NULL)
-    *n = (uint32_t)len;
-  return (const char *)p;
+  return (str){(const char *)p, len};
 }
-/* s and o; their length in *n (or NULL). They point into the message. */
-static inline const char *bus_rd_strn(bus_rd *r, uint32_t *n) { return bus_rd_text(r, bus_rd_u32(r), n); }
-static inline const char *bus_rd_str(bus_rd *r) { return bus_rd_strn(r, NULL); }
+/* s and o, pointing into the message; NUL-terminated there, so .p is a C string too */
+static inline str bus_rd_str(bus_rd *r) { return bus_rd_text(r, bus_rd_u32(r)); }
 /* g */
-static inline const char *bus_rd_sig(bus_rd *r) { return bus_rd_text(r, bus_rd_u8(r), NULL); }
+static inline str bus_rd_sig(bus_rd *r) { return bus_rd_text(r, bus_rd_u8(r)); }
 
 /* An array whose elements align to `align`: where it ends. Read them while bus_rd_more. */
 static inline const uint8_t *bus_rd_array(bus_rd *r, size_t align) {
@@ -119,14 +118,16 @@ static inline const uint8_t *bus_rd_bytes(bus_rd *r, size_t *n) {
 }
 
 /* A v holding exactly `sig`: the reader at its value */
-static inline bool bus_rd_variant(bus_rd *r, const char *sig) { return strcmp(bus_rd_sig(r), sig) == 0 && !r->bad; }
+static inline bool bus_rd_variant(bus_rd *r, const char *sig) {
+  return str_eq(bus_rd_sig(r), str_c(sig)) && !r->bad;
+}
 
 /* An a{sv}'s next entry, the reader at its value (to read, or bus_skip(r, *sig)); false at `end` */
-static inline bool bus_rd_kv(bus_rd *r, const uint8_t *end, const char **key, uint32_t *key_len, const char **sig) {
+static inline bool bus_rd_kv(bus_rd *r, const uint8_t *end, str *key, str *sig) {
   if (!bus_rd_more(r, end))
     return false;
   bus_rd_align(r, 8);
-  *key = bus_rd_strn(r, key_len);
+  *key = bus_rd_str(r);
   *sig = bus_rd_sig(r);
   return !r->bad;
 }
@@ -153,7 +154,7 @@ static inline const char *bus_sig_next(const char *s) {
   return s;
 }
 
-static void bus_skip(bus_rd *r, const char *sig);
+static void bus_skip(bus_rd *r, str sig);
 
 /* Past one value of the type at *s, *s past the type */
 static inline void bus_skip1(bus_rd *r, const char **s) {
@@ -182,10 +183,10 @@ static inline void bus_skip1(bus_rd *r, const char **s) {
   }
 }
 
-/* Past values of the types in `sig` (a variant's, read off the wire) */
-static void __attribute__((unused)) bus_skip(bus_rd *r, const char *sig) {
-  while (*sig != '\0' && !r->bad)
-    bus_skip1(r, &sig);
+/* Past values of the types in `sig` (a variant's, read off the wire: NUL-terminated) */
+static void __attribute__((unused)) bus_skip(bus_rd *r, str sig) {
+  for (const char *s = sig.p; *s != '\0' && !r->bad;)
+    bus_skip1(r, &s);
 }
 
 /* `n` bytes at the next multiple of `align`, the padding zeroed; NULL when they don't fit */
@@ -225,22 +226,22 @@ BUS_WR(double, f64)
 
 static inline void bus_wr_bool(bus_wr *w, bool v) { bus_wr_u32(w, v); }
 
-static inline void bus_wr_text(bus_wr *w, const char *s, size_t n) {
-  uint8_t *p = bus_wr_take(w, 1, n + 1);
+static inline void bus_wr_text(bus_wr *w, str s) {
+  uint8_t *p = bus_wr_take(w, 1, s.n + 1);
   if (p != NULL) {
-    memcpy(p, s, n);
-    p[n] = 0;
+    if (s.n > 0)
+      memcpy(p, s.p, s.n);
+    p[s.n] = 0;
   }
 }
-static inline void bus_wr_strn(bus_wr *w, const char *s, size_t n) {
-  bus_wr_u32(w, (uint32_t)n);
-  bus_wr_text(w, s, n);
+/* s and o */
+static inline void bus_wr_str(bus_wr *w, str s) {
+  bus_wr_u32(w, (uint32_t)s.n);
+  bus_wr_text(w, s);
 }
-static inline void bus_wr_str(bus_wr *w, const char *s) { bus_wr_strn(w, s, strlen(s)); }
 static inline void bus_wr_sig(bus_wr *w, const char *s) {
-  const size_t n = strlen(s);
-  bus_wr_u8(w, (uint8_t)n);
-  bus_wr_text(w, s, n);
+  bus_wr_u8(w, (uint8_t)strlen(s));
+  bus_wr_text(w, str_c(s));
 }
 
 /* An array: bus_wr_array, its elements, bus_wr_array_end */
@@ -265,7 +266,7 @@ static inline void bus_wr_bytes(bus_wr *w, const void *p, size_t n) {
 }
 
 /* An a{sv}'s entry: its key, the variant's signature; its value next */
-static inline void bus_wr_kv(bus_wr *w, const char *key, const char *sig) {
+static inline void bus_wr_kv(bus_wr *w, str key, const char *sig) {
   bus_wr_align(w, 8);
   bus_wr_str(w, key);
   bus_wr_sig(w, sig);

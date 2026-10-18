@@ -111,7 +111,7 @@ static bool wifi_button(ui_screen *screen, nav *ui, int button) {
     return false;
   wifi_saved w;
   if (focused_saved(ui, &w))
-    wifi_forget(w.path.p);
+    wifi_forget(sb_str(w.path));
   return true;
 }
 
@@ -207,7 +207,7 @@ static void choose_wifi(nav *ui, void *data) {
     (c->checked ? sysd_wifi_off : sysd_wifi_on)();
     break;
   case WIFI_PICK:
-    wifi_select(c->path.p);
+    wifi_select(sb_str(c->path));
     break;
   case WIFI_ADDING:
     screen_push(state->visible, ui, &wifi_adding_screen, 0);

@@ -15,7 +15,7 @@
 /* The most one message we write may take; what we read may be up to the spec's 128 MiB */
 enum { WRITE_MAX = 64 << 10, READ_MAX = 128 << 20 };
 
-const bus_error bus_malformed = {BUS_ERROR_INVALID_ARGS, "an answer of other types"};
+const bus_error bus_malformed = {S(BUS_ERROR_INVALID_ARGS), S("an answer of other types")};
 
 static bool grow(uint8_t **buf, size_t *cap, size_t want) {
   if (*cap >= want)
@@ -48,21 +48,22 @@ static int flush(bus_conn *c) {
   return 0;
 }
 
-static void field(bus_wr *w, uint8_t code, const char *sig, const char *text) {
-  if (text == NULL)
+/* Left out when empty: no name, path or signature is */
+static void field(bus_wr *w, uint8_t code, char sig, str text) {
+  if (text.n == 0)
     return;
   bus_wr_align(w, 8);
   bus_wr_u8(w, code);
-  bus_wr_sig(w, sig);
-  if (sig[0] == 'g')
-    bus_wr_sig(w, text);
+  bus_wr_sig(w, (char[]){sig, '\0'});
+  if (sig == 'g')
+    bus_wr_sig(w, text.p);
   else
     bus_wr_str(w, text);
 }
 
 /* A message's header written, the writer at its body */
-static bus_wr *begin(bus_conn *c, uint8_t type, uint8_t flags, const char *dest, const char *path, const char *iface,
-                     const char *member, const char *error, uint32_t reply_serial, const char *sig) {
+static bus_wr *begin(bus_conn *c, uint8_t type, uint8_t flags, str dest, str path, str iface, str member, str error,
+                     uint32_t reply_serial, const char *sig) {
   bus_wr *w = &c->w;
   if (c->fd < 0 || !grow(&c->tx, &c->tx_cap, c->tx_len + WRITE_MAX)) {
     *w = (bus_wr){.bad = true};
@@ -78,18 +79,18 @@ static bus_wr *begin(bus_conn *c, uint8_t type, uint8_t flags, const char *dest,
   bus_wr_u32(w, 0); /* the body's length, at the end */
   bus_wr_u32(w, c->serial);
   const bus_wr_arr fields = bus_wr_array(w, 8);
-  field(w, 1, "o", path);
-  field(w, 2, "s", iface);
-  field(w, 3, "s", member);
-  field(w, 4, "s", error);
+  field(w, 1, 'o', path);
+  field(w, 2, 's', iface);
+  field(w, 3, 's', member);
+  field(w, 4, 's', error);
   if (reply_serial != 0) {
     bus_wr_align(w, 8);
     bus_wr_u8(w, 5);
     bus_wr_sig(w, "u");
     bus_wr_u32(w, reply_serial);
   }
-  field(w, 6, "s", dest);
-  field(w, 8, "g", sig[0] != '\0' ? sig : NULL);
+  field(w, 6, 's', dest);
+  field(w, 8, 'g', str_c(sig));
   bus_wr_array_end(w, fields);
   bus_wr_align(w, 8);
   return w;
@@ -123,9 +124,8 @@ void bus_call_cancel(bus_call *call) {
     unlink_call(call);
 }
 
-bus_wr *bus_call_begin(bus_conn *c, const char *dest, const char *path, const char *iface, const char *member,
-                       const char *sig, bool reply) {
-  return begin(c, BUS_METHOD_CALL, reply ? 0 : BUS_NO_REPLY_EXPECTED, dest, path, iface, member, NULL, 0, sig);
+bus_wr *bus_call_begin(bus_conn *c, str dest, str path, str iface, str member, const char *sig, bool reply) {
+  return begin(c, BUS_METHOD_CALL, reply ? 0 : BUS_NO_REPLY_EXPECTED, dest, path, iface, member, S(""), 0, sig);
 }
 
 int bus_call_end(bus_conn *c, bus_call *call, void (*replied)(bus_call *, const bus_msg *), void (*done)(void)) {
@@ -147,17 +147,17 @@ const bus_error *bus_msg_error(const bus_msg *m, bus_error *buf) {
   if (m->type != BUS_ERROR)
     return NULL;
   bus_rd r = m->body;
-  *buf = (bus_error){m->error, m->sig[0] == 's' ? bus_rd_str(&r) : ""};
+  *buf = (bus_error){m->error, m->sig.p[0] == 's' ? bus_rd_str(&r) : S("")};
   return buf;
 }
 
-int bus_add_match(bus_conn *c, bus_match *match, const char *rule) {
+int bus_add_match(bus_conn *c, bus_match *match, str rule) {
   if (!match->on) {
     match->on = true;
     match->next = c->matches;
     c->matches = match;
   }
-  bus_wr *w = begin(c, BUS_METHOD_CALL, BUS_NO_REPLY_EXPECTED, DBUS, DBUS_PATH, DBUS, "AddMatch", NULL, 0, "s");
+  bus_wr *w = bus_call_begin(c, S(DBUS), S(DBUS_PATH), S(DBUS), S("AddMatch"), "s", false);
   bus_wr_str(w, rule);
   const int64_t r = commit(c);
   return r < 0 ? (int)r : 0;
@@ -171,8 +171,8 @@ void bus_add_object(bus_conn *c, bus_object *object) {
   }
 }
 
-int bus_request_name(bus_conn *c, const char *name) {
-  bus_wr *w = begin(c, BUS_METHOD_CALL, BUS_NO_REPLY_EXPECTED, DBUS, DBUS_PATH, DBUS, "RequestName", NULL, 0, "su");
+int bus_request_name(bus_conn *c, str name) {
+  bus_wr *w = bus_call_begin(c, S(DBUS), S(DBUS_PATH), S(DBUS), S("RequestName"), "su", false);
   bus_wr_str(w, name);
   bus_wr_u32(w, 0);
   const int64_t r = commit(c);
@@ -180,8 +180,8 @@ int bus_request_name(bus_conn *c, const char *name) {
 }
 
 bus_wr *bus_reply_begin(bus_req *req, const char *sig) {
-  return begin(req->conn, BUS_METHOD_RETURN, BUS_NO_REPLY_EXPECTED, req->sender, NULL, NULL, NULL, NULL, req->serial,
-               sig);
+  return begin(req->conn, BUS_METHOD_RETURN, BUS_NO_REPLY_EXPECTED, sb_str(req->sender), S(""), S(""), S(""), S(""),
+               req->serial, sig);
 }
 
 int bus_reply_end(bus_req *req) {
@@ -198,8 +198,9 @@ int bus_reply(bus_req *req) {
   return bus_reply_end(req);
 }
 
-int bus_reply_error(bus_req *req, const char *name, const char *message) {
-  bus_wr *w = begin(req->conn, BUS_ERROR, BUS_NO_REPLY_EXPECTED, req->sender, NULL, NULL, NULL, name, req->serial, "s");
+int bus_reply_error(bus_req *req, str name, str message) {
+  bus_wr *w = begin(req->conn, BUS_ERROR, BUS_NO_REPLY_EXPECTED, sb_str(req->sender), S(""), S(""), S(""), name,
+                    req->serial, "s");
   bus_wr_str(w, message);
   return bus_reply_end(req);
 }
@@ -233,7 +234,7 @@ int bus_open(bus_conn *c, const char *path) {
   }
   memcpy(c->tx, auth, len);
   c->tx_len = len;
-  bus_call_begin(c, DBUS, DBUS_PATH, DBUS, "Hello", "", true);
+  bus_call_begin(c, S(DBUS), S(DBUS_PATH), S(DBUS), S("Hello"), "", true);
   const int64_t r = commit(c);
   if (r < 0) {
     bus_close(c);
@@ -256,9 +257,9 @@ void bus_close(bus_conn *c) {
   /* What's pending gets its error: the bus would have said NoReply */
   uint8_t body[64] __attribute__((aligned(8)));
   bus_wr w = {body, body + sizeof(body), body, false};
-  bus_wr_str(&w, "the connection closed");
-  const bus_msg gone = {.type = BUS_ERROR, .path = "", .iface = "", .member = "", .dest = "", .sender = "",
-                        .error = "org.freedesktop.DBus.Error.NoReply", .sig = "s",
+  bus_wr_str(&w, S("the connection closed"));
+  const bus_msg gone = {.type = BUS_ERROR, .path = S(""), .iface = S(""), .member = S(""), .dest = S(""),
+                        .sender = S(""), .error = S("org.freedesktop.DBus.Error.NoReply"), .sig = S("s"),
                         .body = {body, w.p, body, false}};
   while (c->calls != NULL) {
     bus_call *call = c->calls;
@@ -270,9 +271,9 @@ void bus_close(bus_conn *c) {
 short bus_events(const bus_conn *c) { return POLLIN | (c->tx_len > 0 ? POLLOUT : 0); }
 
 static void dispatch(bus_conn *c, const uint8_t *h, size_t len) {
-  bus_msg m = {.type = h[1], .flags = h[2], .path = "", .iface = "", .member = "", .error = "", .dest = "",
-               .sender = "", .sig = ""};
-  const char **text[8] = {[1] = &m.path, [2] = &m.iface, [3] = &m.member, [4] = &m.error, [6] = &m.dest,
+  bus_msg m = {.type = h[1], .flags = h[2], .path = S(""), .iface = S(""), .member = S(""), .error = S(""),
+               .dest = S(""), .sender = S(""), .sig = S("")};
+  str *text[8] = {[1] = &m.path, [2] = &m.iface, [3] = &m.member, [4] = &m.error, [6] = &m.dest,
                           [7] = &m.sender};
   bus_rd r = {h + 4, h + len, h, false};
   const uint32_t body = bus_rd_u32(&r);
@@ -281,12 +282,12 @@ static void dispatch(bus_conn *c, const uint8_t *h, size_t len) {
   while (bus_rd_more(&r, end)) {
     bus_rd_align(&r, 8);
     const uint8_t code = bus_rd_u8(&r);
-    const char *sig = bus_rd_sig(&r);
-    if (code < 8 && text[code] != NULL && (sig[0] == 's' || sig[0] == 'o') && sig[1] == '\0')
+    const str sig = bus_rd_sig(&r);
+    if (code < 8 && text[code] != NULL && (str_eq(sig, S("s")) || str_eq(sig, S("o"))))
       *text[code] = bus_rd_str(&r);
-    else if (code == 5 && strcmp(sig, "u") == 0)
+    else if (code == 5 && str_eq(sig, S("u")))
       m.reply_serial = bus_rd_u32(&r);
-    else if (code == 8 && strcmp(sig, "g") == 0)
+    else if (code == 8 && str_eq(sig, S("g")))
       m.sig = bus_rd_sig(&r);
     else
       bus_skip(&r, sig);
@@ -306,22 +307,21 @@ static void dispatch(bus_conn *c, const uint8_t *h, size_t len) {
   } else if (m.type == BUS_SIGNAL) {
     for (bus_match *match = c->matches, *next; match != NULL; match = next) {
       next = match->next;
-      if (strcmp(match->member, m.member) == 0 && strcmp(match->iface, m.iface) == 0)
+      if (str_eq(match->member, m.member) && str_eq(match->iface, m.iface))
         match->fn(match, &m);
     }
   } else if (m.type == BUS_METHOD_CALL) {
     bus_req req = {.conn = c, .serial = m.serial, .no_reply = m.flags & BUS_NO_REPLY_EXPECTED};
-    if (strlen(m.sender) >= sizeof(req.sender))
+    if (!sb_set(req.sender, m.sender))
       return;
-    strcpy(req.sender, m.sender);
     for (bus_object *o = c->objects; o != NULL; o = o->next)
-      if (strcmp(o->path, m.path) == 0 && (m.iface[0] == '\0' || strcmp(o->iface, m.iface) == 0)) {
+      if (str_eq(o->path, m.path) && (m.iface.n == 0 || str_eq(o->iface, m.iface))) {
         const int e = o->dispatch(&req, &m, o->userdata);
         if (e < 0)
-          bus_reply_error(&req, "org.freedesktop.DBus.Error.Failed", strerror(-e));
+          bus_reply_error(&req, S("org.freedesktop.DBus.Error.Failed"), str_c(strerror(-e)));
         return;
       }
-    bus_reply_error(&req, "org.freedesktop.DBus.Error.UnknownMethod", "no such object or interface");
+    bus_reply_error(&req, S("org.freedesktop.DBus.Error.UnknownMethod"), S("no such object or interface"));
   }
 }
 

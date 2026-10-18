@@ -97,7 +97,7 @@ static struct job {
 static void reply(bus_req *call, const char *text)
 {
 	if (strncmp(text, "err ", 4) == 0)
-		bus_reply_error(call, "org.senkos.System1.Error.Failed", text + 4);
+		bus_reply_error(call, S("org.senkos.System1.Error.Failed"), str_c(text + 4));
 	else
 		bus_reply(call);
 }
@@ -321,15 +321,15 @@ static int ask(bus_req *m, const char *fmt, ...)
 }
 
 /* A string argument: one word, the words after the request's go to the script as they are */
-static int ask_word(bus_req *m, const char *req, const char *w)
+static int ask_word(bus_req *m, const char *req, str w)
 {
 	char why[64];
 
-	if (w[0] == '\0' || strpbrk(w, " \t\n") != NULL || strlen(w) > 64) {
+	if (w.n == 0 || w.n > 64 || memchr(w.p, ' ', w.n) || memchr(w.p, '\t', w.n) || memchr(w.p, '\n', w.n)) {
 		snprintf(why, sizeof(why), "%s: one word", req);
-		return bus_reply_error(m, BUS_ERROR_INVALID_ARGS, why);
+		return bus_reply_error(m, S(BUS_ERROR_INVALID_ARGS), str_c(why));
 	}
-	return ask(m, "%s %s", req, w);
+	return ask(m, "%s %.*s", req, (int)w.n, w.p);
 }
 
 int system1_suspend(bus_req *m, void *userdata)
@@ -362,7 +362,7 @@ int system1_set_gpu_freq(bus_req *m, void *userdata, uint32_t hz)
 	return ask(m, "gpu %u", hz);
 }
 
-int system1_set_usb(bus_req *m, void *userdata, const char *state)
+int system1_set_usb(bus_req *m, void *userdata, str state)
 {
 	return ask_word(m, "usb", state);
 }
@@ -372,7 +372,7 @@ int system1_set_wifi(bus_req *m, void *userdata, bool on)
 	return ask(m, "wifi %s", on ? "on" : "off");
 }
 
-int system1_set_time_zone(bus_req *m, void *userdata, const char *zone)
+int system1_set_time_zone(bus_req *m, void *userdata, str zone)
 {
 	return ask_word(m, "clock zone", zone);
 }
@@ -418,7 +418,7 @@ static bool bus_up(bus_conn *bus)
 	if (bus_open(bus, BUS_SYSTEM) < 0)
 		return false;
 	system1_serve(bus, NULL);
-	if (bus_request_name(bus, SYSTEM1_NAME) < 0) {
+	if (bus_request_name(bus, S(SYSTEM1_NAME)) < 0) {
 		bus_close(bus);
 		return false;
 	}

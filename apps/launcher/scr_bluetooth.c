@@ -64,7 +64,7 @@ static void bluetooth_frame(ui_screen *screen, nav *ui, ui_rect content) {
     const bt_device *d = paired[i];
     if (d->p.connected && connected == NULL)
       connected = d;
-    sb_set(labels[i], str_c(d->p.alias),
+    sb_set(labels[i], sb_str(d->p.alias),
            bus_call_pending(&d->call) ? S("  \u00b7  \u2026") : d->p.connected ? S("  \u00b7  connected") : S(""));
     of[n] = d;
     rows[n++] = (entry){.label = sb_str(labels[i]), .action = BT_PICK, .icon = icons[bt_kind(d)],
@@ -76,7 +76,7 @@ static void bluetooth_frame(ui_screen *screen, nav *ui, ui_rect content) {
   }
   STRBUF(96) status;
   if (connected != NULL)
-    sb_set(status, S("Connected to "), str_c(connected->p.alias));
+    sb_set(status, S("Connected to "), sb_str(connected->p.alias));
   else
     sb_set(status, on < 0 ? S("No Bluetooth") : on ? S("On") : S("Off"));
   status_line(&content, sb_str(status));
@@ -102,7 +102,7 @@ static bool bluetooth_button(ui_screen *screen, nav *ui, int button) {
     return false;
   const bt_device *d = focused(ui);
   if (d != NULL)
-    bt_forget(d->path.p);
+    bt_forget(sb_str(d->path));
   return true;
 }
 
@@ -125,11 +125,11 @@ static void pairing_frame(ui_screen *screen, nav *ui, ui_rect content) {
   for (size_t i = 0; i < count; i++) {
     const bt_device *d = all[i];
     const bool busy = bus_call_pending(&d->call);
-    if (d->p.paired || d->p.name[0] == '\0')
+    if (d->p.paired || d->p.name.n == 0)
       continue;
     if (busy)
       pairing = d;
-    sb_set(labels[n], str_c(d->p.name),
+    sb_set(labels[n], sb_str(d->p.name),
            busy ? S("  \u00b7  pairing\u2026") : d->gone ? S("  \u00b7  gone") : S(""));
     of[n] = d;
     rows[n] = (entry){.label = sb_str(labels[n]), .action = BT_PAIR, .icon = icons[bt_kind(d)]};
@@ -137,7 +137,7 @@ static void pairing_frame(ui_screen *screen, nav *ui, ui_rect content) {
   }
   STRBUF(96) status;
   if (pairing != NULL)
-    sb_set(status, S("Pairing with "), str_c(pairing->p.name), S("\u2026"));
+    sb_set(status, S("Pairing with "), sb_str(pairing->p.name), S("\u2026"));
   else
     sb_set(status, bt_powered() <= 0 ? S("Bluetooth is off")
                    : bt_searching()  ? S("Searching\u2026 Put the device in pairing mode.")
@@ -154,13 +154,13 @@ static void choose(nav *ui, void *data) {
     bt_power(!c->checked);
     break;
   case BT_PICK:
-    bt_connect(c->path.p);
+    bt_connect(sb_str(c->path));
     break;
   case BT_PAIRING:
     screen_push(state->visible, ui, &bt_pairing_screen, 0);
     break;
   case BT_PAIR:
-    bt_pair(c->path.p);
+    bt_pair(sb_str(c->path));
     break;
   default:
     break;

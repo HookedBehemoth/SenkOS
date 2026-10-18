@@ -24,13 +24,13 @@ enum { BUS_NO_REPLY_EXPECTED = 1 };
 typedef struct {
   uint8_t type, flags;
   uint32_t serial, reply_serial;
-  /* "" when not there */
-  const char *path, *iface, *member, *error, *dest, *sender, *sig;
+  /* S("") when not there; each NUL-terminated (in the message) */
+  str path, iface, member, error, dest, sender, sig;
   bus_rd body;
 } bus_msg;
 
 typedef struct {
-  const char *name, *message;
+  str name, message;
 } bus_error;
 
 typedef struct bus_conn bus_conn;
@@ -58,7 +58,7 @@ typedef struct bus_match bus_match;
 struct bus_match {
   bus_match *next;
   bool on;
-  const char *iface, *member;
+  str iface, member;
   void (*fn)(bus_match *match, const bus_msg *signal);
   void (*user)(void); /* gen.py's thunks: what to call */
 };
@@ -68,7 +68,7 @@ typedef struct {
   bus_conn *conn;
   uint32_t serial;
   bool no_reply;
-  char sender[48];
+  STRBUF(48) sender;
 } bus_req;
 
 /* An object's interface, served: dispatch reads a call and answers it (now or later). A negative
@@ -77,7 +77,7 @@ typedef struct bus_object bus_object;
 struct bus_object {
   bus_object *next;
   bool on;
-  const char *path, *iface;
+  str path, iface;
   int (*dispatch)(bus_req *req, const bus_msg *call, void *userdata);
   void *userdata;
 };
@@ -104,23 +104,22 @@ short bus_events(const bus_conn *c);
 int bus_process(bus_conn *c);
 
 /* A method call to write: its body after it, then bus_call_end. `sig` is the body's. */
-bus_wr *bus_call_begin(bus_conn *c, const char *dest, const char *path, const char *iface, const char *member,
-                       const char *sig, bool reply);
+bus_wr *bus_call_begin(bus_conn *c, str dest, str path, str iface, str member, const char *sig, bool reply);
 int bus_call_end(bus_conn *c, bus_call *call, void (*replied)(bus_call *, const bus_msg *), void (*done)(void));
 /* A reply's error, or NULL for a method return */
 const bus_error *bus_msg_error(const bus_msg *reply, bus_error *buf);
 extern const bus_error bus_malformed;
 
 /* Its rule to the bus (AddMatch), and the match taking what matches it (once per connection) */
-int bus_add_match(bus_conn *c, bus_match *match, const char *rule);
+int bus_add_match(bus_conn *c, bus_match *match, str rule);
 void bus_add_object(bus_conn *c, bus_object *object);
 /* RequestName, not waiting for the answer */
-int bus_request_name(bus_conn *c, const char *name);
+int bus_request_name(bus_conn *c, str name);
 
 /* Answers: a return with a body (bus_reply_begin, the body, bus_reply_end), an empty one, an error */
 bus_wr *bus_reply_begin(bus_req *req, const char *sig);
 int bus_reply_end(bus_req *req);
 int bus_reply(bus_req *req);
-int bus_reply_error(bus_req *req, const char *name, const char *message);
+int bus_reply_error(bus_req *req, str name, str message);
 
 #define BUS_ERROR_INVALID_ARGS "org.freedesktop.DBus.Error.InvalidArgs"
