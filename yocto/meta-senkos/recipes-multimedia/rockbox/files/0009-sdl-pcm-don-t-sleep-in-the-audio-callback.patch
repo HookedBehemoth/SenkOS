@@ -1,0 +1,44 @@
+From 3886d1e2d20f48f47dca74dbf3063ce6fa2b2994 Mon Sep 17 00:00:00 2001
+From: HookedBehemoth <luis@scheurenbrand.me>
+Date: Sun, 18 Oct 2026 19:40:47 +0200
+Subject: [PATCH] sdl: pcm: don't sleep in the audio callback
+
+The callback waited out each chunk it took, about 23 ms for the mixer's 1024
+frames. It runs once per period of the sound server's, and a game playing
+too shortens that to a few ms (PipeWire runs every stream at the shortest
+asked for): the callback missed most of them, and the music stuttered.
+
+Upstream-Status: Pending
+---
+ firmware/target/hosted/sdl/pcm-sdl.c | 15 ++-------------
+ 1 file changed, 2 insertions(+), 13 deletions(-)
+
+diff --git a/firmware/target/hosted/sdl/pcm-sdl.c b/firmware/target/hosted/sdl/pcm-sdl.c
+index 6577671..e43310b 100644
+--- a/firmware/target/hosted/sdl/pcm-sdl.c
++++ b/firmware/target/hosted/sdl/pcm-sdl.c
+@@ -337,19 +337,8 @@ static void sdl_audio_callback(void *handle, Uint8 *stream, int len)
+         {
+             new_buffer = false;
+             pcm_play_dma_status_callback(PCM_DMAST_STARTED);
+-
+-            if ((size_t)len > udata->num_out)
+-            {
+-                int delay = pcm_data_size*250 / pcm_sampr - 1;
+-
+-                if (delay > 0)
+-                {
+-                    SDL_Delay(delay);
+-
+-                    if (!pcm_is_playing())
+-                        break;
+-                }
+-            }
++            /* No waiting out the chunk here: the callback has one period of the sound server's
++             * (a game's few ms) to fill all of it */
+         }
+ 
+         pcm_data      += udata->num_in;
+-- 
+2.56.0
+

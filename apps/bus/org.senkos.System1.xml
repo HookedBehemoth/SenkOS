@@ -31,6 +31,11 @@
     <method name="SetLightSleep"><arg name="on" type="b"/></method>
     <!-- The UI's colors and the boot splash -->
     <method name="SetLightTheme"><arg name="on" type="b"/></method>
+    <!-- Keeps the lid, or a press of the power key, from putting the handheld to sleep: lid while
+         music plays (closed, the screen goes off instead), power_key while the screen is off (the
+         press turns it on). The lid let go while closed sleeps then. Both let go when the caller
+         leaves the bus. -->
+    <method name="SetSleepHold"><arg name="lid" type="b"/><arg name="power_key" type="b"/></method>
     <!-- The power key's hold to turn on: 128, 512, 1000 or 2000 -->
     <method name="SetPowerOnMs"><arg name="ms" type="u"/></method>
   </interface>

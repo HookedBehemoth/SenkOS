@@ -19,6 +19,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "media.h"
 #include "util.h"
 #include "wake.h"
 
@@ -252,8 +253,8 @@ int run_request(running *r, uint32_t op, int32_t arg) {
 }
 
 void run_pause(running *r) {
-  /* setsid made it a group leader: signals go to all it started */
-  if (!run_controlled(r) || run_request(r, APPCTL_PAUSE, 0) != 0)
+  /* setsid made it a group leader: signals go to all it started. What plays music plays on. */
+  if ((!run_controlled(r) || run_request(r, APPCTL_PAUSE, 0) != 0) && !media_playing(r->pid))
     kill(-r->pid, SIGSTOP);
 }
 

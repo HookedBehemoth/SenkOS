@@ -16,4 +16,6 @@ enum {
   UI_REFUSED,              /* sysd didn't do what was asked (sysd.h) */
   UI_DONE,                 /* sysd did it: what it changed may show */
   UI_POWER_HOLD,           /* the power key held POWER_HOLD_MS: the power options */
+  UI_ACTIVE,               /* a key while the screen rests (idle.h) */
+  UI_LID,                  /* the lid: 1 closed, 0 open (idle.h) */
 };

@@ -21,6 +21,7 @@
  *
  * Where each video was left is kept in $HOME/.local/state/mediaplayer/resume
  * and playback starts there. At the end the next video in the folder plays.
+ * While a video plays the screen stays on (zwp_idle_inhibit_manager_v1).
  */
 #include <errno.h>
 #include <dirent.h>
@@ -49,6 +50,7 @@
 
 #include "appctl.h"
 #include "cfg.h"
+#include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "pad.h"
 #include "str.h"
 #include "util.h"
@@ -400,6 +402,29 @@ static void key(unsigned code, bool down) {
     (down ? press : release)(b);
 }
 
+static struct zwp_idle_inhibit_manager_v1 *inhibit_manager;
+static struct zwp_idle_inhibitor_v1 *inhibitor;
+
+static void inhibit_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version) {
+  (void)data, (void)version;
+  if (strcmp(iface, zwp_idle_inhibit_manager_v1_interface.name) == 0)
+    inhibit_manager = wl_registry_bind(r, name, &zwp_idle_inhibit_manager_v1_interface, 1);
+}
+static void inhibit_global_remove(void *data, struct wl_registry *r, uint32_t name) { (void)data, (void)r, (void)name; }
+static const struct wl_registry_listener inhibit_registry = {inhibit_global, inhibit_global_remove};
+
+/* The screen kept on while a video plays */
+static void keep_screen_on(bool on) {
+  if (inhibit_manager == NULL || on == (inhibitor != NULL))
+    return;
+  if (on)
+    inhibitor = zwp_idle_inhibit_manager_v1_create_inhibitor(inhibit_manager, window.surface);
+  else {
+    zwp_idle_inhibitor_v1_destroy(inhibitor);
+    inhibitor = NULL;
+  }
+}
+
 static bool window_init(void) {
   if (!win_connect(key))
     return false;
@@ -425,6 +450,10 @@ static bool window_init(void) {
   wl_surface_set_input_region(toast_surface, none);
   wl_surface_set_input_region(video_surface, none);
   wl_region_destroy(none);
+  struct wl_registry *registry = wl_display_get_registry(win_display);
+  wl_registry_add_listener(registry, &inhibit_registry, NULL);
+  wl_display_roundtrip(win_display);
+  wl_registry_destroy(registry);
   win_map(&window);
   return true;
 }
@@ -1115,6 +1144,7 @@ int main(int argc, char **argv) {
     bus_messages();
     osd_draw();
     toast_draw();
+    keep_screen_on(pipe_ != NULL && prerolled && !finished && !user_paused && !ctl_paused);
     /* A crash or a dead battery costs at most this much */
     if (ms_now() - saved > 30000 && !user_paused && !ctl_paused) {
       remember();

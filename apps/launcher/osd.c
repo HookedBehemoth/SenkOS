@@ -1,6 +1,7 @@
 /* Volume, brightness, text, and performance overlays. */
 #include <limits.h>
 
+#include "idle.h"
 #include "launcher_internal.h"
 #include "layer.h"
 #include "perf.h"
@@ -25,6 +26,9 @@ static void map_osd(void) {
 }
 
 void osd_show_level(bool brightness, int percent) {
+  /* Off, no frame comes back: nothing to show it on anyway */
+  if (idle_screen_off())
+    return;
   map_osd();
   if (osd_screen == NULL)
     osd_screen = gfx_target_create(&osd, true);
@@ -52,6 +56,8 @@ void osd_show_level(bool brightness, int percent) {
 }
 
 void osd_show_text(str text, int ms) {
+  if (idle_screen_off())
+    return;
   map_osd();
   if (osd_screen == NULL)
     osd_screen = gfx_target_create(&osd, true);
@@ -67,6 +73,29 @@ void osd_show_text(str text, int ms) {
   osd_until = ms_now() + ms;
 }
 
+void osd_show_track(str title, str artist) {
+  if (idle_screen_off())
+    return;
+  map_osd();
+  if (osd_screen == NULL)
+    osd_screen = gfx_target_create(&osd, true);
+  int w, h;
+  if (osd_screen == NULL || !gfx_begin(osd_screen, &w, &h))
+    return;
+  ui_fill(0, 0, w, h, OSD_BG);
+  STRBUF(256) line;
+  if (artist.n > 0)
+    sb_set(line, title, S("  \u00b7  "), artist);
+  else
+    sb_set(line, title);
+  const int x = MARGIN * 2 + BAR_ICON;
+  ui_icon(ICON_MUSIC, BAR_ICON, MARGIN, (h - BAR_ICON) / 2, OSD_FG);
+  ui_text(BAR_TEXT, x, (h - ui_text_height(BAR_TEXT)) / 2,
+          ui_text_fit(BAR_TEXT, sb_str(line), w - x - MARGIN, NULL), OSD_FG);
+  gfx_end(osd_screen);
+  osd_until = ms_now() + TRACK_MS;
+}
+
 static const unsigned corner_anchors[PERF_CORNERS] = {
     [PERF_TOP_LEFT] = LAYER_TOP | LAYER_LEFT,
     [PERF_TOP_RIGHT] = LAYER_TOP | LAYER_RIGHT,
@@ -75,6 +104,8 @@ static const unsigned corner_anchors[PERF_CORNERS] = {
 };
 
 void show_perf(void) {
+  if (idle_screen_off())
+    return;
   if (!perf.configured) {
     layer_overlay(&perf, corner_anchors[perf_corner()], 0);
     win_map(&perf);

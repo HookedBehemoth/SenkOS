@@ -2285,16 +2285,21 @@ int main(int argc, char **argv) {
      * is shown, so a frame a little over a refresh costs a little, not a
      * whole refresh (double buffering). Waited for in the loop, so the
      * launcher, the window and signals are heard meanwhile. A hidden window
-     * gets none: two refreshes past the last commit at most, then on. */
-    static int64_t committed;
+     * or the screen off gets none: two refreshes past the last commit at
+     * most, then a refresh each on our own clock till one comes again (the
+     * game at its speed, the sound fed). */
+    static int64_t committed, due;
+    static bool blind;
     for (unsigned i = 0; i < swaps && running; i++) {
-      const int64_t until = committed + 2 * refresh_ns;
+      const int64_t until = blind ? due : committed + 2 * refresh_ns;
       for (int64_t left; window.frame_pending && (left = until - ns_now()) > 0;)
         if (!win_wait(fds, ctl >= 0, (int)(left / 1000000) + 1))
           running = false;
+      blind = window.frame_pending;
       win_frame(&window);
       present();
       committed = ns_now();
+      due = MAX(until + refresh_ns, committed);
     }
     /* A crash costs at most this much play */
     if (ms_now() - flushed > 10000) {

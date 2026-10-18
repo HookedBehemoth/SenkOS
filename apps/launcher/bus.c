@@ -8,9 +8,13 @@
 #include "wake.h"
 #include "win.h"
 
-static bus_conn conn;
-static bool up;
-static uint64_t tried_at;
+/* A bus, connected when first needed, again a second after it went */
+typedef struct {
+  bus_conn conn;
+  bool up;
+  uint64_t tried_at;
+} link;
+static link sys, ses;
 
 static struct {
   str name;
@@ -53,7 +57,7 @@ static void owner_changed(bus_match *match, const bus_msg *m) {
   (void)before;
   for (size_t i = 0; i < watch_count && !r.bad && str_eq(m->sig, S("sss")); i++)
     if (str_eq(watches[i].name, name))
-      watches[i].owned(&conn, now.n > 0);
+      watches[i].owned(&sys.conn, now.n > 0);
 }
 static bus_match owner_match = {.iface = S(DBUS), .member = S("NameOwnerChanged"), .fn = owner_changed};
 
@@ -62,60 +66,92 @@ static void has_owner(bus_call *call, const bus_msg *m) {
   bus_rd r = m->body;
   const bool has = bus_rd_bool(&r);
   if (bus_msg_error(m, &buf) == NULL && str_eq(m->sig, S("b")) && !r.bad)
-    bus_call_owner(call, typeof(watches[0]), has)->owned(&conn, has);
+    bus_call_owner(call, typeof(watches[0]), has)->owned(&sys.conn, has);
 }
 
 static bool bus_open_system(void) {
-  int r = bus_open(&conn, BUS_SYSTEM);
+  int r = bus_open(&sys.conn, BUS_SYSTEM);
   for (size_t i = 0; i < watch_count && r >= 0; i++) {
     STRBUF(256) match;
     sb_set(match, S("type='signal',sender='" DBUS "',interface='" DBUS "',member='NameOwnerChanged',arg0='"),
            watches[i].name, S("'"));
-    r = bus_add_match(&conn, &owner_match, sb_str(match));
+    r = bus_add_match(&sys.conn, &owner_match, sb_str(match));
     if (r >= 0) {
-      bus_wr_str(bus_call_begin(&conn, S(DBUS), S("/org/freedesktop/DBus"), S(DBUS), S("NameHasOwner"), "s", true),
+      bus_wr_str(bus_call_begin(&sys.conn, S(DBUS), S("/org/freedesktop/DBus"), S(DBUS), S("NameHasOwner"), "s", true),
                  watches[i].name);
-      r = bus_call_end(&conn, &watches[i].has, has_owner, NULL);
+      r = bus_call_end(&sys.conn, &watches[i].has, has_owner, NULL);
     }
     if (r >= 0 && watches[i].connected != NULL)
-      watches[i].connected(&conn);
+      watches[i].connected(&sys.conn);
   }
   if (r < 0)
-    bus_close(&conn);
+    bus_close(&sys.conn);
   return r >= 0;
 }
 
-bus_conn *bus_get(void) {
-  if (!up && ms_now() - tried_at >= 1000) {
-    tried_at = ms_now();
-    up = bus_open_system();
-  }
-  return up ? &conn : NULL;
+static void (*session_connected)(bus_conn *bus), (*session_lost)(void);
+
+void bus_on_session(void (*connected)(bus_conn *bus), void (*lost)(void)) {
+  session_connected = connected;
+  session_lost = lost;
 }
 
-struct pollfd bus_pollfd(int *timeout_ms) {
-  if (bus_get() == NULL) {
-    const int ms = (int)(1000 - MIN(1000, ms_now() - tried_at));
+/* The player's (weston.init) */
+static bool open_session(void) {
+  if (session_connected == NULL || bus_open_session(&ses.conn) < 0)
+    return false;
+  session_connected(&ses.conn);
+  return true;
+}
+
+static bus_conn *link_get(link *l, bool (*open)(void)) {
+  if (!l->up && ms_now() - l->tried_at >= 1000) {
+    l->tried_at = ms_now();
+    l->up = open();
+  }
+  return l->up ? &l->conn : NULL;
+}
+
+bus_conn *bus_get(void) { return link_get(&sys, bus_open_system); }
+bus_conn *bus_session(void) { return link_get(&ses, open_session); }
+
+static struct pollfd link_pollfd(link *l, bool (*open)(void), int *timeout_ms) {
+  if (link_get(l, open) == NULL) {
+    const int ms = (int)(1000 - MIN(1000, ms_now() - l->tried_at));
     if (*timeout_ms < 0 || ms < *timeout_ms)
       *timeout_ms = ms;
     return (struct pollfd){.fd = -1};
   }
-  return (struct pollfd){.fd = bus_fd(&conn), .events = bus_events(&conn)};
+  return (struct pollfd){.fd = bus_fd(&l->conn), .events = bus_events(&l->conn)};
+}
+
+struct pollfd bus_pollfd(int *timeout_ms) { return link_pollfd(&sys, bus_open_system, timeout_ms); }
+struct pollfd bus_session_pollfd(int *timeout_ms) { return link_pollfd(&ses, open_session, timeout_ms); }
+
+/* False when it went */
+static bool link_dispatch(link *l, short revents, const char *what) {
+  if (!l->up || revents == 0)
+    return true;
+  const int r = bus_process(&l->conn);
+  if (r >= 0)
+    return true;
+  fprintf(stderr, "launcher: %s bus: %s\n", what, strerror(-r));
+  /* Calls from what fails meanwhile fail too: it's still the bus, closed */
+  l->tried_at = ms_now();
+  bus_close(&l->conn);
+  l->up = false;
+  return false;
 }
 
 void bus_dispatch(short revents) {
-  if (!up || revents == 0)
-    return;
-  const int r = bus_process(&conn);
-  if (r < 0) {
-    fprintf(stderr, "launcher: system bus: %s\n", strerror(-r));
-    /* Calls from what fails meanwhile fail too: it's still the bus, closed */
-    tried_at = ms_now();
-    bus_close(&conn);
-    up = false;
+  if (!link_dispatch(&sys, revents, "system"))
     for (size_t i = 0; i < watch_count; i++)
-      watches[i].owned(&conn, false);
-  }
+      watches[i].owned(&sys.conn, false);
+}
+
+void bus_session_dispatch(short revents) {
+  if (!link_dispatch(&ses, revents, "session") && session_lost != NULL)
+    session_lost();
 }
 
 /* One object of an a{oa{sa{sv}}} (GetManagedObjects), or InterfacesAdded's oa{sa{sv}}: each

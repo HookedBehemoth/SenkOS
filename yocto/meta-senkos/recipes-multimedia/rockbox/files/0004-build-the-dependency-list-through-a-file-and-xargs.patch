@@ -1,0 +1,46 @@
+From d9e1176e5061c3928b9e1239b197529fa47b3a1c Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 16:43:56 +0200
+Subject: [PATCH] build: the dependency list through a file and xargs
+
+As one shell argument, the source list passes the kernel's limit on an
+argument's length (MAX_ARG_STRLEN, 128 KiB) in a deep build directory
+(Yocto's work directories): "/bin/sh: Argument list too long".
+
+Upstream-Status: Pending
+---
+ tools/functions.make | 5 ++++-
+ tools/root.make      | 1 +
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tools/functions.make b/tools/functions.make
+index cbdddab..cc98e33 100644
+--- a/tools/functions.make
++++ b/tools/functions.make
+@@ -57,7 +57,10 @@ else
+ endif
+ 
+ # calculate dependencies for a list of source files $(2) and output them to $(1)
+-mkdepfile = $(SILENT)perl $(TOOLSDIR)/multigcc.pl $(CC) $(PPCFLAGS) $(OTHER_INC) -MG -MM -include config.h -- $(2) | \
++# The files go through a list and xargs: as one argument they may pass the kernel's limit
++# (MAX_ARG_STRLEN) in a deep build directory. A list per call, named by its length: make
++# writes them all before the recipe's first line runs.
++mkdepfile = $(file >$(1).$(words $(2)),$(2))$(SILENT)xargs perl $(TOOLSDIR)/multigcc.pl $(CC) $(PPCFLAGS) $(OTHER_INC) -MG -MM -include config.h -- <$(1).$(words $(2)) | \
+ 	sed -e "s: lang.h: lang/lang.h:" \
+ 	-e 's:_asmdefs.o:_asmdefs.h:' \
+ 	-e "s: max_language_size.h: lang/max_language_size.h:" | \
+diff --git a/tools/root.make b/tools/root.make
+index f21999d..bfb96b8 100644
+--- a/tools/root.make
++++ b/tools/root.make
+@@ -222,6 +222,7 @@ $(DEPFILE) dep:
+ 	$(call mkdepfile,$(DEPFILE)_,$(ASMDEFS_SRC))
+ 	$(call bmpdepfile,$(DEPFILE)_,$(BMP) $(PBMP))
+ 	@mv $(DEPFILE)_ $(DEPFILE)
++	@rm -f $(DEPFILE)_.*
+ 
+ bin: $(DEPFILE) $(TOOLS) $(BUILDDIR)/$(BINARY) $(RBINFO)
+ rocks: $(DEPFILE) $(TOOLS) $(ROCKS)
+-- 
+2.56.0
+

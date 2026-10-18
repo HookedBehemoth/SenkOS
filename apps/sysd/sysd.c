@@ -3,7 +3,8 @@
  * sysd: root's side of the UI, started (and again, should it die) by init (inittab).
  *
  * Suspends on lid close or a power-key press let go within HOLD_S (held longer, the launcher
- * shows the power options) and stays asleep while the lid is closed;
+ * shows the power options) and stays asleep while the lid is closed, unless the launcher holds
+ * either off (SetSleepHold: music plays, the screen is off);
  * /usr/sbin/suspend picks which sleep, one the lid can end or super standby. Only reacts to
  * events, never to the state at startup, so a misread lid can't put the handheld to sleep at
  * boot.
@@ -190,6 +191,14 @@ static double now(void)
 	return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* SetSleepHold's, its caller's (the hold goes with it) */
+static struct {
+	bool lid, power;
+	char holder[64];
+} hold;
+/* The lid let go while closed: sleep */
+static bool lid_let_go;
+
 /* 0 when asleep and back, else the first suspend's status. Again while the lid is closed. */
 static int suspend(int lid)
 {
@@ -212,7 +221,7 @@ static int suspend(int lid)
 		if (status != 0)
 			sleep(1);	/* suspend refused: don't spin */
 		arg = NULL;
-	} while (lid_closed(lid));
+	} while (lid_closed(lid) && !hold.lid);
 	lock_vt(0);
 	return first;
 }
@@ -407,6 +416,37 @@ int system1_set_light_theme(bus_req *m, void *userdata, bool on)
 	return ask(m, "theme %s", on ? "light" : "dark");
 }
 
+static void set_hold(bool lid, bool power, const char *holder)
+{
+	if (hold.lid && !lid)
+		lid_let_go = true;
+	hold.lid = lid;
+	hold.power = power;
+	snprintf(hold.holder, sizeof(hold.holder), "%s", holder);
+	syslog(LOG_INFO, "sleep hold: lid %d power key %d", lid, power);
+}
+
+int system1_set_sleep_hold(bus_req *m, void *userdata, bool lid, bool power_key)
+{
+	set_hold(lid, power_key, m->sender.p);
+	return bus_reply(m);
+}
+
+/* The holder gone (the launcher quit or died): no hold */
+static void owner_changed(bus_match *match, const bus_msg *m)
+{
+	bus_rd r = m->body;
+	const str name = bus_rd_str(&r), before = bus_rd_str(&r), now = bus_rd_str(&r);
+
+	(void)match, (void)before;
+	if (!r.bad && now.n == 0 && hold.holder[0] != '\0' && str_eq(name, str_c(hold.holder)))
+		set_hold(false, false, "");
+}
+
+static bus_match owner_match = {
+	.iface = S("org.freedesktop.DBus"), .member = S("NameOwnerChanged"), .fn = owner_changed
+};
+
 int system1_set_power_on_ms(bus_req *m, void *userdata, uint32_t ms)
 {
 	return ask(m, "power-on %u", ms);
@@ -418,7 +458,10 @@ static bool bus_up(bus_conn *bus)
 	if (bus_open(bus, BUS_SYSTEM) < 0)
 		return false;
 	system1_serve(bus, NULL);
-	if (bus_request_name(bus, S(SYSTEM1_NAME)) < 0) {
+	/* A connection's own name goes with it: a hold's caller gone */
+	if (bus_add_match(bus, &owner_match, S("type='signal',sender='org.freedesktop.DBus',"
+					       "member='NameOwnerChanged',arg2=''")) < 0 ||
+	    bus_request_name(bus, S(SYSTEM1_NAME)) < 0) {
 		bus_close(bus);
 		return false;
 	}
@@ -497,17 +540,20 @@ int main(void)
 				syslog(LOG_WARNING, "system bus: %s", strerror(-r));
 				bus_close(&bus);
 				up = false;
+				/* sysd's bus is gone: so is anyone's hold */
+				set_hold(false, false, "");
 			}
 		}
-		sleep_now = asking;
+		sleep_now = asking || (lid_let_go && lid_closed(lid));
+		lid_let_go = false;
 		for (int i = 0; i < n; i++)
 			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
-				if (ev.type == EV_SW && ev.code == SW_LID && ev.value == 1)
+				if (ev.type == EV_SW && ev.code == SW_LID && ev.value == 1 && !hold.lid)
 					sleep_now = 1;
 				if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 1)
 					power_down = now() > quiet_until ? now() : 0;
 				if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 0) {
-					sleep_now |= power_down > 0 && now() - power_down < HOLD_S;
+					sleep_now |= power_down > 0 && now() - power_down < HOLD_S && !hold.power;
 					power_down = 0;
 				}
 			}

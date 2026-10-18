@@ -70,8 +70,9 @@ static void set_clocks(int cpu, int gpu) {
     SYSD("GPU", set_gpu_freq, (uint32_t)(gpu > 0 ? gpu_steps[gpu - 1] : 0));
 }
 
-/* Ours to write: group video (a udev rule, senkos-base). Saved by save-settings, at shutdown and
- * suspend. */
+/* Ours to write: group video (a udev rule, senkos-base). The one chosen is also in
+ * config_file("-brightness"): what the launcher starts with and what save-settings keeps for the next
+ * boot, not the backlight's (dimmed while idle, power_dim). */
 static void set_brightness(long value) {
   glob_t g;
   if (glob("/sys/class/backlight/*/brightness", 0, NULL, &g) != 0)
@@ -152,11 +153,28 @@ void power_apply(void) {
   set_clocks(app_cpu, app_gpu);
 }
 
+static void save_brightness(void) {
+  FILE *f = config_file("-brightness", "w");
+  if (f != NULL) {
+    fprintf(f, "%ld\n", brightness);
+    fclose(f);
+  }
+}
+
+void power_dim(bool dim) {
+  if (brightness_max > 0 && brightness > 0)
+    set_brightness(dim ? MAX(brightness / 3, (brightness_max + 99) / 100) : brightness);
+}
+
 void power_init(void) {
   cpu_count = read_steps("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies", cpu_steps);
   gpu_count = read_steps("/sys/class/devfreq/*.gpu/available_frequencies", gpu_steps);
   brightness_max = read_long("/sys/class/backlight/*/max_brightness");
-  brightness = read_long("/sys/class/backlight/*/brightness");
+  FILE *f = config_file("-brightness", "r");
+  if (f == NULL || fscanf(f, "%ld", &brightness) != 1 || brightness <= 0 || brightness > brightness_max)
+    brightness = read_long("/sys/class/backlight/*/brightness");
+  if (f != NULL)
+    fclose(f);
   set_clocks(0, 0);
 }
 
@@ -256,6 +274,7 @@ void power_step(int row, int by) {
     const long step = (brightness * steps + brightness_max / 2) / brightness_max;
     brightness = brightness_max * CLAMP(step + by * (1 << MIN(run / 8, 3)), 1, steps) / steps;
     set_brightness(brightness);
+    save_brightness();
     return;
   }
   }

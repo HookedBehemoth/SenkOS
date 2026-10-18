@@ -1,0 +1,138 @@
+From bacba23f1cc9ec96a4d43ab7ddf8bed3955c406c Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 17:57:07 +0200
+Subject: [PATCH] hosted: configure --relocatable finds the installation next
+ to the binary
+
+The share, library and binary paths start with <PREFIX>, replaced at
+runtime with the directory above the binary's (/proc/self/exe): an
+installation that works wherever it's unpacked.
+
+Upstream-Status: Pending
+---
+ firmware/target/hosted/filesystem-app.c | 40 ++++++++++++++++++++++++-
+ tools/configure                         | 11 ++++++-
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/firmware/target/hosted/filesystem-app.c b/firmware/target/hosted/filesystem-app.c
+index 91ce489..87fb427 100644
+--- a/firmware/target/hosted/filesystem-app.c
++++ b/firmware/target/hosted/filesystem-app.c
+@@ -26,6 +26,7 @@
+ #include <errno.h>
+ #include <string.h>
+ #include <limits.h>
++#include <unistd.h>
+ #include "config.h"
+ #include "system.h"
+ #include "file.h"
+@@ -124,9 +125,41 @@ void startup_rbhome(void)
+ static char rbconfig[MAX_PATH];
+ #endif
+ 
++#ifdef HAVE_SPECIAL_DIRS
++/* configure --relocatable: the share, library and binary paths start with
++ * PREFIX_DIR, the directory above the binary's (<prefix>/bin/rockbox) */
++#define PREFIX_DIR "<PREFIX>"
++#define PREFIX_DIR_LEN (sizeof(PREFIX_DIR)-1)
++static char rbprefix[MAX_PATH];
++
++static void prefix_init(void)
++{
++    ssize_t n = readlink("/proc/self/exe", rbprefix, sizeof(rbprefix) - 1);
++    if (n < 0)
++        n = 0;
++    rbprefix[n] = '\0';
++    for (int i = 0; i < 2; i++)
++    {
++        char *slash = strrchr(rbprefix, '/');
++        if (slash)
++            *slash = '\0';
++    }
++}
++
++/* path with PREFIX_DIR replaced by rbprefix, in buf when it's replaced */
++static const char *expand_prefix(const char *path, char *buf, size_t bufsize)
++{
++    if (strncmp(PREFIX_DIR, path, PREFIX_DIR_LEN))
++        return path;
++    snprintf(buf, bufsize, "%s%s", rbprefix, path + PREFIX_DIR_LEN);
++    return buf;
++}
++#endif
++
+ void paths_init(void)
+ {
+ #ifdef HAVE_SPECIAL_DIRS
++    prefix_init();
+     /* make sure the settings' directory exists, it's needed for config.cfg */
+ #if (CONFIG_PLATFORM & PLATFORM_ANDROID)
+     os_mkdir("/sdcard/rockbox" __MKDIR_MODE_ARG);
+@@ -198,8 +231,11 @@ static const char* _get_user_file_path(const char *path,
+ 
+     if (ret != buf) /* not found in $HOME, try ROCKBOX_BASE_DIR, !NEED_WRITE only */
+     {
+-        if (path_append(buf, ROCKBOX_SHARE_PATH, pos, bufsize) >= bufsize)
++        char share[MAX_PATH];
++        if (path_append(share, ROCKBOX_SHARE_PATH, pos, sizeof(share)) >= sizeof(share))
+             return NULL;
++        if (expand_prefix(share, buf, bufsize) == share)
++            strlcpy(buf, share, bufsize);
+ 
+         if (os_file_exists(buf))
+             ret = buf;
+@@ -226,6 +262,8 @@ const char * handle_special_dirs(const char *dir, unsigned flags,
+     }
+     else if (!strncmp(ROCKBOX_DIR, dir, ROCKBOX_DIR_LEN))
+         dir = _get_user_file_path(dir, flags, buf, bufsize);
++    else
++        dir = expand_prefix(dir, buf, bufsize);
+ #endif
+ #ifdef HAVE_MULTIDRIVE
+ #define MULTIDRIVE_DIR_LEN (sizeof(MULTIDRIVE_DIR)-1)
+diff --git a/tools/configure b/tools/configure
+index c55cdde..ec3e2eb 100755
+--- a/tools/configure
++++ b/tools/configure
+@@ -72,7 +72,12 @@ prefixtools () {
+ 
+ app_set_paths () {
+     # setup files and paths depending on the platform
+-    if [ -z "$ARG_PREFIX" ]; then
++    if [ "$ARG_RELOCATABLE" = "1" ]; then
++        # <PREFIX>: the directory above the binary's, found at runtime
++        sharedir="<PREFIX>/share/rockbox"
++        bindir="<PREFIX>/bin"
++        libdir="<PREFIX>/lib"
++    elif [ -z "$ARG_PREFIX" ]; then
+         sharedir="/usr/local/share/rockbox"
+         bindir="/usr/local/bin"
+         libdir="/usr/local/lib"
+@@ -1572,6 +1577,8 @@ help() {
+                       enables the normal -fstack-protector option.
+     --32-bit          Force a 32-bit simulator (use with --sdl-threads for duke3d)
+     --prefix          Target installation directory
++    --relocatable     Find the installation relative to the binary at runtime
++                      (applications; install with make install PREFIX=dir)
+     --compiler-prefix Override compiler prefix (inherently dangerous)
+     --help            Shows this message (must not be used with other options)
+ 
+@@ -1585,6 +1592,7 @@ ARG_ENCOPTS=
+ ARG_LANG=
+ ARG_RAM=
+ ARG_RBDIR=
++ARG_RELOCATABLE=
+ ARG_TARGET=
+ ARG_TTS=
+ ARG_TTSOPTS=
+@@ -1626,6 +1634,7 @@ for arg in "$@"; do
+         --with-stack-protector=*) ARG_STACK_PROTECTOR=`echo "$arg" | cut -d = -f 2`;;
+         --with-stack-protector) ARG_STACK_PROTECTOR=default;;
+         --prefix=*)   ARG_PREFIX=`echo "$arg" | cut -d = -f 2`;;
++        --relocatable) ARG_RELOCATABLE=1;;
+         --compiler-prefix=*)   ARG_COMPILER_PREFIX=`echo "$arg" | cut -d = -f 2`;;
+ 		--help)       help;;
+ 		*)            err=1; echo "[ERROR] Option '$arg' unsupported";;
+-- 
+2.56.0
+

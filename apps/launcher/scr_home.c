@@ -3,6 +3,7 @@
 
 #include "assets.h"
 #include "keyboard.h"
+#include "media.h"
 #include "launcher_internal.h"
 #include "romdb.h"
 #include "sysd.h"
@@ -14,6 +15,7 @@ typedef STRBUF(200) row_label;
 static void choose_home(nav *ui, void *choice);
 static void choose_match(nav *ui, void *choice);
 static void choose_quick_menu(nav *ui, void *choice);
+static void choose_media(nav *ui, void *choice);
 static void choose_cores(nav *ui, void *choice);
 
 static const entry system_entries[] = {
@@ -223,13 +225,50 @@ static void match_frame(ui_screen *screen, nav *ui, ui_rect content) {
   }
 }
 
+/* The player's track and its buttons above the system's rows, Settings still first focused */
+static const entry *media_dialog(nav *ui, int w, int h, const media_player *p) {
+  enum { BUTTON_W = 72 };
+  static const int icons[] = {ICON_SKIP_BACK, ICON_PAUSE, ICON_SKIP_FORWARD};
+  ui_fill(0, 0, w, h, SCRIM);
+  const float dw = MIN(w - MARGIN * 4, 480), line = ui_text_height(ROW_TEXT) + 6;
+  const int lines = 1 + (p->artist.n > 0);
+  const float top = MARGIN * 2 + line * lines + ROW;
+  const float list = MIN(ROW * COUNTOF(system_entries) + MARGIN * 2, h - MARGIN * 4 - top);
+  const float x = (w - dw) / 2, y = (h - top - list) / 2;
+  ui_rounded(x, y, dw, top + list, TILE, RADIUS, 0);
+  ui_rounded(x, y, dw, top + list, EDGE, RADIUS, 1);
+  /* Untitled: the player's name (org.mpris.MediaPlayer2.NAME) */
+  const str title = p->title.n > 0 ? sb_str(p->title) : str_at(sb_str(p->name), sizeof("org.mpris.MediaPlayer2"));
+  ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)y + MARGIN * 2, ui_text_fit(ROW_TEXT, title, dw - MARGIN * 4, NULL), FG);
+  ui_text(ROW_TEXT, (int)x + MARGIN * 2, (int)(y + MARGIN * 2 + line),
+          ui_text_fit(ROW_TEXT, sb_str(p->artist), dw - MARGIN * 4, NULL), MUTED);
+  const bool can[] = {p->can_previous, true, p->can_next};
+  const float bx = x + (dw - BUTTON_W * 3 - GAP * 2) / 2, by = y + MARGIN * 2 + line * lines;
+  NAV_SCOPE(ui, nav_str("media")) {
+    for (int i = 0; i < 3; i++) {
+      const ui_rect r = {bx + i * (BUTTON_W + GAP), by, BUTTON_W, ROW - 4};
+      const unsigned flags = nav_item(ui, nav_int(i), r, (ui_rect){0, 0, w, h});
+      nav_ring(ui, r, 8);
+      ui_rounded(r.x, r.y, r.w, r.h, flags & NAV_FOCUSED ? FOCUS : EDGE, 8, 0);
+      const int icon = i == 1 && !p->playing ? ICON_PLAY : icons[i];
+      ui_icon(icon, ICON_PX, (int)(r.x + (r.w - ICON_PX) / 2), (int)(r.y + (r.h - ICON_PX) / 2), can[i] ? FG : DIM);
+      if (flags & NAV_ACTIVATED)
+        nav_defer(ui, choose_media, &i, sizeof(i));
+    }
+  }
+  nav_default(ui);
+  return menu(ui, system_entries, COUNTOF(system_entries), (ui_rect){x + MARGIN, y + top, dw - MARGIN * 2, list});
+}
+
 static void quick_menu_frame(ui_screen *screen, nav *ui, ui_rect content) {
   (void)screen;
   launcher_state *state = &launcher;
   (void)content;
+  const media_player *p = media_current();
   const entry *selected =
-      dialog_box(ui, state->draw.w, state->draw.h, S(""), S(""), system_entries,
-                 COUNTOF(system_entries));
+      p != NULL ? media_dialog(ui, state->draw.w, state->draw.h, p)
+                : dialog_box(ui, state->draw.w, state->draw.h, S(""), S(""), system_entries,
+                             COUNTOF(system_entries));
   if (selected != NULL)
     nav_defer(ui, choose_quick_menu, selected, sizeof(*selected));
 }
@@ -270,6 +309,15 @@ static void choose_quick_menu(nav *ui, void *choice) {
     break;
   default:
     break;
+  }
+}
+
+static void choose_media(nav *ui, void *choice) {
+  (void)ui;
+  switch (*(const int *)choice) {
+  case 0: media_previous(); break;
+  case 1: media_play_pause(); break;
+  case 2: media_next(); break;
   }
 }
 

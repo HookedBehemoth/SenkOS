@@ -1,6 +1,7 @@
 /*
  * The system bus, in the UI's loop: bus_pollfd before win_wait, bus_dispatch after. Replies and
  * signals run from bus_dispatch. Connected when first needed, again a second after it went.
+ * The player's session bus (DBUS_SESSION_BUS_ADDRESS) the same way: bus_session*.
  */
 #pragma once
 
@@ -16,6 +17,12 @@ bus_conn *bus_get(void);
 struct pollfd bus_pollfd(int *timeout_ms);
 /* After it: when its fd had events, or that time came */
 void bus_dispatch(short revents);
+
+bus_conn *bus_session(void);
+struct pollfd bus_session_pollfd(int *timeout_ms);
+void bus_session_dispatch(short revents);
+/* Before the first bus_session: `connected` on each new connection, `lost` when it goes */
+void bus_on_session(void (*connected)(bus_conn *bus), void (*lost)(void));
 
 /* Before the first bus_get: `connected` on each new connection (for its matches and objects),
  * then `owned` once and whenever `name` gets an owner or loses it */

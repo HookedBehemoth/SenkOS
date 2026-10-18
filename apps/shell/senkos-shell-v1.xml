@@ -67,5 +67,21 @@
       </description>
       <arg name="mhz" type="int"/>
     </request>
+
+    <request name="set_screen">
+      <description summary="the outputs on, or off (DPMS)">
+        Off: nothing is drawn and no frame events are sent until on again.
+      </description>
+      <arg name="on" type="uint"/>
+    </request>
+
+    <event name="idle_inhibited">
+      <description summary="whether a shown surface keeps the screen on">
+        Sent at bind and at each change: 1 while a surface shown (the
+        launcher's while its layer is, else the shown tree of an app's) or
+        one of its subsurfaces has a zwp_idle_inhibitor_v1.
+      </description>
+      <arg name="inhibited" type="uint"/>
+    </event>
   </interface>
 </protocol>

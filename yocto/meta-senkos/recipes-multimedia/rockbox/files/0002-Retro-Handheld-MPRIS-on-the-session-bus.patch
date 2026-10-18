@@ -1,0 +1,526 @@
+From b46f19af8724df579851827dc5e9177423641d35 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 16:36:56 +0200
+Subject: [PATCH 2/2] Retro Handheld: MPRIS on the session bus
+
+org.mpris.MediaPlayer2.rockbox: playback status, the track (title, artist,
+album, length), play, pause, stop, next, previous, for the system's media
+controls. The D-Bus connection is SenkOS' own (apps/senkos-bus, copied in at
+build time), no libdbus.
+
+Upstream-Status: Inappropriate [uses SenkOS' own D-Bus code, not libdbus]
+---
+ apps/SOURCES                            |   7 +
+ apps/main.c                             |   6 +
+ apps/mprisd.c                           | 421 ++++++++++++++++++++++++
+ apps/mprisd.h                           |  16 +
+ firmware/export/config/retro-handheld.h |   3 +
+ 5 files changed, 453 insertions(+)
+ create mode 100644 apps/mprisd.c
+ create mode 100644 apps/mprisd.h
+
+diff --git a/apps/SOURCES b/apps/SOURCES
+index ffffa57..e000cf6 100644
+--- a/apps/SOURCES
++++ b/apps/SOURCES
+@@ -314,3 +314,10 @@ keymaps/keymap-hidizsap80max.c
+ keymaps/keymap-psp.c
+ #endif
+ 
++#ifdef HAVE_MPRIS
++mprisd.c
++senkos-bus/conn.c
++senkos-bus/str.c
++senkos-bus/mpris-server.c
++senkos-bus/properties-server.c
++#endif
+diff --git a/apps/main.c b/apps/main.c
+index 4aa138a..b97ca6e 100644
+--- a/apps/main.c
++++ b/apps/main.c
+@@ -53,6 +53,9 @@
+ #include "language.h"
+ #include "wps.h"
+ #include "playlist.h"
++#ifdef HAVE_MPRIS
++#include "mprisd.h"
++#endif
+ #include "core_alloc.h"
+ #include "rolo.h"
+ #include "screens.h"
+@@ -463,6 +466,9 @@ static void init(void)
+     playlist_init();
+     shortcuts_init();
+     audio_init();
++#ifdef HAVE_MPRIS
++    mpris_init();
++#endif
+     talk_announce_voice_invalid(); /* notify user w/ voice prompt if voice file invalid */
+     settings_apply_skins();
+ 
+diff --git a/apps/mprisd.c b/apps/mprisd.c
+new file mode 100644
+index 0000000..8d7bfdf
+--- /dev/null
++++ b/apps/mprisd.c
+@@ -0,0 +1,421 @@
++/***************************************************************************
++ *             __________               __   ___.
++ *   Open      \______   \ ____   ____ |  | _\_ |__   _______  ___
++ *   Source     |       _//  _ \_/ ___\|  |/ /| __ \ /  _ \  \/  /
++ *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
++ *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
++ *                     \/            \/     \/    \/            \/
++ *
++ * MPRIS (org.mpris.MediaPlayer2.rockbox) on the session bus, for the
++ * system's media controls.
++ *
++ * A host thread owns the connection, blocking in poll() as the SDL event
++ * thread does in SDL_WaitEvent(). It answers Get and GetAll from a snapshot,
++ * and hands methods to the mpris thread (a Rockbox thread) through its queue,
++ * posted the way an interrupt would. The mpris thread does them and keeps the
++ * snapshot: every half second, and when a track changes.
++ *
++ * The bus code (senkos-bus/) is SenkOS' own D-Bus connection, no libdbus.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
++ * KIND, either express or implied.
++ *
++ ****************************************************************************/
++#include <poll.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/eventfd.h>
++#include <unistd.h>
++
++#include "config.h"
++#include "system.h"
++#include "kernel.h"
++#include "audio.h"
++#include "appevents.h"
++#include "metadata.h"
++#include "playlist.h"
++#include "settings.h"
++#include "system-sdl.h"
++#include "mprisd.h"
++
++#include "senkos-bus/conn.h"
++#include "senkos-bus/mpris.h"
++#include "senkos-bus/properties.h"
++
++#define MPRIS_ROOT "org.mpris.MediaPlayer2"
++
++enum { STOPPED, PLAYING, PAUSED };
++enum { DO_PLAY_PAUSE = 1, DO_PLAY, DO_PAUSE, DO_STOP, DO_NEXT, DO_PREV, DO_LOOK };
++
++/* What the bus is told, kept by the mpris thread */
++static pthread_mutex_t now_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct {
++    int status;
++    unsigned track; /* a new one each time the track changes */
++    char path[MAX_PATH];
++    char title[128], artist[128], album[128];
++    unsigned long length, elapsed; /* ms */
++} now;
++
++static int wake_fd = -1; /* the mpris thread to the bus thread: `now` changed */
++
++/* --- the mpris thread (Rockbox's) ---------------------------------------- */
++
++static struct event_queue mpris_queue;
++static long mpris_stack[(DEFAULT_STACK_SIZE * 2) / sizeof(long)];
++
++/* The file's name without its extension, for a track without a title */
++static void file_title(char *out, size_t size, const char *path)
++{
++    const char *name = strrchr(path, '/');
++    name = name ? name + 1 : path;
++    const char *dot = strrchr(name, '.');
++    snprintf(out, size, "%.*s", (int)(dot && dot > name ? dot - name : (long)strlen(name)), name);
++}
++
++static void look(void)
++{
++    const int st = audio_status();
++    const int status = !(st & AUDIO_STATUS_PLAY) ? STOPPED
++                     : (st & AUDIO_STATUS_PAUSE) ? PAUSED : PLAYING;
++    const struct mp3entry *id3 = status != STOPPED ? audio_current_track() : NULL;
++    const char *path = id3 ? id3->path : "";
++
++    pthread_mutex_lock(&now_lock);
++    const bool told = status != now.status || strcmp(path, now.path);
++    if (told && strcmp(path, now.path))
++    {
++        now.track++;
++        strlcpy(now.path, path, sizeof(now.path));
++        if (id3 && id3->title && *id3->title)
++            strlcpy(now.title, id3->title, sizeof(now.title));
++        else
++            file_title(now.title, sizeof(now.title), path);
++        strlcpy(now.artist, id3 && id3->artist ? id3->artist : "", sizeof(now.artist));
++        strlcpy(now.album, id3 && id3->album ? id3->album : "", sizeof(now.album));
++        now.length = id3 ? id3->length : 0;
++    }
++    now.status = status;
++    now.elapsed = id3 ? id3->elapsed : 0;
++    pthread_mutex_unlock(&now_lock);
++
++    if (told)
++    {
++        const uint64_t one = 1;
++        if (write(wake_fd, &one, sizeof(one)) < 0)
++            perror("mpris");
++    }
++}
++
++/* Stopped: what Resume Playback would play */
++static void play(void)
++{
++    if (audio_status() & AUDIO_STATUS_PLAY)
++        audio_resume();
++    else if (global_status.resume_index != -1 && playlist_resume() != -1)
++        playlist_resume_track(global_status.resume_index, global_status.resume_crc32,
++                              global_status.resume_elapsed, global_status.resume_offset);
++}
++
++static void track_changed(unsigned short id, void *data)
++{
++    (void)id, (void)data;
++    queue_post(&mpris_queue, DO_LOOK, 0);
++}
++
++static void mpris_thread(void)
++{
++    struct queue_event ev;
++    for (;;)
++    {
++        queue_wait_w_tmo(&mpris_queue, &ev, HZ / 2);
++        const bool playing = (audio_status() & (AUDIO_STATUS_PLAY | AUDIO_STATUS_PAUSE)) == AUDIO_STATUS_PLAY;
++        switch (ev.id)
++        {
++        case DO_PLAY_PAUSE:
++            if (playing)
++                audio_pause();
++            else
++                play();
++            break;
++        case DO_PLAY:
++            play();
++            break;
++        case DO_PAUSE:
++            if (playing)
++                audio_pause();
++            break;
++        case DO_STOP:
++            audio_stop();
++            break;
++        case DO_NEXT:
++            if (audio_status() & AUDIO_STATUS_PLAY)
++                audio_next();
++            break;
++        case DO_PREV:
++            if (audio_status() & AUDIO_STATUS_PLAY)
++                audio_prev();
++            break;
++        }
++        look();
++    }
++}
++
++/* --- the bus thread (the host's) ----------------------------------------- */
++
++static bus_conn bus;
++
++/* From outside the Rockbox threads: as an interrupt handler would */
++static void post(long id)
++{
++    sim_enter_irq_handler();
++    queue_post(&mpris_queue, id, 0);
++    sim_exit_irq_handler();
++}
++
++int mpris_next(bus_req *req, void *userdata) { (void)userdata; post(DO_NEXT); return bus_reply(req); }
++int mpris_previous(bus_req *req, void *userdata) { (void)userdata; post(DO_PREV); return bus_reply(req); }
++int mpris_pause(bus_req *req, void *userdata) { (void)userdata; post(DO_PAUSE); return bus_reply(req); }
++int mpris_play_pause(bus_req *req, void *userdata) { (void)userdata; post(DO_PLAY_PAUSE); return bus_reply(req); }
++int mpris_stop(bus_req *req, void *userdata) { (void)userdata; post(DO_STOP); return bus_reply(req); }
++int mpris_play(bus_req *req, void *userdata) { (void)userdata; post(DO_PLAY); return bus_reply(req); }
++
++static const str player_props[] = {S("PlaybackStatus"), S("Metadata"), S("Position"), S("Rate"),
++                                   S("MinimumRate"), S("MaximumRate"), S("Volume"), S("CanGoNext"),
++                                   S("CanGoPrevious"), S("CanPlay"), S("CanPause"), S("CanSeek"),
++                                   S("CanControl")};
++static const str root_props[] = {S("Identity"), S("CanQuit"), S("CanRaise"), S("HasTrackList"),
++                                 S("SupportedUriSchemes"), S("SupportedMimeTypes")};
++
++/* Under now_lock */
++static void put_metadata(bus_wr *w)
++{
++    char id[64];
++    snprintf(id, sizeof(id), "/org/rockbox/track/%u", now.track);
++    const bus_wr_arr a = bus_wr_array(w, 8);
++    bus_wr_kv(w, S("mpris:trackid"), "o");
++    bus_wr_str(w, str_c(id));
++    if (now.status != STOPPED)
++    {
++        bus_wr_kv(w, S("xesam:title"), "s");
++        bus_wr_str(w, str_c(now.title));
++        if (*now.artist)
++        {
++            bus_wr_kv(w, S("xesam:artist"), "as");
++            const bus_wr_arr artists = bus_wr_array(w, 4);
++            bus_wr_str(w, str_c(now.artist));
++            bus_wr_array_end(w, artists);
++        }
++        if (*now.album)
++        {
++            bus_wr_kv(w, S("xesam:album"), "s");
++            bus_wr_str(w, str_c(now.album));
++        }
++        bus_wr_kv(w, S("mpris:length"), "x");
++        bus_wr_i64(w, (int64_t)now.length * 1000);
++    }
++    bus_wr_array_end(w, a);
++}
++
++/* One property as a variant, under now_lock: the player's (`player`) or the root's */
++static void put_prop(bus_wr *w, bool player, str name)
++{
++    static const str statuses[] = {S("Stopped"), S("Playing"), S("Paused")};
++    if (player && str_eq(name, S("PlaybackStatus")))
++    {
++        bus_wr_sig(w, "s");
++        bus_wr_str(w, statuses[now.status]);
++    }
++    else if (player && str_eq(name, S("Metadata")))
++    {
++        bus_wr_sig(w, "a{sv}");
++        put_metadata(w);
++    }
++    else if (player && str_eq(name, S("Position")))
++    {
++        bus_wr_sig(w, "x");
++        bus_wr_i64(w, (int64_t)now.elapsed * 1000);
++    }
++    else if (player && (str_eq(name, S("Rate")) || str_eq(name, S("MinimumRate")) ||
++                        str_eq(name, S("MaximumRate")) || str_eq(name, S("Volume"))))
++    {
++        bus_wr_sig(w, "d");
++        bus_wr_f64(w, 1.0);
++    }
++    else if (!player && str_eq(name, S("Identity")))
++    {
++        bus_wr_sig(w, "s");
++        bus_wr_str(w, S("Rockbox"));
++    }
++    else if (!player && (str_eq(name, S("SupportedUriSchemes")) || str_eq(name, S("SupportedMimeTypes"))))
++    {
++        bus_wr_sig(w, "as");
++        bus_wr_array_end(w, bus_wr_array(w, 4));
++    }
++    else
++    {
++        /* Next and Previous while there's a track; play, pause, control always; no seeking,
++           quitting, raising, track list */
++        const bool yes = str_eq(name, S("CanGoNext")) || str_eq(name, S("CanGoPrevious"))
++                       ? now.status != STOPPED
++                       : player && !str_eq(name, S("CanSeek"));
++        bus_wr_sig(w, "b");
++        bus_wr_bool(w, yes);
++    }
++}
++
++static bool known(bool player, str name)
++{
++    const str *names = player ? player_props : root_props;
++    const size_t n = player ? ARRAYLEN(player_props) : ARRAYLEN(root_props);
++    for (size_t i = 0; i < n; i++)
++        if (str_eq(names[i], name))
++            return true;
++    return false;
++}
++
++/* 1 the player's interface, 0 the root's, -1 neither */
++static int which(str iface)
++{
++    return str_eq(iface, S(MPRIS_NAME)) ? 1 : str_eq(iface, S(MPRIS_ROOT)) ? 0 : -1;
++}
++
++typedef struct
++{
++    bool player;
++    str name;
++} prop_ref;
++
++static void put_one(bus_wr *w, const void *ctx)
++{
++    const prop_ref *p = ctx;
++    pthread_mutex_lock(&now_lock);
++    put_prop(w, p->player, p->name);
++    pthread_mutex_unlock(&now_lock);
++}
++
++static void put_all(bus_wr *w, const void *ctx)
++{
++    const bool player = *(const bool *)ctx;
++    const str *names = player ? player_props : root_props;
++    const size_t n = player ? ARRAYLEN(player_props) : ARRAYLEN(root_props);
++    pthread_mutex_lock(&now_lock);
++    const bus_wr_arr a = bus_wr_array(w, 8);
++    for (size_t i = 0; i < n; i++)
++    {
++        bus_wr_align(w, 8);
++        bus_wr_str(w, names[i]);
++        put_prop(w, player, names[i]);
++    }
++    bus_wr_array_end(w, a);
++    pthread_mutex_unlock(&now_lock);
++}
++
++int properties_get(bus_req *req, void *userdata, str iface, str name)
++{
++    (void)userdata;
++    const prop_ref p = {which(iface) == 1, name};
++    if (which(iface) < 0 || !known(p.player, name))
++        return bus_reply_error(req, S(BUS_ERROR_INVALID_ARGS), name);
++    return properties_get_reply(req, put_one, &p);
++}
++
++int properties_get_all(bus_req *req, void *userdata, str iface)
++{
++    (void)userdata;
++    const bool player = which(iface) == 1;
++    if (which(iface) < 0)
++        return bus_reply_error(req, S(BUS_ERROR_INVALID_ARGS), iface);
++    return properties_get_all_reply(req, put_all, &player);
++}
++
++/* The status or the track changed since it was last said: PropertiesChanged */
++static void tell(int *said_status, unsigned *said_track)
++{
++    pthread_mutex_lock(&now_lock);
++    const bool new_track = *said_track != now.track;
++    if (now.status != *said_status || new_track)
++    {
++        *said_status = now.status;
++        *said_track = now.track;
++        bus_wr *w = bus_signal_begin(&bus, S(MPRIS_PATH), S(PROPERTIES_NAME), S("PropertiesChanged"), "sa{sv}as");
++        bus_wr_str(w, S(MPRIS_NAME));
++        const bus_wr_arr a = bus_wr_array(w, 8);
++        static const str changed[] = {S("PlaybackStatus"), S("CanGoNext"), S("CanGoPrevious"), S("Metadata")};
++        for (size_t i = 0; i < (new_track ? 4u : 3u); i++)
++        {
++            bus_wr_align(w, 8);
++            bus_wr_str(w, changed[i]);
++            put_prop(w, true, changed[i]);
++        }
++        bus_wr_array_end(w, a);
++        bus_wr_array_end(w, bus_wr_array(w, 4));
++        bus_signal_end(&bus);
++    }
++    pthread_mutex_unlock(&now_lock);
++}
++
++static bool bus_up(void)
++{
++    if (bus_open_session(&bus) < 0)
++        return false;
++    mpris_serve(&bus, NULL);
++    properties_serve(&bus, S(MPRIS_PATH), NULL);
++    if (bus_request_name(&bus, S(MPRIS_ROOT ".rockbox")) < 0)
++    {
++        bus_close(&bus);
++        return false;
++    }
++    return true;
++}
++
++static void *bus_thread(void *arg)
++{
++    (void)arg;
++    int said_status = -1;
++    unsigned said_track = 0;
++    for (;;)
++    {
++        /* The session bus gone or not there yet: again in a second */
++        while (!bus_up())
++            sleep(1);
++        said_status = -1;
++        for (;;)
++        {
++            struct pollfd fds[2] = {{bus_fd(&bus), bus_events(&bus), 0}, {wake_fd, POLLIN, 0}};
++            if (poll(fds, 2, -1) < 0)
++                continue;
++            if (fds[1].revents)
++            {
++                uint64_t n;
++                if (read(wake_fd, &n, sizeof(n)) < 0)
++                    perror("mpris");
++                tell(&said_status, &said_track);
++            }
++            if (fds[0].revents && bus_process(&bus) < 0)
++                break;
++        }
++        bus_close(&bus);
++    }
++    return NULL;
++}
++
++void mpris_init(void)
++{
++    wake_fd = eventfd(0, EFD_CLOEXEC);
++    if (wake_fd < 0)
++        return;
++    queue_init(&mpris_queue, false);
++    create_thread(mpris_thread, mpris_stack, sizeof(mpris_stack), 0, "mpris"
++                  IF_PRIO(, PRIORITY_BACKGROUND) IF_COP(, CPU));
++    add_event(PLAYBACK_EVENT_TRACK_CHANGE, track_changed);
++    pthread_t t;
++    if (pthread_create(&t, NULL, bus_thread, NULL) == 0)
++        pthread_detach(t);
++}
+diff --git a/apps/mprisd.h b/apps/mprisd.h
+new file mode 100644
+index 0000000..c418272
+--- /dev/null
++++ b/apps/mprisd.h
+@@ -0,0 +1,16 @@
++/***************************************************************************
++ * MPRIS on the session bus (mprisd.c)
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ ****************************************************************************/
++#ifndef _MPRISD_H_
++#define _MPRISD_H_
++
++/* After audio_init(); nothing without a session bus */
++void mpris_init(void);
++
++#endif
+diff --git a/firmware/export/config/retro-handheld.h b/firmware/export/config/retro-handheld.h
+index e8f077e..3c74cb7 100644
+--- a/firmware/export/config/retro-handheld.h
++++ b/firmware/export/config/retro-handheld.h
+@@ -66,6 +66,9 @@
+ 
+ #define HAVE_SW_TONE_CONTROLS
+ 
++/* Media controls for the system: MPRIS on the session bus (apps/mprisd.c) */
++#define HAVE_MPRIS
++
+ /* Define this to the CPU frequency */
+ /*
+ #define CPU_FREQ 48000000
+-- 
+2.56.0
+

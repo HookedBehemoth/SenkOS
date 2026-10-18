@@ -1,0 +1,38 @@
+From 2c9b98c3c8fffdb63228aa0fa892f5a106775057 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 17:02:11 +0200
+Subject: [PATCH] sdl: pcm: don't close the audio device holding audio_lock
+
+sink_set_freq() holds audio_lock while it reopens the device, and
+SDL_CloseAudioDevice() waits for the audio thread, which waits for
+audio_lock in sdl_audio_callback(): a deadlock on every change of the
+sample rate while playing (with SDL's ALSA backend on a handheld: at
+"Loading...", or already at boot).
+
+Upstream-Status: Pending
+---
+ firmware/target/hosted/sdl/pcm-sdl.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/firmware/target/hosted/sdl/pcm-sdl.c b/firmware/target/hosted/sdl/pcm-sdl.c
+index d2ed462..6577671 100644
+--- a/firmware/target/hosted/sdl/pcm-sdl.c
++++ b/firmware/target/hosted/sdl/pcm-sdl.c
+@@ -114,7 +114,14 @@ static void sink_set_freq_nolock(uint16_t freq)
+ 
+ #if SDL_MAJOR_VERSION > 1
+     if (pcm_devid)
++    {
++        /* Closing waits for the callback's thread, and the callback takes audio_lock */
++        if (audio_locked)
++            SDL_UnlockMutex(audio_lock);
+         SDL_CloseAudioDevice(pcm_devid);
++        if (audio_locked)
++            SDL_LockMutex(audio_lock);
++    }
+ 
+     /* pulseaudio seems to be happier with smaller buffers */
+     if (!strcmp("pulseaudio", SDL_GetCurrentAudioDriver()))
+-- 
+2.56.0
+

@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include "clock.h"
+#include "idle.h"
 #include "launcher_internal.h"
 #include "licenses.h"
 #include "power.h"
@@ -18,6 +19,7 @@ static void choose_settings(nav *ui, void *choice);
 static void choose_zones(nav *ui, void *choice);
 static void choose_time(nav *ui, void *choice);
 static void choose_debug(nav *ui, void *choice);
+static void choose_screen_sleep(nav *ui, void *choice);
 
 static time_t wall_time(void) {
   struct timespec now;
@@ -106,6 +108,23 @@ static size_t page_rows(const ui_screen_def *kind, entry *rows,
                           .action = CLOCK,
                           .icon = ICON_CALENDAR_CLOCK};
     }
+  } else if (kind == &screen_sleep_screen) {
+    static const struct {
+      const char *label;
+      int icon;
+    } idle_rows[IDLE_ROWS] = {
+        [IDLE_DIM] = {"Dim the screen after", ICON_SUN},
+        [IDLE_OFF] = {"Turn the screen off after", ICON_MONITOR},
+        [IDLE_SLEEP] = {"Sleep after", ICON_MOON},
+        [IDLE_MUSIC] = {"Music keeps it awake", ICON_MUSIC},
+    };
+    for (int i = 0; i < IDLE_ROWS; i++)
+      rows[n++] = (entry){.label = str_c(idle_rows[i].label),
+                          .action = IDLE_ROW,
+                          .icon = idle_rows[i].icon,
+                          .arg = i,
+                          .checked = i == IDLE_MUSIC && idle_music(),
+                          .value = idle_value(i)};
   } else if (kind == &debug_screen) {
     const bool on = access(SSH_OFF, F_OK) != 0;
     rows[n++] = (entry){.label = S("SSH  \u00b7  root, no password"),
@@ -133,6 +152,7 @@ static size_t page_rows(const ui_screen_def *kind, entry *rows,
     rows[n++] = (entry){.label = S("Wi-Fi"), .action = WIFI, .icon = ICON_WIFI};
     rows[n++] = (entry){.label = S("Bluetooth"), .action = BLUETOOTH, .icon = ICON_BLUETOOTH};
     rows[n++] = (entry){.label = S("Time"), .action = TIME, .icon = ICON_CLOCK};
+    rows[n++] = (entry){.label = S("Screen and sleep"), .action = SCREEN_SLEEP, .icon = ICON_MOON};
     rows[n++] = (entry){.label = S("Light mode"),
                         .action = LIGHT_MODE,
                         .icon = ICON_SUN,
@@ -148,9 +168,10 @@ static size_t page_rows(const ui_screen_def *kind, entry *rows,
 }
 
 static const char *page_scope(const ui_screen_def *kind) {
-  return kind == &time_screen    ? "time"
-         : kind == &debug_screen ? "debug"
-                                 : "system";
+  return kind == &time_screen           ? "time"
+         : kind == &debug_screen        ? "debug"
+         : kind == &screen_sleep_screen ? "screen sleep"
+                                        : "system";
 }
 
 static void open_page(launcher_state *state, nav *ui, const ui_screen_def *kind,
@@ -269,9 +290,10 @@ static void page_frame(ui_screen *screen, nav *ui, ui_rect content) {
   const entry *selected = menu(ui, rows, n, content);
   if (selected != NULL)
     nav_defer(ui,
-              screen->def == &time_screen    ? choose_time
-              : screen->def == &debug_screen ? choose_debug
-                                             : choose_settings,
+              screen->def == &time_screen           ? choose_time
+              : screen->def == &debug_screen        ? choose_debug
+              : screen->def == &screen_sleep_screen ? choose_screen_sleep
+                                                    : choose_settings,
               selected, sizeof(*selected));
 }
 
@@ -391,6 +413,23 @@ static bool debug_button(ui_screen *screen, nav *ui, int button) {
   return true;
 }
 
+/* Left, right: the row's value */
+static bool screen_sleep_button(ui_screen *screen, nav *ui, int button) {
+  entry rows[PAGE_MAX];
+  page_label labels[2];
+  (void)ui;
+  if (menu_focus < 0 || (button != APPCTL_LEFT && button != APPCTL_RIGHT) ||
+      (size_t)menu_focus >= page_rows(screen->def, rows, labels))
+    return false;
+  idle_step((int)rows[menu_focus].arg, button == APPCTL_LEFT ? -1 : 1);
+  return true;
+}
+
+static void choose_screen_sleep(nav *ui, void *choice) {
+  (void)ui;
+  idle_step((int)((const entry *)choice)->arg, 1);
+}
+
 static void choose_settings(nav *ui, void *choice) {
   launcher_state *state = &launcher;
   const entry *chosen = choice;
@@ -416,6 +455,9 @@ static void choose_settings(nav *ui, void *choice) {
     break;
   case DEBUG:
     open_page(state, ui, &debug_screen, 0);
+    break;
+  case SCREEN_SLEEP:
+    open_page(state, ui, &screen_sleep_screen, 0);
     break;
   case LICENSES_OPEN:
     licenses_load();
@@ -529,6 +571,11 @@ const ui_screen_def clock_screen = {.name = "clock",
                                     .hint = clock_hint};
 const ui_screen_def time_screen = {
     .name = "time", .frame = page_frame, .title_text = S("Time")};
+const ui_screen_def screen_sleep_screen = {
+    .name = "screen sleep",
+    .frame = page_frame,
+    .button = screen_sleep_button,
+    .title_text = S("Screen and sleep")};
 const ui_screen_def debug_screen = {
     .name = "debug",
     .frame = page_frame,

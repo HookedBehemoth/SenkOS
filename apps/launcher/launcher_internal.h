@@ -30,7 +30,7 @@ enum {
   RADIUS = 12,
   GAP = 8
 };
-enum { OSD_W = 320, OSD_H = 40, OSD_TOP = 40, OSD_MS = 1500, RESULT_MS = 5000 };
+enum { OSD_W = 320, OSD_H = 40, OSD_TOP = 40, OSD_MS = 1500, TRACK_MS = 3000, RESULT_MS = 5000 };
 enum {
   SPLASH_PX = 256,
   PERF_W = 200,
@@ -117,6 +117,8 @@ enum {
   LAUNCH_RUNNING,
   CONFIRM,
   GET_PACK,
+  SCREEN_SLEEP,
+  IDLE_ROW,
   SETTINGS_LIST
 };
 
@@ -184,6 +186,7 @@ extern const ui_screen_def zone_screen;
 extern const ui_screen_def clock_screen;
 extern const ui_screen_def time_screen;
 extern const ui_screen_def debug_screen;
+extern const ui_screen_def screen_sleep_screen;
 extern const ui_screen_def home_screen;
 extern const ui_screen_def quick_menu_screen;
 extern const ui_screen_def cores_screen;
@@ -240,6 +243,8 @@ void launcher_key(unsigned code, bool down);
 bool launcher_input(nav *ui, int why, int value, size_t *page);
 void osd_show_level(bool brightness, int percent);
 void osd_show_text(str text, int ms);
+/* A new track: its title and artist */
+void osd_show_track(str title, str artist);
 uint64_t osd_due(void);
 void osd_tick(uint64_t now);
 void osd_limit_notice(void);

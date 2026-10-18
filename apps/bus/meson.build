@@ -17,6 +17,7 @@ foreach name, xml : {
     'wpa': 'fi.w1.wpa_supplicant1.xml',     # wpa_supplicant's, for the launcher's Wi-Fi settings
     'wpa_iface': 'fi.w1.wpa_supplicant1.Interface.xml',
     'wpa_bss': 'fi.w1.wpa_supplicant1.BSS.xml',
+    'mpris': 'org.mpris.MediaPlayer2.Player.xml', # any player's, for the launcher
   }
   t = custom_target(name, input: xml, output: [name + '.h', name + '-server.c', name + '-client.c'],
     command: [gen, '@INPUT@', '@OUTDIR@'])

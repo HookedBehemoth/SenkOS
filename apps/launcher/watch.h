@@ -9,6 +9,7 @@
  * - Power: the kernel's power_supply uevents (the charger; the AXP717's battery IRQs).
  * - The system bus (bus.h), dispatched here: the mirrors of BlueZ (bluetooth.h) and wpa_supplicant
  *   (wifi.h) changed. The Wi-Fi signal is asked for each minute: nothing tells it.
+ * - The session bus: the media players (media.h) changed.
  */
 #pragma once
 
@@ -21,13 +22,14 @@ enum {
   WATCH_TIME = 8,
   WATCH_MOUNTS = 16,
   WATCH_POWER = 32,
-  WATCH_BLUETOOTH = 64
+  WATCH_BLUETOOTH = 64,
+  WATCH_MEDIA = 128
 };
-enum { WATCH_FDS = 5 };
+enum { WATCH_FDS = 6 };
 extern struct pollfd watch_fds[WATCH_FDS];
 
 void watch_init(void);
-/* Before each win_wait: the bus' fd, and `timeout_ms` lowered to when it wants processing */
+/* Before each win_wait: the buses' fds, and `timeout_ms` lowered to when it wants processing */
 void watch_prepare(int *timeout_ms);
 /* After each win_wait: what changed (WATCH_*), its fds drained */
 unsigned watch_changed(void);

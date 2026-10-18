@@ -24,3 +24,8 @@ void layer_overlay(win *w, unsigned anchor, int margin);
 void layer_show_app(int pgid);
 /* The display's refresh rate in mHz, one of its modes'; the shell keeps it */
 void layer_refresh(int mhz);
+/* The outputs on, or off (DPMS: nothing drawn, no frame events) */
+void layer_screen(bool on);
+/* Whether a surface shown keeps the screen on (zwp_idle_inhibit_v1): set by
+ * the shell's events, false without it */
+extern bool layer_inhibited;

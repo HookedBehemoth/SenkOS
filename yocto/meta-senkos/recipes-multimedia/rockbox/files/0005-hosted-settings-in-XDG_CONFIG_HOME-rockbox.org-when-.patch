@@ -1,0 +1,79 @@
+From 8dca003f0bbfb28d880d9e3de00dc16748c49ba8 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 16:51:15 +0200
+Subject: [PATCH] hosted: settings in $XDG_CONFIG_HOME/rockbox.org when it's
+ set
+
+As the XDG base directories have it; $HOME/.config/rockbox.org without it,
+and with RBROOT as before.
+
+Upstream-Status: Pending
+---
+ firmware/target/hosted/filesystem-app.c | 25 ++++++++++++++++++-------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/firmware/target/hosted/filesystem-app.c b/firmware/target/hosted/filesystem-app.c
+index 4b0c60d..91ce489 100644
+--- a/firmware/target/hosted/filesystem-app.c
++++ b/firmware/target/hosted/filesystem-app.c
+@@ -119,10 +119,15 @@ void startup_rbhome(void)
+ 
+ #endif /* HAVE_MULTIDRIVE */
+ 
++#if defined(HAVE_SPECIAL_DIRS) && !(CONFIG_PLATFORM & PLATFORM_ANDROID)
++/* Where the settings are: $XDG_CONFIG_HOME/rockbox.org, else $HOME/.config/rockbox.org */
++static char rbconfig[MAX_PATH];
++#endif
++
+ void paths_init(void)
+ {
+ #ifdef HAVE_SPECIAL_DIRS
+-    /* make sure $HOME/.config/rockbox.org exists, it's needed for config.cfg */
++    /* make sure the settings' directory exists, it's needed for config.cfg */
+ #if (CONFIG_PLATFORM & PLATFORM_ANDROID)
+     os_mkdir("/sdcard/rockbox" __MKDIR_MODE_ARG);
+     os_mkdir("/sdcard/rockbox/rocks.data" __MKDIR_MODE_ARG);
+@@ -143,12 +148,18 @@ void paths_init(void)
+     }
+ 
+     rbhome = home;
+-    snprintf(config_dir, sizeof(config_dir), "%s/.config", home);
+-    os_mkdir(config_dir __MKDIR_MODE_ARG);
+-    snprintf(config_dir, sizeof(config_dir), "%s/.config/rockbox.org", home);
++    /* $XDG_CONFIG_HOME/rockbox.org when it's set (and RBROOT isn't), as the XDG base
++       directories have it */
++    const char *config = getenv("XDG_CONFIG_HOME");
++    if (config && *config == '/' && !getenv("RBROOT"))
++        strlcpy(config_dir, config, sizeof(config_dir));
++    else
++        snprintf(config_dir, sizeof(config_dir), "%s/.config", home);
+     os_mkdir(config_dir __MKDIR_MODE_ARG);
++    snprintf(rbconfig, sizeof(rbconfig), "%s/rockbox.org", config_dir);
++    os_mkdir(rbconfig __MKDIR_MODE_ARG);
+     /* Plugin data directory */
+-    snprintf(config_dir, sizeof(config_dir), "%s/.config/rockbox.org/rocks.data", home);
++    snprintf(config_dir, sizeof(config_dir), "%s/rocks.data", rbconfig);
+     os_mkdir(config_dir __MKDIR_MODE_ARG);
+ #endif
+ #endif /* HAVE_SPECIAL_DIRS */
+@@ -165,7 +176,7 @@ static const char* _get_user_file_path(const char *path,
+ {
+     const char *ret = path;
+     const char *pos = path;
+-    /* replace ROCKBOX_DIR in path with $HOME/.config/rockbox.org */
++    /* replace ROCKBOX_DIR in path with the settings' directory (rbconfig) */
+     pos += ROCKBOX_DIR_LEN;
+     while (*pos == PATH_SEPCH) pos++;
+ 
+@@ -173,7 +184,7 @@ static const char* _get_user_file_path(const char *path,
+     if (path_append(buf, "/sdcard/rockbox", pos, bufsize) >= bufsize)
+         return NULL;
+ #else
+-    if (path_append(buf, rbhome, ".config/rockbox.org", bufsize) >= bufsize ||
++    if (strlcpy(buf, rbconfig, bufsize) >= bufsize ||
+         path_append(buf, PA_SEP_SOFT, pos, bufsize) >= bufsize)
+         return NULL;
+ #endif
+-- 
+2.56.0
+

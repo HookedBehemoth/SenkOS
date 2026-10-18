@@ -1,5 +1,5 @@
 #!/bin/sh
-# The UI (rcS S01): /data, then seatd, the session as player (Weston, PipeWire) and the launcher as
+# The UI (rcS S01): /data, then seatd, the session as player (Weston, its bus, PipeWire) and the launcher as
 # root (it drops to shell itself). The rest of rcS waits for the launcher's first frame.
 # Waits (3 s at most) for the launcher's first frame: what isn't needed for it starts after
 first_frame() {
@@ -17,6 +17,8 @@ if [ "$1" = session ]; then
 	umask 002
 	(
 		first_frame
+		# The session bus: media players (MPRIS) for the launcher, which dbus-1/session.d lets in
+		dbus-daemon --session --address=$DBUS_SESSION_BUS_ADDRESS --fork --nopidfile
 		pipewire </dev/null >/var/log/pipewire.log 2>&1 &
 		# WirePlumber's bluez monitor needs the system bus
 		n=0

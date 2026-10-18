@@ -7,11 +7,20 @@
 #include "senkos-shell-v1-client-protocol.h"
 
 static struct senkos_shell_v1 *shell;
+bool layer_inhibited;
+
+static void idle_inhibited(void *data, struct senkos_shell_v1 *s, uint32_t inhibited) {
+  (void)data, (void)s;
+  layer_inhibited = inhibited != 0;
+}
+static const struct senkos_shell_v1_listener shell_listener = {idle_inhibited};
 
 static void global(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version) {
   (void)data, (void)version;
-  if (strcmp(interface, senkos_shell_v1_interface.name) == 0)
+  if (strcmp(interface, senkos_shell_v1_interface.name) == 0) {
     shell = wl_registry_bind(registry, name, &senkos_shell_v1_interface, 1);
+    senkos_shell_v1_add_listener(shell, &shell_listener, NULL);
+  }
 }
 static void global_remove(void *data, struct wl_registry *registry, uint32_t name) {
   (void)data, (void)registry, (void)name;
@@ -50,4 +59,9 @@ void layer_show_app(int pgid) {
 void layer_refresh(int mhz) {
   if (shell != NULL)
     senkos_shell_v1_set_refresh(shell, mhz);
+}
+
+void layer_screen(bool on) {
+  if (shell != NULL)
+    senkos_shell_v1_set_screen(shell, on);
 }

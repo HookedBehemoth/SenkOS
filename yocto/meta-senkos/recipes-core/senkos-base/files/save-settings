@@ -3,9 +3,11 @@
 read -r ms < /data/OS/config/power-on-ms 2>/dev/null &&
 	echo "$ms" > /sys/bus/platform/devices/axp717-pek/startup
 
-# Brightness for the next boot (boot.cmd), only written when changed
+# Brightness for the next boot (boot.cmd), only written when changed: the one chosen in the launcher
+# (the backlight's may be dimmed while idle), else the backlight's
 f=/uboot/brightness.txt
-read -r b < /sys/class/backlight/backlight/brightness || exit 0
+read -r b < /data/OS/launcher/config/launcher-brightness ||
+	read -r b < /sys/class/backlight/backlight/brightness || exit 0
 [ "$b" -gt 0 ] || exit 0	# never boot to a dark panel
 [ "$(cat $f 2>/dev/null)" = "brightness=$b" ] && exit 0
 echo "brightness=$b" > $f.new && mv $f.new $f

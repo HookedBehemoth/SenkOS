@@ -12,11 +12,12 @@
 
 #include "bluetooth.h"
 #include "bus.h"
+#include "media.h"
 #include "wifi.h"
 
 #define TIME_DIR "/data/OS/time"
 
-enum { MINUTE, FILES, MOUNTS, UEVENTS, BUS };
+enum { MINUTE, FILES, MOUNTS, UEVENTS, BUS, SESSION };
 struct pollfd watch_fds[WATCH_FDS];
 static int run_wd = -1, time_wd = -1, os_wd = -1;
 
@@ -54,7 +55,10 @@ void watch_init(void) {
     watch_fds[UEVENTS].fd = ue;
 }
 
-void watch_prepare(int *timeout_ms) { watch_fds[BUS] = bus_pollfd(timeout_ms); }
+void watch_prepare(int *timeout_ms) {
+  watch_fds[BUS] = bus_pollfd(timeout_ms);
+  watch_fds[SESSION] = bus_session_pollfd(timeout_ms);
+}
 
 static unsigned files(int fd) {
   char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
@@ -109,10 +113,13 @@ unsigned watch_changed(void) {
   if (watch_fds[UEVENTS].revents)
     changed |= uevents(watch_fds[UEVENTS].fd);
   bus_dispatch(watch_fds[BUS].revents);
+  bus_session_dispatch(watch_fds[SESSION].revents);
   if (bt_changed())
     changed |= WATCH_BLUETOOTH;
   if (wifi_changed())
     changed |= WATCH_WIFI;
+  if (media_changed())
+    changed |= WATCH_MEDIA;
   for (int i = 0; i < WATCH_FDS; i++)
     watch_fds[i].revents = 0;
   return changed;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Rockbox
+Comment=Music player: files, database, playlists; keeps playing behind the launcher
+Exec=./rockbox/bin/rockbox --zoom 2
+Icon=./rockbox/icon.png
+Keywords=music;audio;player;playlist;
+Categories=AudioVideo;Audio;Player;

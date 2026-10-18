@@ -96,6 +96,8 @@ struct bus_conn {
 
 /* Connects to the socket at `path` (BUS_SYSTEM); negative errno */
 int bus_open(bus_conn *c, const char *path);
+/* The session bus: DBUS_SESSION_BUS_ADDRESS's unix:path= (-ENOENT without one) */
+int bus_open_session(bus_conn *c);
 /* Pending calls get their error; matches and objects are let go (add them again on the next) */
 void bus_close(bus_conn *c);
 static inline int bus_fd(const bus_conn *c) { return c->fd; }

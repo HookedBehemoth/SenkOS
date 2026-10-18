@@ -30,7 +30,9 @@ enum {
   ICON_MICROCHIP,
   ICON_MONITOR,
   ICON_MOON,
+  ICON_MUSIC,
   ICON_NETWORK,
+  ICON_PAUSE,
   ICON_PLAY,
   ICON_POWER,
   ICON_REFRESH_CW,
@@ -41,6 +43,8 @@ enum {
   ICON_SCROLL_TEXT,
   ICON_SEARCH,
   ICON_SHOPPING_BAG,
+  ICON_SKIP_BACK,
+  ICON_SKIP_FORWARD,
   ICON_SMARTPHONE,
   ICON_SPEAKER,
   ICON_SUN,
@@ -371,6 +375,18 @@ static const float icon_moon[] = {
     ICON_CUBIC, 7.029f, 21.0f, 3.0f, 16.971f, 3.0f, 12.0f, ICON_CUBIC,
     3.0f, 7.029f, 7.029f, 3.0f, 12.0f, 3.0f, ICON_CLOSE, ICON_END,
 };
+static const float icon_music[] = {
+    ICON_MOVE, 9.0f, 18.0f, ICON_LINE, 9.0f, 5.0f, ICON_LINE, 21.0f,
+    3.0f, ICON_LINE, 21.0f, 16.0f, ICON_MOVE, 3.0f, 18.0f, ICON_CUBIC,
+    3.0f, 16.343f, 4.343f, 15.0f, 6.0f, 15.0f, ICON_CUBIC, 7.657f,
+    15.0f, 9.0f, 16.343f, 9.0f, 18.0f, ICON_CUBIC, 9.0f, 19.657f,
+    7.657f, 21.0f, 6.0f, 21.0f, ICON_CUBIC, 4.343f, 21.0f, 3.0f,
+    19.657f, 3.0f, 18.0f, ICON_CLOSE, ICON_MOVE, 15.0f, 16.0f, ICON_CUBIC,
+    15.0f, 14.343f, 16.343f, 13.0f, 18.0f, 13.0f, ICON_CUBIC, 19.657f,
+    13.0f, 21.0f, 14.343f, 21.0f, 16.0f, ICON_CUBIC, 21.0f, 17.657f,
+    19.657f, 19.0f, 18.0f, 19.0f, ICON_CUBIC, 16.343f, 19.0f, 15.0f,
+    17.657f, 15.0f, 16.0f, ICON_CLOSE, ICON_END,
+};
 static const float icon_network[] = {
     ICON_MOVE, 17.0f, 16.0f, ICON_LINE, 21.0f, 16.0f, ICON_CUBIC, 21.552f,
     16.0f, 22.0f, 16.448f, 22.0f, 17.0f, ICON_LINE, 22.0f, 21.0f,
@@ -393,6 +409,20 @@ static const float icon_network[] = {
     12.0f, ICON_LINE, 18.0f, 12.0f, ICON_CUBIC, 18.552f, 12.0f, 19.0f,
     12.448f, 19.0f, 13.0f, ICON_LINE, 19.0f, 16.0f, ICON_MOVE, 12.0f,
     12.0f, ICON_LINE, 12.0f, 8.0f, ICON_END,
+};
+static const float icon_pause[] = {
+    ICON_MOVE, 15.0f, 4.0f, ICON_LINE, 17.0f, 4.0f, ICON_CUBIC, 17.552f,
+    4.0f, 18.0f, 4.448f, 18.0f, 5.0f, ICON_LINE, 18.0f, 19.0f,
+    ICON_CUBIC, 18.0f, 19.552f, 17.552f, 20.0f, 17.0f, 20.0f, ICON_LINE,
+    15.0f, 20.0f, ICON_CUBIC, 14.448f, 20.0f, 14.0f, 19.552f, 14.0f,
+    19.0f, ICON_LINE, 14.0f, 5.0f, ICON_CUBIC, 14.0f, 4.448f, 14.448f,
+    4.0f, 15.0f, 4.0f, ICON_CLOSE, ICON_MOVE, 7.0f, 4.0f, ICON_LINE,
+    9.0f, 4.0f, ICON_CUBIC, 9.552f, 4.0f, 10.0f, 4.448f, 10.0f,
+    5.0f, ICON_LINE, 10.0f, 19.0f, ICON_CUBIC, 10.0f, 19.552f, 9.552f,
+    20.0f, 9.0f, 20.0f, ICON_LINE, 7.0f, 20.0f, ICON_CUBIC, 6.448f,
+    20.0f, 6.0f, 19.552f, 6.0f, 19.0f, ICON_LINE, 6.0f, 5.0f,
+    ICON_CUBIC, 6.0f, 4.448f, 6.448f, 4.0f, 7.0f, 4.0f, ICON_CLOSE,
+    ICON_END,
 };
 static const float icon_play[] = {
     ICON_MOVE, 6.0f, 3.0f, ICON_LINE, 20.0f, 12.0f, ICON_LINE, 6.0f,
@@ -488,6 +518,16 @@ static const float icon_shopping_bag[] = {
     16.0f, 10.0f, ICON_CUBIC, 16.0f, 12.209f, 14.209f, 14.0f, 12.0f,
     14.0f, ICON_CUBIC, 9.791f, 14.0f, 8.0f, 12.209f, 8.0f, 10.0f,
     ICON_END,
+};
+static const float icon_skip_back[] = {
+    ICON_MOVE, 19.0f, 20.0f, ICON_LINE, 9.0f, 12.0f, ICON_LINE, 19.0f,
+    4.0f, ICON_LINE, 19.0f, 20.0f, ICON_CLOSE, ICON_MOVE, 5.0f, 19.0f,
+    ICON_LINE, 5.0f, 5.0f, ICON_END,
+};
+static const float icon_skip_forward[] = {
+    ICON_MOVE, 5.0f, 4.0f, ICON_LINE, 15.0f, 12.0f, ICON_LINE, 5.0f,
+    20.0f, ICON_LINE, 5.0f, 4.0f, ICON_CLOSE, ICON_MOVE, 19.0f, 5.0f,
+    ICON_LINE, 19.0f, 19.0f, ICON_END,
 };
 static const float icon_smartphone[] = {
     ICON_MOVE, 7.0f, 2.0f, ICON_LINE, 17.0f, 2.0f, ICON_CUBIC, 18.105f,
@@ -642,7 +682,9 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_microchip,
     icon_monitor,
     icon_moon,
+    icon_music,
     icon_network,
+    icon_pause,
     icon_play,
     icon_power,
     icon_refresh_cw,
@@ -653,6 +695,8 @@ static const float *const icon_paths[ICON_COUNT] = {
     icon_scroll_text,
     icon_search,
     icon_shopping_bag,
+    icon_skip_back,
+    icon_skip_forward,
     icon_smartphone,
     icon_speaker,
     icon_sun,

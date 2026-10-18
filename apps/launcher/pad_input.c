@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include "idle.h"
 #include "launcher_internal.h"
 #include "pad.h"
 #include "util.h"
@@ -45,6 +46,7 @@ static void *pad_thread(void *data) {
       break;
     if (e.type != EV_KEY || e.value == 2)
       continue;
+    idle_poke();
     if (e.code == BTN_MODE)
       menu = e.value;
     else if (!menu && !atomic_load(&listening))

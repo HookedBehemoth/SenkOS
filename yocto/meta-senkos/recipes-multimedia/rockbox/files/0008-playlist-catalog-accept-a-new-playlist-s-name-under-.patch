@@ -1,0 +1,35 @@
+From b855a57b5a09e8dff1bad490f80355b0498b4144 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 18:14:30 +0200
+Subject: [PATCH] playlist catalog: accept a new playlist's name under <HOME>
+
+Hosted builds with special directories suggest <HOME>/Playlists/...,
+which the check for an absolute name turned down: Done went back to the
+keyboard, the playlist was never saved.
+
+Upstream-Status: Pending
+---
+ apps/playlist_catalog.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/apps/playlist_catalog.c b/apps/playlist_catalog.c
+index eee746d..bf80730 100644
+--- a/apps/playlist_catalog.c
++++ b/apps/playlist_catalog.c
+@@ -419,7 +419,12 @@ bool catalog_pick_new_playlist_name(char *pl_name, size_t buf_size,
+     while (!do_save && !remove_extension(pl_name) &&
+            !kbd_input(pl_name, buf_size - 7, NULL))
+     {
+-        if (*pl_name == PATH_SEPCH) /* Require absolute filenames */
++        /* Require absolute filenames (<HOME> stands for one) */
++        if (*pl_name == PATH_SEPCH
++#ifdef HAVE_SPECIAL_DIRS
++            || !strncmp(pl_name, HOME_DIR "/", sizeof(HOME_DIR))
++#endif
++           )
+         {
+             p = strrchr(pl_name, PATH_SEPCH);
+             do_save = *(p + 1);   /* Disallow empty filename */
+-- 
+2.56.0
+

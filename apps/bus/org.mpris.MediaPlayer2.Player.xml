@@ -1,0 +1,17 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- MPRIS (specifications.freedesktop.org/mpris-spec): what the launcher asks of any player, what the
+     mediaplayer serves. Each player owns its own org.mpris.MediaPlayer2.NAME. Its properties
+     (Metadata is an a{sv}) are read and served by hand through org.freedesktop.DBus.Properties. -->
+<node name="/org/mpris/MediaPlayer2">
+  <interface name="org.mpris.MediaPlayer2.Player">
+    <annotation name="org.senkos.Service" value=""/>
+    <annotation name="org.senkos.Prefix" value="mpris"/>
+    <method name="Next"/>
+    <method name="Previous"/>
+    <method name="Pause"/>
+    <method name="PlayPause"/>
+    <method name="Stop"/>
+    <method name="Play"/>
+  </interface>
+</node>

@@ -30,6 +30,8 @@ enum { POWER_CALIBRATE, POWER_CPU, POWER_GPU, POWER_REFRESH, POWER_BRIGHTNESS, P
 void power_init(void);
 /* The saved brightness and the clocks in use, again: at start sysd may not be there yet */
 void power_apply(void);
+/* The backlight at a third of its brightness, or back (idle.h); the brightness kept is not changed */
+void power_dim(bool dim);
 /* `key`'s clocks (an app's: its ROM, folder or command) set; "": home, Auto */
 void power_use(str key);
 /* A row's value as shown: "60 fps", "Auto", "1008 MHz", "120 Hz", "50%" */

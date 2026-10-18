@@ -16,6 +16,7 @@
 #include "clock.h"
 #include "gfx.h"
 #include "keys.h"
+#include "idle.h"
 #include "launcher_internal.h"
 #include "layer.h"
 #include "pad.h"
@@ -28,6 +29,7 @@
 #include "watch.h"
 #include "bluetooth.h"
 #include "updates.h"
+#include "media.h"
 #include "wifi.h"
 
 #define SLEEP_FAILED "/run/sleep-failed"
@@ -146,9 +148,11 @@ int main(int argc, char **argv) {
   /* The bus' names watched, before it's used */
   sysd_init();
   bt_init();
+  media_init();
   wifi_init();
   updates_init();
   power_init();
+  idle_init();
   perf_init();
   power_use(HOME_KEY);
   clock_refresh();
@@ -206,6 +210,9 @@ int main(int argc, char **argv) {
       if (wait < 0 || left < wait)
         wait = left;
     }
+    const int idle_left = idle_tick(ms_now());
+    if (idle_left >= 0 && (wait < 0 || idle_left < wait))
+      wait = idle_left;
     if (widgets_due() != 0 && (launcher.front == NULL || showing_pause())) {
       const int left = (int)(widgets_due() - MIN(widgets_due(), ms_now()));
       if (wait < 0 || left < wait)
@@ -263,6 +270,7 @@ int main(int argc, char **argv) {
         dirty |= (changed & (WATCH_MINUTE | WATCH_WIFI | WATCH_BLUETOOTH)) || was.battery != st.battery ||
                  was.charging != st.charging || was.wifi != st.wifi;
       }
+      dirty |= (changed & WATCH_MEDIA) != 0;
       if (changed & WATCH_USB)
         dirty |= storage_refresh_usb();
       if (changed & WATCH_TIME) {
@@ -280,7 +288,8 @@ int main(int argc, char **argv) {
       }
     }
     changed = 0;
-    if (!dirty)
+    /* Off: no frame would come back; drawn when it's on again (its wake animates) */
+    if (!dirty || idle_screen_off())
       continue;
 
     assets_frame();

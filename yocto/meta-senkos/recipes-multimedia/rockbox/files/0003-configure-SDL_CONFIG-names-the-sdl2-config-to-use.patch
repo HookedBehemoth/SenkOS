@@ -1,0 +1,32 @@
+From 13345447f7984d32a69ee3973111f0a9f5084e51 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 18 Oct 2026 16:40:22 +0200
+Subject: [PATCH] configure: SDL_CONFIG names the sdl2-config to use
+
+Cross builds whose compiler's sysroot (searched first) holds a host
+sdl2-config otherwise get the host's flags.
+
+Upstream-Status: Pending
+---
+ tools/configure | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/tools/configure b/tools/configure
+index 28fb8b1..c55cdde 100755
+--- a/tools/configure
++++ b/tools/configure
+@@ -161,6 +161,11 @@ findtool(){
+ # scan the $PATH for ${sdl_config} - check whether for a (cross-)win32
+ # sdl as requested
+ findsdl(){
++  # SDL_CONFIG: the one to use, for cross builds whose sysroot has a host one
++  if [ -n "$SDL_CONFIG" ]; then
++    echo "$SDL_CONFIG"
++    return
++  fi
+   files=${sdl_config}
+   if [ -n "$CROSS_COMPILE" ]; then
+     # ${sdl_config} might (not) be prefixed for cross compiles so try both.
+-- 
+2.56.0
+

@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "appctl.h"
+#include "idle.h"
 #include "pad.h"
 #include "util.h"
 #include "wake.h"
@@ -102,6 +103,7 @@ static void volume_key(pa_mainloop_api *api, pa_io_event *e, int fd, pa_io_event
   if (read(fd, &ev, sizeof(ev)) != sizeof(ev) || ev.type != EV_KEY || ev.value == 0 ||
       (ev.code != KEY_VOLUMEUP && ev.code != KEY_VOLUMEDOWN))
     return;
+  idle_poke();
   const int by = ev.code == KEY_VOLUMEUP ? 1 : -1;
   if (pad >= 0 && pad_held(pad) & (1u << APPCTL_MENU)) {
     win_wake(UI_BRIGHTNESS, by);
@@ -153,6 +155,8 @@ void *power_key_thread(void *key) {
       continue;
     if (ready < 0 || read(fd, &e, sizeof(e)) != sizeof(e))
       break;
+    if (e.type == EV_KEY && e.code == KEY_POWER && e.value == 1)
+      idle_poke();
     if (e.type == EV_KEY && e.code == KEY_POWER && e.value != 2)
       until = e.value ? ms_now() + POWER_HOLD_MS : 0;
   }

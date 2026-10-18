@@ -37,8 +37,10 @@
  * uint32_t rewritten in place in $XDG_RUNTIME_DIR/frames, counted at each
  * repaint's latch, so client buffers on a plane count too),
  * the refresh rate (kept in $XDG_CONFIG_HOME/refresh-rate, set again as each
- * output comes up, before its first frame), and who may capture the screen
- * (the launcher and root).
+ * output comes up, before its first frame), who may capture the screen
+ * (the launcher and root), the screen on and off for the launcher, and
+ * zwp_idle_inhibit_manager_v1: whether a surface shown keeps the screen on
+ * is the launcher's to know (idle_inhibited), the dimming and sleeping too.
  */
 #include <assert.h>
 #include <fcntl.h>
@@ -57,6 +59,7 @@
 #include <libweston/xwayland-api.h>
 #include <libweston/zalloc.h>
 
+#include "idle-inhibit-unstable-v1-server-protocol.h"
 #include "senkos-shell-v1-server-protocol.h"
 
 #define container_of(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
@@ -103,6 +106,12 @@ struct shell {
   struct shell_seat *seat;
 
   const struct weston_xwayland_surface_api *xwayland_surface_api;
+
+  /* senkos_shell_v1's resources, for its events */
+  struct wl_list shell_resources;
+  struct wl_global *inhibit_global;
+  struct wl_list inhibitors;
+  bool inhibited;
 
   int frames_fd;
   uint32_t frames;
@@ -434,6 +443,8 @@ static struct shell_surface *top_app(struct shell *shell, struct shell_surface *
   return NULL;
 }
 
+static void inhibit_update(struct shell *shell);
+
 static void launcher_set_shown(struct shell *shell, bool shown) {
   struct shell_surface *s;
   shell->launcher_shown = shown;
@@ -443,6 +454,7 @@ static void launcher_set_shown(struct shell *shell, bool shown) {
     if (weston_surface_is_mapped(weston_desktop_surface_get_surface(s->desktop_surface)))
       weston_view_move_to_layer(s->view, shown ? &shell->launcher_layer.view_list : &shell->hidden_layer.view_list);
   }
+  inhibit_update(shell);
 }
 
 /* Shown: the launcher's top toplevel focused; hidden: the app's */
@@ -495,6 +507,7 @@ static void output_set_active_surface_tree(struct shell_output *shoutput, struct
         weston_view_move_to_layer(s->view, &shell->app_layer.view_list);
   }
   shoutput->active_surface_tree = shroot != NULL ? &shroot->surface_tree_list : NULL;
+  inhibit_update(shell);
 }
 
 /* The subtree from shroot of the tree shown to the top of the apps' layer */
@@ -784,6 +797,15 @@ static void shell_set_refresh(struct wl_client *client, struct wl_resource *reso
   set_refresh(wl_resource_get_user_data(resource), mhz);
 }
 
+static void shell_set_screen(struct wl_client *client, struct wl_resource *resource, uint32_t on) {
+  struct shell *shell = wl_resource_get_user_data(resource);
+  (void)client;
+  if (on)
+    weston_compositor_wake(shell->compositor);
+  else
+    weston_compositor_sleep(shell->compositor);
+}
+
 static const struct senkos_shell_v1_interface shell_implementation = {
     .destroy = shell_destroy_request,
     .set_overlay = shell_set_overlay,
@@ -791,15 +813,110 @@ static const struct senkos_shell_v1_interface shell_implementation = {
     .hide = shell_hide,
     .show_app = shell_show_app,
     .set_refresh = shell_set_refresh,
+    .set_screen = shell_set_screen,
 };
 
+static void shell_resource_destroyed(struct wl_resource *resource) { wl_list_remove(wl_resource_get_link(resource)); }
+
 static void bind_shell(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+  struct shell *shell = data;
   struct wl_resource *resource = wl_resource_create(client, &senkos_shell_v1_interface, (int)version, id);
   if (resource == NULL) {
     wl_client_post_no_memory(client);
     return;
   }
-  wl_resource_set_implementation(resource, &shell_implementation, data, NULL);
+  wl_resource_set_implementation(resource, &shell_implementation, data, shell_resource_destroyed);
+  wl_list_insert(&shell->shell_resources, wl_resource_get_link(resource));
+  senkos_shell_v1_send_idle_inhibited(resource, shell->inhibited);
+}
+
+/* --- zwp_idle_inhibit_manager_v1 ----------------------------------------- */
+
+struct inhibitor {
+  struct shell *shell;
+  struct weston_surface *surface; /* NULL once gone: then it does nothing */
+  struct wl_listener surface_destroy;
+  struct wl_list link;
+};
+
+/* Shown: its toplevel's view in the launcher's layer, or in the apps' with the launcher's hidden */
+static bool inhibitor_shown(const struct inhibitor *inh) {
+  if (inh->surface == NULL)
+    return false;
+  const struct shell *shell = inh->shell;
+  const struct shell_surface *s = get_shell_surface(weston_surface_get_main_surface(inh->surface));
+  if (s == NULL || s->view == NULL)
+    return false;
+  const struct weston_layer *layer = s->view->layer_link.layer;
+  return layer == &shell->launcher_layer || (layer == &shell->app_layer && !shell->launcher_shown);
+}
+
+static void inhibit_update(struct shell *shell) {
+  bool inhibited = false;
+  struct inhibitor *inh;
+  wl_list_for_each(inh, &shell->inhibitors, link) inhibited |= inhibitor_shown(inh);
+  if (inhibited == shell->inhibited)
+    return;
+  shell->inhibited = inhibited;
+  struct wl_resource *resource;
+  wl_resource_for_each(resource, &shell->shell_resources) senkos_shell_v1_send_idle_inhibited(resource, inhibited);
+}
+
+static void inhibitor_surface_destroyed(struct wl_listener *listener, void *data) {
+  struct inhibitor *inh = container_of(listener, struct inhibitor, surface_destroy);
+  (void)data;
+  wl_list_remove(&inh->surface_destroy.link);
+  inh->surface = NULL;
+  inhibit_update(inh->shell);
+}
+
+static void inhibitor_destroyed(struct wl_resource *resource) {
+  struct inhibitor *inh = wl_resource_get_user_data(resource);
+  if (inh->surface != NULL)
+    wl_list_remove(&inh->surface_destroy.link);
+  wl_list_remove(&inh->link);
+  struct shell *shell = inh->shell;
+  free(inh);
+  inhibit_update(shell);
+}
+
+static const struct zwp_idle_inhibitor_v1_interface inhibitor_implementation = {
+    .destroy = shell_destroy_request,
+};
+
+static void inhibit_create(struct wl_client *client, struct wl_resource *resource, uint32_t id,
+                           struct wl_resource *surface_resource) {
+  struct shell *shell = wl_resource_get_user_data(resource);
+  struct inhibitor *inh = zalloc(sizeof(*inh));
+  struct wl_resource *r = inh != NULL ? wl_resource_create(client, &zwp_idle_inhibitor_v1_interface,
+                                                           wl_resource_get_version(resource), id)
+                                      : NULL;
+  if (r == NULL) {
+    free(inh);
+    wl_client_post_no_memory(client);
+    return;
+  }
+  inh->shell = shell;
+  inh->surface = wl_resource_get_user_data(surface_resource);
+  inh->surface_destroy.notify = inhibitor_surface_destroyed;
+  wl_signal_add(&inh->surface->destroy_signal, &inh->surface_destroy);
+  wl_list_insert(&shell->inhibitors, &inh->link);
+  wl_resource_set_implementation(r, &inhibitor_implementation, inh, inhibitor_destroyed);
+  inhibit_update(shell);
+}
+
+static const struct zwp_idle_inhibit_manager_v1_interface inhibit_manager_implementation = {
+    .destroy = shell_destroy_request,
+    .create_inhibitor = inhibit_create,
+};
+
+static void bind_inhibit_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+  struct wl_resource *resource = wl_resource_create(client, &zwp_idle_inhibit_manager_v1_interface, (int)version, id);
+  if (resource == NULL) {
+    wl_client_post_no_memory(client);
+    return;
+  }
+  wl_resource_set_implementation(resource, &inhibit_manager_implementation, data, NULL);
 }
 
 /* Only the launcher (and root) see it */
@@ -880,6 +997,7 @@ static void desktop_surface_removed(struct weston_desktop_surface *desktop_surfa
     focus_top(shell, shsurf);
   }
   surface_destroy(shsurf);
+  inhibit_update(shell);
 }
 
 static void map_app(struct shell_surface *shsurf) {
@@ -941,6 +1059,7 @@ static void desktop_surface_committed(struct weston_desktop_surface *desktop_sur
     } else {
       map_app(shsurf);
     }
+    inhibit_update(shsurf->shell);
   } else if (shsurf->kind == LAUNCHER && shsurf->shell->launcher_show_pending) {
     launcher_set_shown(shsurf->shell, true);
     focus_top(shsurf->shell, NULL);
@@ -1136,6 +1255,7 @@ static void shell_destroy(struct wl_listener *listener, void *data) {
   if (shell->seat != NULL)
     seat_handle_destroy(&shell->seat->destroy_listener, NULL);
   wl_global_destroy(shell->global);
+  wl_global_destroy(shell->inhibit_global);
   weston_desktop_destroy(shell->desktop);
   if (shell->frames_fd >= 0)
     close(shell->frames_fd);
@@ -1161,6 +1281,8 @@ WL_EXPORT int wet_shell_init(struct weston_compositor *compositor, int *argc, ch
   wl_list_init(&shell->output_list);
   wl_list_init(&shell->overlay_list);
   wl_list_init(&shell->launcher_list);
+  wl_list_init(&shell->shell_resources);
+  wl_list_init(&shell->inhibitors);
 
   const char *dir = getenv("XDG_RUNTIME_DIR");
   char path[256];
@@ -1194,7 +1316,9 @@ WL_EXPORT int wet_shell_init(struct weston_compositor *compositor, int *argc, ch
   if (shell->desktop == NULL)
     return -1;
   shell->global = wl_global_create(compositor->wl_display, &senkos_shell_v1_interface, 1, shell, bind_shell);
-  if (shell->global == NULL)
+  shell->inhibit_global =
+      wl_global_create(compositor->wl_display, &zwp_idle_inhibit_manager_v1_interface, 1, shell, bind_inhibit_manager);
+  if (shell->global == NULL || shell->inhibit_global == NULL)
     return -1;
   wl_display_set_global_filter(compositor->wl_display, global_filter, shell);
 

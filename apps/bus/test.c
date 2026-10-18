@@ -228,15 +228,12 @@ static void run_until(const int *n, int want) {
 
 int main(void) {
   offline();
-  const char *addr = getenv("DBUS_SESSION_BUS_ADDRESS");
-  if (addr == NULL || strncmp(addr, "unix:path=", 10) != 0) {
+  const int opened = bus_open_session(&server);
+  if (opened == -ENOENT) {
     puts("no session bus at a path: the bus part skipped");
     return 77;
   }
-  str rest = str_c(addr + 10);
-  STRBUF(108) path;
-  sb_set(path, str_cut(&rest, ','));
-  assert(bus_open(&server, path.p) == 0 && bus_open(&client, path.p) == 0);
+  assert(opened == 0 && bus_open_session(&client) == 0);
 
   bus_add_match(&client, &owner_match, S("type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',"
                                          "member='NameOwnerChanged',arg0='" SYSTEM1_NAME "'"));

@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "keys.h"
+#include "idle.h"
 #include "launcher_internal.h"
 #include "power.h"
 #include "romdb.h"
@@ -101,6 +102,10 @@ bool launcher_input(nav *ui, int why, int value, size_t *page) {
       session_pause(ui);
     if (!screen_contains(launcher.visible, &power_key_screen))
       screen_push(launcher.visible, ui, &power_key_screen, 0);
+    return true;
+  case UI_ACTIVE:
+  case UI_LID:
+    idle_event(why, value);
     return true;
   case UI_REFUSED: {
     osd_show_text(bus_refused(), 3000);

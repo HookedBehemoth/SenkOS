@@ -252,6 +252,15 @@ int bus_open(bus_conn *c, const char *path) {
   return 0;
 }
 
+int bus_open_session(bus_conn *c) {
+  const char *addr = getenv("DBUS_SESSION_BUS_ADDRESS");
+  if (addr == NULL || strncmp(addr, "unix:path=", 10) != 0)
+    return -ENOENT;
+  str rest = str_c(addr + 10);
+  STRBUF(108) path;
+  return sb_set(path, str_cut(&rest, ',')) ? bus_open(c, path.p) : -ENAMETOOLONG;
+}
+
 void bus_close(bus_conn *c) {
   if (c->fd >= 0)
     close(c->fd);

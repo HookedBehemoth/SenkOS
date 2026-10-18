@@ -139,7 +139,8 @@ what programs keep for themselves goes in `.local/state` and `.cache`, settings 
 | `OS/assets/thumbnails/<system>.pack` | game packs: titles, metadata and box art by ROM CRC32 |
 | `OS/assets/emulator/` | the cores' system directory, BIOS and assets (`COREHOST_SYSTEM`) |
 | `OS/saves/<core>/` | the cores' saves (`COREHOST_SAVE`) |
-| `OS/config/` | settings: `corehost/<core>.opt`, `mediaplayer.opt`, `power-on-ms`, `usb` (Storage) |
+| `OS/config/` | settings: `corehost/<core>.opt`, `mediaplayer.opt`, `rockbox.org/` (Rockbox), `power-on-ms`, `usb` (Storage) |
+| `music/` | Rockbox's start directory |
 | `OS/launcher/` | the launcher's home (it runs as `shell`): `config/` (`launcher-cores`: emulator per game, `launcher-matches`: pack game per ROM, `launcher-folders`: Libraries, `launcher-power`, `launcher-perf`), `state/` (`launcher`: the page shown, `launcher-ignored`), `cache/` (`launcher/crc32`, thumbnails) |
 | `OS/overlay/` | rootfs overlays: `OS/overlay/usr/bin/launcher` replaces `/usr/bin/launcher` and so on. `overlay` (at boot, again after a change) copies them into RAM, an overlayfs per top-level directory, so `/data` stays free to unmount |
 | `OS/init.d/S*` | run in order with `start` by `/etc/init.d/data-init` (from rcS S01, after `/data` is mounted, before seatd and Weston). `touch /uboot/no-data-init` (FAT, editable from any PC) skips them |
@@ -230,7 +231,20 @@ gst-libav decodes the audio, and the video when Cedrus can't or fails. Controls:
 10 s, L1/R1 60 s; Up/Down previous/next video; X, Y or Select show the OSD; B quits. Graphics has the scaling,
 Audio the track. Where each video was left is kept in `.local/state/mediaplayer/resume`; past 95 % counts as seen.
 
-Sound goes through PipeWire (ALSA's default is PipeWire; Pulse clients use pipewire-pulse). WirePlumber owns the
+Music is Rockbox, built as an application (recipes-multimedia/rockbox: upstream plus our patches, target
+"Retro Handheld" 208). It isn't in the image: the recipe deploys `rockbox.zip` (`rockbox.desktop` and
+`rockbox/`), unpacked into the card's `apps/applications`; configure's `--relocatable` (0007) finds codecs, plugins
+and themes next to `rockbox/bin/rockbox`. The pad is an SDL game controller, the card's `music/` the start
+directory, its settings in `OS/config/rockbox.org` (defaults: `rockbox/share/rockbox/config.cfg`).
+
+Media players speak MPRIS on the player's session bus (`unix:path=/run/user/1000/bus`, started by `weston.init`
+after the first frame; `session.d/senkos.conf` lets the launcher in): Rockbox serves it. The launcher's
+quick menu (Start at home) shows the track of the one playing, else the last one, with previous, play/pause and
+next; a new track while its app isn't in front shows on the OSD. An app whose player is playing isn't stopped
+behind the launcher (an appctl app still gets its pause and decides).
+
+Sound goes through PipeWire (ALSA's default is PipeWire; Pulse clients use pipewire-pulse; SDL2 apps through its own
+PipeWire backend, `SDL_AUDIODRIVER=pipewire,alsa`). WirePlumber owns the
 volume (the default sink's drives the codec's Line Out) and restores it at start; nothing may write Line Out directly.
 The launcher reads the volume keys (evdev, whatever has the focus), steps the volume with `wpctl` and shows it in its
 `osd` window, an overlay of Weston's shell: on top, never focused. A paused app writes nothing.
