@@ -11,6 +11,8 @@ inherit image
 # openal-soft, libvorbis, libjpeg-turbo, libcurl, libcrypto: game runtime (games in /data)
 # libbz2 ... opusfile: the games' platform; the SDL2 family (SDL2_gfx our own), libmodplug and opusfile from meta-openembedded
 # libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
+# fusermount3, libfuse2: AppImages mount themselves. gmp ... fribidi: what AppImages leave to the host
+# (AppImage's excludelist) and we'd otherwise lack
 # The libretro cores: run by corehost, as the emulators in senkos-data (senkos-base) say
 IMAGE_INSTALL = " \
     base-files \
@@ -48,6 +50,7 @@ IMAGE_INSTALL = " \
     gstreamer1.0-plugins-base-videoconvertscale \
     mediaplayer \
     weston-xwayland \
+    fusermount3 libfuse2 gmp libgpg-error libusb1 fribidi \
     pipewire \
     pipewire-pulse \
     pipewire-alsa \

@@ -1,12 +1,19 @@
 #include "apps.h"
 #include "cfg.h"
 #include "romdb.h"
+#include "running.h"
 #include "util.h"
 #include "wake.h"
 
 #include <dirent.h>
+#include <elf.h>
+#include <fcntl.h>
 #include <fnmatch.h>
+#include <ftw.h>
+#include <grp.h>
+#include <linux/openat2.h>
 #include <poll.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +21,10 @@
 #include <strings.h>
 #include <sys/inotify.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+#include <squashfuse.h>
 
 /* The image's systems, emulators and players; apps/systems and
  * apps/emulators on the card over them */
@@ -42,20 +52,24 @@ static str root(void) {
   return r;
 }
 
-/* $`var`/launcher`suffix`, else $HOME/`fallback`/launcher`suffix` */
-static FILE *xdg_file(const char *var, const char *fallback, const char *suffix, const char *mode) {
-  char path[512];
+/* $`var`/launcher`suffix`, else $HOME/`fallback`/launcher`suffix`; for writing, its folders made */
+static void xdg_path(char path[512], const char *var, const char *fallback, const char *suffix, bool write) {
   const char *dir = getenv(var), *home = getenv("HOME");
   if (dir != NULL && dir[0] == '/')
-    snprintf(path, sizeof(path), "%s/launcher%s", dir, suffix);
+    snprintf(path, 512, "%s/launcher%s", dir, suffix);
   else
-    snprintf(path, sizeof(path), "%s/%s/launcher%s", home ? home : "/tmp", fallback, suffix);
+    snprintf(path, 512, "%s/%s/launcher%s", home ? home : "/tmp", fallback, suffix);
   /* mkdir -p of what may be missing */
-  for (char *slash = strchr(path + 1, '/'); mode[0] != 'r' && slash; slash = strchr(slash + 1, '/')) {
+  for (char *slash = strchr(path + 1, '/'); write && slash; slash = strchr(slash + 1, '/')) {
     *slash = '\0';
     mkdir(path, 0755);
     *slash = '/';
   }
+}
+
+static FILE *xdg_file(const char *var, const char *fallback, const char *suffix, const char *mode) {
+  char path[512];
+  xdg_path(path, var, fallback, suffix, mode[0] != 'r');
   return fopen(path, mode);
 }
 
@@ -252,6 +266,231 @@ static str stem(str name) {
   return dot != 0 ? str_head(name, dot) : name;
 }
 
+/* An aarch64 AppImage: the runtime, an ELF marked AI 2 (type 2), then its file system at
+ * `*offset` */
+static bool appimage_header(int fd, size_t *offset) {
+  Elf64_Ehdr h;
+  if (pread(fd, &h, sizeof(h), 0) != sizeof(h) || memcmp(h.e_ident, ELFMAG, SELFMAG) != 0 ||
+      h.e_ident[EI_CLASS] != ELFCLASS64 || memcmp(&h.e_ident[EI_ABIVERSION], "AI\2", 3) != 0 ||
+      h.e_machine != EM_AARCH64)
+    return false;
+  *offset = h.e_shoff + (size_t)h.e_shentsize * h.e_shnum;
+  return true;
+}
+
+/* An AppImage's files: its SquashFS, else what dwarfsextract took out of its DwarFS (`dir`) */
+typedef struct {
+  sqfs *fs;
+  int dir;
+} appfs;
+
+/* The file `name` in its root, through symlinks (which stay inside); NULL if there's none (or
+ * it's over 4 MB) */
+static str appfs_file(appfs *f, const char *name) {
+  if (f->fs == NULL) {
+    struct open_how how = {.flags = O_RDONLY | O_CLOEXEC, .resolve = RESOLVE_IN_ROOT};
+    const int fd = (int)syscall(SYS_openat2, f->dir, name, &how, sizeof(how));
+    struct stat st;
+    if (fd >= 0 && (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > 4 << 20)) {
+      close(fd);
+      return (str){0};
+    }
+    return fd >= 0 ? str_read(fdopen(fd, "r")) : (str){0};
+  }
+  char path[256];
+  snprintf(path, sizeof(path), "%s", name);
+  for (int links = 0; links < 8; links++) {
+    sqfs_inode inode;
+    bool found;
+    if (sqfs_inode_get(f->fs, &inode, sqfs_inode_root(f->fs)) != SQFS_OK ||
+        sqfs_lookup_path(f->fs, &inode, path, &found) != SQFS_OK || !found)
+      break;
+    size_t size = sizeof(path);
+    if (S_ISLNK(inode.base.mode) && sqfs_readlink(f->fs, &inode, path, &size) == SQFS_OK)
+      continue;
+    if (!S_ISREG(inode.base.mode) || inode.xtra.reg.file_size > 4 << 20)
+      break;
+    sqfs_off_t n = (sqfs_off_t)inode.xtra.reg.file_size;
+    char *data = malloc((size_t)n + 1);
+    if (data == NULL || sqfs_read_range(f->fs, &inode, 0, &n, data) != SQFS_OK) {
+      free(data);
+      break;
+    }
+    data[n] = '\0';
+    return (str){data, (size_t)n};
+  }
+  return (str){0};
+}
+
+/* The .desktop in its root */
+static str appfs_desktop(appfs *f) {
+  if (f->fs == NULL) {
+    DIR *dir = fdopendir(openat(f->dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    str text = {0};
+    for (struct dirent *d; dir != NULL && text.p == NULL && (d = readdir(dir)) != NULL;)
+      if (str_iends(str_c(d->d_name), S(".desktop")))
+        text = appfs_file(f, d->d_name);
+    if (dir != NULL)
+      closedir(dir);
+    return text;
+  }
+  sqfs_inode root;
+  sqfs_dir dir;
+  sqfs_dir_entry entry;
+  sqfs_name name;
+  sqfs_err err;
+  if (sqfs_inode_get(f->fs, &root, sqfs_inode_root(f->fs)) != SQFS_OK ||
+      sqfs_dir_open(f->fs, &root, &dir, 0) != SQFS_OK)
+    return (str){0};
+  sqfs_dentry_init(&entry, name);
+  while (sqfs_dir_next(f->fs, &dir, &entry, &err))
+    if (str_iends(str_c(sqfs_dentry_name(&entry)), S(".desktop")))
+      return appfs_file(f, sqfs_dentry_name(&entry));
+  return (str){0};
+}
+
+static bool is_png(str data) { return data.n > 4 && memcmp(data.p, "\x89PNG", 4) == 0; }
+
+/* A PNG for the icon: .DirIcon, else Icon= in the hicolor theme (.DirIcon may be an SVG) */
+static str appfs_icon(appfs *f, str desktop) {
+  str png = appfs_file(f, ".DirIcon");
+  if (is_png(png))
+    return png;
+  free((char *)png.p);
+  STRBUF(256) name = {0};
+  cfg_reader r = cfg_init(desktop);
+  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;)
+    if (e == CFG_VALUE && str_eq(r.section, S("Desktop Entry")) && str_eq(r.key, S("Icon")))
+      sb_set(name, r.value);
+  static const char *const sizes[] = {"256x256", "512x512", "128x128"};
+  for (size_t i = 0; i < COUNTOF(sizes) && name.n > 0; i++) {
+    char path[320];
+    snprintf(path, sizeof(path), "usr/share/icons/hicolor/%s/apps/%s.png", sizes[i], name.p);
+    if (is_png(png = appfs_file(f, path)))
+      return png;
+    free((char *)png.p);
+  }
+  return (str){0};
+}
+
+static void write_file(const char *path, str data) {
+  FILE *f = fopen(path, "w");
+  if (f != NULL) {
+    fwrite(data.p, 1, data.n, f);
+    fclose(f);
+  }
+}
+
+/* `base`.png and `base`.desktop in the cache, from `f` (NULL: none to be had). The .desktop
+ * last, and whole: it says the cache is there. */
+static void cache_appimage(appfs *f, const char *base) {
+  char path[540], tmp[560];
+  const str text = f != NULL ? appfs_desktop(f) : (str){0};
+  const str png = f != NULL ? appfs_icon(f, text) : (str){0};
+  snprintf(path, sizeof(path), "%s.png", base);
+  if (png.n > 0)
+    write_file(path, png);
+  else
+    unlink(path);
+  snprintf(path, sizeof(path), "%s.desktop", base);
+  snprintf(tmp, sizeof(tmp), "%s.new", path);
+  write_file(tmp, text);
+  rename(tmp, path);
+  free((char *)text.p);
+  free((char *)png.p);
+}
+
+static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+  (void)st, (void)type, (void)ftw;
+  remove(path);
+  return 0;
+}
+
+/* The runtime's own dwarfsextract, run as an app is (made executable as it would be), takes the
+ * .desktop and icons out into `$2` */
+static const char dwarfs_extract[] =
+    "chmod +x \"$1\" && umask 002 && exec timeout 60 \"$1\" --appimage-dwarfsextract -i \"$1\" -o \"$2\" "
+    "--log-level error --pattern '*.desktop' --pattern .DirIcon --pattern '*.png' "
+    "--pattern 'usr/share/applications/*.desktop' --pattern 'usr/share/icons/hicolor/*/apps/*.png'";
+
+/* One at a time: each wakes a rescan, which starts the next */
+static atomic_bool extracting;
+typedef struct {
+  char path[512], base[512];
+} extract_job;
+
+/* DwarFS takes seconds to decompress its way to a .desktop: not on the UI's thread */
+static void *extract_thread(void *arg) {
+  extract_job *job = arg;
+  /* The apps' user writes into it, we read and remove what it wrote (umask 002): its group */
+  char dir[] = "/tmp/appimage-XXXXXX";
+  const struct group *player = getgrnam("player");
+  appfs f = {.dir = -1};
+  const bool made = mkdtemp(dir) != NULL;
+  if (made && chmod(dir, 0770) == 0 && (player == NULL || chown(dir, (uid_t)-1, player->gr_gid) == 0) &&
+      run_helper(dwarfs_extract, job->path, dir))
+    f.dir = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC);
+  cache_appimage(f.dir >= 0 ? &f : NULL, job->base);
+  if (f.dir >= 0)
+    close(f.dir);
+  if (made)
+    nftw(dir, remove_entry, 8, FTW_DEPTH | FTW_PHYS);
+  free(job);
+  atomic_store(&extracting, false);
+  win_wake(UI_RELOAD, 0);
+  return NULL;
+}
+
+static void extract_later(const char *path, const char *base) {
+  if (atomic_exchange(&extracting, true))
+    return;
+  extract_job *job = malloc(sizeof(*job));
+  if (job != NULL) {
+    snprintf(job->path, sizeof(job->path), "%s", path);
+    snprintf(job->base, sizeof(job->base), "%s", base);
+    if (spawn("appimage", extract_thread, job))
+      return;
+  }
+  free(job);
+  atomic_store(&extracting, false);
+}
+
+/* `path` as an app if it's an AppImage: made executable as it starts. Its .desktop and icon are
+ * cached for as long as they're newer than it; a DwarFS one's come later (extract_thread). */
+static bool appimage(const char *path, const struct stat *st, str folder, str name, app *a) {
+  size_t offset;
+  const int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0 || !appimage_header(fd, &offset)) {
+    if (fd >= 0)
+      close(fd);
+    return false;
+  }
+  char base[512], suffix[320], file[540];
+  snprintf(suffix, sizeof(suffix), "/appimage/%.*s", (int)name.n, name.p);
+  xdg_path(base, "XDG_CACHE_HOME", ".cache", suffix, true);
+  snprintf(file, sizeof(file), "%s.desktop", base);
+  struct stat cached;
+  if (stat(file, &cached) != 0 || cached.st_mtime < st->st_mtime) {
+    sqfs fs;
+    if (sqfs_init(&fs, fd, offset) == SQFS_OK) {
+      cache_appimage(&(appfs){.fs = &fs}, base);
+      sqfs_destroy(&fs);
+    } else {
+      extract_later(path, base);
+    }
+  }
+  close(fd);
+  parse_desktop(file, folder, a, NULL);
+  if (a->name.n == 0)
+    sb_set(a->name, stem(name));
+  sb_set(a->exec, S("chmod +x \"$1\" 2>/dev/null; exec \"$1\""));
+  sb_set(a->arg, str_c(path));
+  sb_set(a->dir, folder);
+  snprintf(file, sizeof(file), "%s.png", base);
+  sb_set(a->icon, is_file(file) ? str_c(file) : S(""));
+  return true;
+}
+
 /* `name` matches one of `patterns` ("*.gba;*.zip;"), case aside */
 static bool matches(str name, str patterns) {
   for (str pattern; cfg_item(&patterns, &pattern);) {
@@ -312,10 +551,16 @@ static void scan_entry(category *c, str picks, str matched, str folder, str name
       c->count++;
     return;
   }
-  /* A bare executable, unless a .desktop speaks for it */
+  /* An AppImage or a bare executable, unless a .desktop speaks for it */
   STRBUF(600) desktop;
   sb_set(desktop, sb_str(path), S(".desktop"));
-  if (is_image(name) || access(path.p, X_OK) != 0 || is_file(desktop.p) || (a = add(c)) == NULL)
+  if (is_image(name) || is_file(desktop.p) || (a = add(c)) == NULL)
+    return;
+  if (appimage(path.p, &st, folder, name, a)) {
+    c->count++;
+    return;
+  }
+  if (access(path.p, X_OK) != 0)
     return;
   sb_set(a->name, name);
   sb_set(a->exec, S("exec \"$1\""));

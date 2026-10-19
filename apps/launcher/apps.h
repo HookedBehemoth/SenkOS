@@ -8,6 +8,8 @@
  *   the same name. Exec runs under sh -c, in Path or else the folder. Icon is
  *   a path, absolute or relative to the folder, extension optional.
  *   X-SenkOS-AskQuit=false: Quit in its pause menu doesn't ask first.
+ *   An aarch64 AppImage is an app too, executable or not: Name and the rest from the
+ *   .desktop inside it, its .DirIcon as the icon. It mounts itself (fusermount3).
  * - Game systems: the .system files in apps/systems over the image's
  *   (SYSTEMS, apps.c), the way emulators are below. [System] Name, Folder
  *   (its page's, under the data root), Aliases (what other OSes call such a

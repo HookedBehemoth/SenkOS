@@ -1,6 +1,12 @@
 # Wayland clients (ssh sessions included) talk to the Weston started by /etc/init.d/weston (as player)
 export XDG_RUNTIME_DIR=/run/user/$(id -u player)
 export WAYLAND_DISPLAY=wayland-0
+# X11 clients: Weston's Xwayland (started on the first connection). The session type keeps Qt on
+# Wayland when it has both.
+export DISPLAY=:0 XDG_SESSION_TYPE=wayland
+# AppImages (pkgforge's hooks) don't update themselves: their prompt has no dialog to show here,
+# and the prompting shell's exit is reaped as the game's by games that wait() for any child (SRB2)
+export DISABLE_AUTO_UPDATES=1
 # The player's session bus (weston.init): MPRIS players for the launcher
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 # SDL2 passes over Wayland unless asked by name when the compositor has no decorations (Weston)

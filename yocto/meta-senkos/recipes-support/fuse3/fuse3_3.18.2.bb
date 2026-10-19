@@ -1,6 +1,4 @@
-SUMMARY = "libfuse 3: the library squashfuse serves squashfs images with"
-# Only the library: no fusermount3. Whoever runs squashfuse mounts /dev/fuse itself in a user
-# namespace and hands it the fd, so nothing setuid is needed.
+SUMMARY = "libfuse 3, and fusermount3 (setuid): AppImages mount themselves with it"
 LICENSE = "LGPL-2.1-only"
 LIC_FILES_CHKSUM = "file://LGPL2.txt;md5=4fbd65380cdd255951079008b364516c"
 SRC_URI = "https://github.com/libfuse/libfuse/releases/download/fuse-${PV}/fuse-${PV}.tar.gz"
@@ -9,4 +7,14 @@ S = "${UNPACKDIR}/fuse-${PV}"
 
 inherit meson pkgconfig
 
-EXTRA_OEMESON = "-Dutils=false -Dexamples=false -Dtests=false -Denable-io-uring=false -Ddisable-mtab=true"
+EXTRA_OEMESON = "-Dinitscriptdir= -Dudevrulesdir=${nonarch_base_libdir}/udev/rules.d -Dexamples=false -Dtests=false -Denable-io-uring=false -Ddisable-mtab=true"
+
+# fusermount: the name libfuse 2 runs (old AppImages); fusermount3 takes its options. No
+# mount.fuse3, no udev rule: /dev/fuse is 0666 from the kernel.
+do_install:append() {
+    rm -rf ${D}/dev ${D}${sbindir} ${D}${nonarch_base_libdir}/udev
+    rmdir ${D}${nonarch_base_libdir}
+    ln -s fusermount3 ${D}${bindir}/fusermount
+}
+PACKAGES =+ "fusermount3"
+FILES:fusermount3 = "${bindir}/fusermount3 ${bindir}/fusermount ${sysconfdir}/fuse.conf"

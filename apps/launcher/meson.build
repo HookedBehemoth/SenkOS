@@ -24,6 +24,7 @@ executable('launcher', 'main.c', 'state.c', 'home_state.c', 'pad_input.c', 'sess
     dependency('wayland-client'),
     dependency('zlib'),
     dependency('libpulse'),
+    dependency('squashfuse'),
     system1_client_dep,
     updates1_client_dep,
     properties_client_dep,

@@ -84,6 +84,8 @@ echo $(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024 - 160)
 echo 1 > $c/apps/memory.oom.group
 echo 1024 > $c/apps/pids.max
 chown shell:shell $c/cgroup.procs $c/ui/cgroup.procs $c/apps/cgroup.procs
+# The launcher's too: a cgroup of its own in it for each app, which tells when the app is gone
+chown shell:shell $c/apps
 
 ab mount
 # The player creates in /data and /data/OS but can't rename or delete root's entries

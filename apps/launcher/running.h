@@ -22,6 +22,10 @@ typedef struct {
   unsigned flags; /* APP_* (apps.h) */
   /* SIGTERM sent, exit not seen yet */
   bool quitting;
+  /* Set by exit_thread before UI_EXITED: its wait status, and whether what it started lived on
+   * after it (then that status isn't the app's) */
+  int status;
+  bool outlived;
   screen_stack screens;
 } running;
 
@@ -30,6 +34,8 @@ extern running runs[RUNNING_MAX];
 /* win_wake(UI_EXITED, pid) when it is gone. NULL when there is no free slot
  * or the fork failed. */
 running *run_launch(str label, str icon, str exec, str arg, str dir);
+/* `script` (sh -c, with $1 and $2) as an app runs, but waited for: true if it exited with 0 */
+bool run_helper(const char *script, const char *arg1, const char *arg2);
 /* Started as root: shell from here on, as above; false if that failed. As anyone else: nothing
  * to do. Before any thread. */
 bool run_drop_root(void);

@@ -12,9 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/pidfd.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -23,8 +23,9 @@
 #include "util.h"
 #include "wake.h"
 
-/* weston.init's cgroup for apps: memory and CPU limits that keep the UI usable */
-#define APPS_CGROUP "/sys/fs/cgroup/session/apps/cgroup.procs"
+/* weston.init's cgroup for apps: memory and CPU limits that keep the UI usable. Each app in one
+ * of its own under it, by its slot in runs[]: empty once all it started is gone. */
+#define APPS_CGROUP "/sys/fs/cgroup/session/apps"
 /* Long enough to write a save state to the card */
 #define REQUEST_MS 3000
 
@@ -106,21 +107,54 @@ const char *run_app_env(const char *name) {
   return NULL;
 }
 
-/* Wakes the UI once the app is gone. Ours can't be reaped before that is
- * handled, so the pid stays valid until then. */
+/* Wakes the UI once the app is gone: it, and all it started that lives on in its cgroup (a
+ * launcher script's game, SRB2's after its crash handler reaped some other child). */
 static void *exit_thread(void *data) {
-  const pid_t pid = (pid_t)(intptr_t)data;
-  const int fd = pidfd_open(pid, 0);
-  if (fd >= 0) {
-    struct pollfd p = {.fd = fd, .events = POLLIN};
-    while (poll(&p, 1, -1) < 0 && errno == EINTR)
-      ;
-    close(fd);
-  } else if (errno != ESRCH) {
-    fprintf(stderr, "pidfd_open: %s\n", strerror(errno));
+  running *r = data;
+  const pid_t pid = r->pid;
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+    ;
+  r->status = status;
+  /* "populated 0" once its cgroup is empty; the kernel flags the file when that changes */
+  char path[64], events[128];
+  snprintf(path, sizeof(path), APPS_CGROUP "/%d/cgroup.events", (int)(r - runs));
+  const int fd = open(path, O_RDONLY | O_CLOEXEC);
+  for (ssize_t n; fd >= 0 && (n = pread(fd, events, sizeof(events) - 1, 0)) > 0;) {
+    events[n] = '\0';
+    if (strstr(events, "populated 0") != NULL)
+      break;
+    r->outlived = true;
+    struct pollfd p = {.fd = fd, .events = POLLPRI};
+    poll(&p, 1, -1);
   }
+  if (fd >= 0)
+    close(fd);
   win_wake(UI_EXITED, pid);
   return NULL;
+}
+
+/* In a child: the player's user and groups, and none of our capabilities (with no root uid on
+ * either side, setresuid keeps them). As anyone else: as we are. */
+static bool become_app(void) {
+  return app_groups < 0 ||
+         (setgroups((size_t)app_groups, app_group_list) == 0 && setresgid(app_gid, app_gid, app_gid) == 0 &&
+          setresuid(app_uid, app_uid, app_uid) == 0 && set_caps(0));
+}
+
+bool run_helper(const char *script, const char *arg1, const char *arg2) {
+  char **const env = app_environ != NULL ? app_environ : environ;
+  const pid_t pid = fork();
+  if (pid == 0) {
+    if (!become_app())
+      _exit(126);
+    execle("/bin/sh", "sh", "-c", script, "sh", arg1, arg2, (char *)NULL, env);
+    _exit(127);
+  }
+  int status;
+  while (pid > 0 && waitpid(pid, &status, 0) < 0 && errno == EINTR)
+    ;
+  return pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 running *run_launch(str label, str icon, str exec, str arg, str dir) {
@@ -162,22 +196,22 @@ running *run_launch(str label, str icon, str exec, str arg, str dir) {
     env[n] = channel;
     env[n + 1] = NULL;
   }
+  char procs[64];
+  snprintf(procs, sizeof(procs), APPS_CGROUP "/%d", (int)(r - runs));
+  mkdir(procs, 0755);
+  strcat(procs, "/cgroup.procs");
   const pid_t parent = getpid();
   const pid_t pid = env != NULL ? fork() : -1;
   if (pid == 0) {
     setsid();
     /* Without the cgroup the app runs as it is, unlimited. Moved while it's still ours: the
      * cgroups are shell's. */
-    const int cg = open(APPS_CGROUP, O_WRONLY | O_CLOEXEC);
+    const int cg = open(procs, O_WRONLY | O_CLOEXEC);
     if (cg >= 0) {
       (void)!write(cg, "0", 1);
       close(cg);
     }
-    /* The player's, and none of our capabilities: with no root uid on either side, setresuid
-     * keeps them */
-    if (app_groups >= 0 &&
-        (setgroups((size_t)app_groups, app_group_list) != 0 || setresgid(app_gid, app_gid, app_gid) != 0 ||
-         setresuid(app_uid, app_uid, app_uid) != 0 || !set_caps(0)))
+    if (!become_app())
       _exit(126);
     /* Gone with the launcher, even if it crashes. After the switch, which clears it. */
     prctl(PR_SET_PDEATHSIG, SIGTERM);
@@ -202,7 +236,7 @@ running *run_launch(str label, str icon, str exec, str arg, str dir) {
   r->pid = pid;
   r->ctl = pair[0];
   r->shm = map;
-  spawn("exit", exit_thread, (void *)(intptr_t)pid);
+  spawn("exit", exit_thread, r);
   return r;
 }
 
@@ -275,10 +309,9 @@ void run_quit(running *r) {
 
 bool run_forget(running *r, str *why) {
   static STRBUF(96) text;
-  int status = 0;
+  const int status = r->status;
   sb_set(text, S(""));
-  /* Exited already: the pidfd said so */
-  if (waitpid(r->pid, &status, 0) == r->pid) {
+  if (!r->outlived) {
     if (WIFSIGNALED(status))
       sb_fmt(text, "killed by signal %d (%s)", WTERMSIG(status), strsignal(WTERMSIG(status)));
     else if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
