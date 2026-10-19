@@ -4,32 +4,26 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 
 inherit kernel
 
+FILESEXTRAPATHS:prepend := "${THISDIR}:"
+
 COMPATIBLE_MACHINE = "h700"
 
-# 0001-0029: ROCKNIX's H700 patches (second number = theirs), minus their joypad driver.
+# 0001-0029: ROCKNIX H700 patches (second number = theirs).
 # 0033-0036, 0038-0040: Cedrus H616, VP9, P010 from LibreELEC. The rest are ours.
 SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://defconfig \
+    file://dts \
     file://firmware \
     file://0001-0002-rg35xx-enable-HDMI-LCD.patch \
     file://0002-0003-Update-sun8i_tcon_top.c.patch \
-    file://0003-0007-rg35xx-add-GPU-opp.patch \
     file://0004-0008-v8_20260804_james_hilliard1_introduce_allwinner.patch \
-    file://0005-0010-rg35xx-enable-pwm-backlight.patch \
     file://0006-0040-Revert-usb-musb-Fix-hardware-lockup-on-first-Rx.patch \
     file://0007-0110-v2_20250226_kikuchan98_drm_panel_add_generic_mi.patch \
-    file://0008-0111-rg35xx-2024-use-panel-mipi-dpi-spi-driver.patch \
-    file://0010-0126-20241018_macroalpha82_rg35xx_add_additional_har.patch \
-    file://0011-0127-enable-mmc1-for-RG35XX-2024.patch \
     file://0012-0151-phy-fix-OTG-host-mode.patch \
-    file://0013-0152-rg35xx-2024-enable-usb-otg.patch \
-    file://0014-0153-enable-rgb-leds.patch \
     file://0015-0154-rocknix-dt-id.patch \
     file://0016-0155-sun4i-set-rgb-connector-as-DSI.patch \
-    file://0017-0156-rg35xx-plus-add-pcf8563-rtc.patch \
     file://0018-0157-input-axp20x-pek-do-not-report-the-key-press-th.patch \
     file://0019-0158-mmc-sunxi-mmc-mask-data0-when-updating-the-cloc.patch \
-    file://0020-0159-arm64-dts-rg35xx-2024-keep-the-second-sd-card-p.patch \
     file://0021-0160-phy-sun4i-usb-disable-the-clock-that-was-enable.patch \
     file://0022-0161-drm-sun4i-gate-the-display-pipeline-across-syst.patch \
     file://0023-0162-pinctrl-sunxi-release-the-lcd0-pads-while-the-p.patch \
@@ -37,7 +31,6 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0025-0200-h700-update-opps.patch \
     file://0026-0204-dts-Enable-hdmi-sound.patch \
     file://0027-0210-h616-cpu-opp-mark-480MHz-as-suspend-opp.patch \
-    file://0028-0901-dts-rg35xx-2024-fix-led-1-color.patch \
     file://0029-arm64-dts-allwinner-add-RG35XX-SP-v2-panel-dts.patch \
     file://0030-drm-sun4i-rgb-set-panel-orientation-before-connector.patch \
     file://0031-arm64-dts-allwinner-h616-add-the-video-engine-Cedrus.patch \
@@ -50,9 +43,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0038-media-cedrus-Add-P010-capture-format-and-shared-10-b.patch \
     file://0039-media-cedrus-Add-VP9-P010-output-support.patch \
     file://0040-media-cedrus-Add-H265-P010-output-support.patch \
-    file://0041-arm64-dts-allwinner-rg35xx-sp-swap-the-X-and-Y-keys.patch \
     file://0042-arm64-dts-allwinner-h616-put-the-display-engine-behind-the-IOMMU.patch \
-    file://0043-arm64-dts-allwinner-rg35xx-2024-keep-the-DRAM-voltage-from-SPL.patch \
     file://0044-iommu-sun50i-program-the-IOMMU-again-after-a-power-l.patch \
     file://0045-thermal-sun8i-calibrate-and-set-up-the-sensors-again.patch \
     file://0046-drm-sun4i-mixer-set-the-DE33-mixer-up-again-on-resum.patch \
@@ -70,7 +61,6 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0059-media-cedrus-expose-the-engine-s-busy-time-in-sysfs.patch \
     file://0060-wifi-rtw88-sdio-drop-RX-packets-that-run-past-the-re.patch \
     file://0061-input-axp20x-pek-the-AXP717-s-power-key-timings.patch \
-    file://0062-arm64-dts-allwinner-rg35xx-sp-add-the-rumble-motor.patch \
     file://0063-drm-sun4i-latch-DE33-register-writes-at-vblank.patch \
     file://0064-drm-sun4i-switch-refresh-rate-without-a-modeset.patch \
 "
@@ -81,4 +71,5 @@ S = "${UNPACKDIR}/linux-${PV}"
 # Panel init + wifi/bt firmware built in (CONFIG_EXTRA_FIRMWARE): no initramfs
 do_configure:prepend() {
     cp -rT ${UNPACKDIR}/firmware ${S}/external-firmware
+    install -m 0644 ${UNPACKDIR}/dts/sun50i-h700-anbernic-*.dts ${UNPACKDIR}/dts/sun50i-h700-anbernic-*.dtsi ${S}/arch/arm64/boot/dts/allwinner/
 }

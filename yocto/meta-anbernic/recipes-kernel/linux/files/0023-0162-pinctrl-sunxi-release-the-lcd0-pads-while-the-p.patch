@@ -38,20 +38,6 @@ index 16203c7e3..c26eacd59 100644
  			/omit-if-no-ref/
  			lvds0_pins: lvds0-pins {
  				pins = "PD0", "PD1", "PD2", "PD3", "PD4",
-diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
-index dcf7bfc9f..2365a94f1 100644
---- a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
-+++ b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
-@@ -238,7 +238,8 @@ panel: panel@0 {
- 			power-supply = <&reg_lcd>;
- 
- 			pinctrl-0 = <&lcd0_rgb888_pins>;
--			pinctrl-names = "default";
-+			pinctrl-1 = <&lcd0_suspend_pins>;
-+			pinctrl-names = "default", "sleep";
- 
- 			port {
- 				panel_in_rgb: endpoint {
 diff --git a/drivers/gpu/drm/panel/panel-mipi.c b/drivers/gpu/drm/panel/panel-mipi.c
 index ebabda409..98603c700 100644
 --- a/drivers/gpu/drm/panel/panel-mipi.c

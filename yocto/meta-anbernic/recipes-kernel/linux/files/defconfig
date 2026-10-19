@@ -126,7 +126,7 @@ CONFIG_RFKILL=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_DRIVER_DEFERRED_PROBE_TIMEOUT=10
-CONFIG_EXTRA_FIRMWARE="panels/anbernic,rg35xx-plus-panel.panel panels/anbernic,rg35xx-sp-v2-panel.panel rtl_bt/rtl8821cs_fw.bin rtl_bt/rtl8821cs_config.bin"
+CONFIG_EXTRA_FIRMWARE="panels/anbernic,rg35xx-plus-panel.panel panels/anbernic,rg35xx-sp-v2-panel.panel panels/anbernic,rg28xx-panel.panel panels/anbernic,rgcubexx-panel.panel panels/anbernic,rg40xx-panel.panel panels/anbernic,rg40xx-v2-panel.panel panels/anbernic,rg35xx-plus-rev6-panel.panel panels/anbernic,rg34xx-panel.panel panels/anbernic,rg34xx-sp-panel.panel panels/anbernic,rg34xx-sp-v2-panel.panel rtl_bt/rtl8821cs_fw.bin rtl_bt/rtl8821cs_config.bin"
 CONFIG_EXTRA_FIRMWARE_DIR="external-firmware"
 CONFIG_OF_OVERLAY=y
 CONFIG_SRAM=y
@@ -139,6 +139,8 @@ CONFIG_RTW88_8821CS=m
 CONFIG_INPUT_FF_MEMLESS=y
 CONFIG_INPUT_MATRIXKMAP=y
 CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_JOYSTICK=y
+CONFIG_JOYSTICK_ADC=y
 CONFIG_KEYBOARD_GPIO=y
 CONFIG_KEYBOARD_GPIO_POLLED=y
 # CONFIG_INPUT_MOUSE is not set

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/*
+ * Copyright (C) 2024 Ryan Walklin <ryan@testtoast.com>.
+ * Copyright (C) 2024 Chris Morgan <macroalpha82@gmail.com>.
+ */
+
+#include <dt-bindings/input/gpio-keys.h>
+#include "sun50i-h700-anbernic-rg35xx-plus.dts"
+
+/ {
+	model = "Anbernic RG35XX SP";
+	compatible = "anbernic,rg35xx-sp", "allwinner,sun50i-h700";
+	rocknix-dt-id = "sun50i-h700-anbernic-rg35xx-sp";
+
+	gpio-keys-lid {
+		compatible = "gpio-keys";
+
+		lid-switch {
+			label = "Lid Switch";
+			gpios = <&pio 4 7 GPIO_ACTIVE_LOW>; /* PE7 */
+			linux,can-disable;
+			linux,code = <SW_LID>;
+			linux,input-type = <EV_SW>;
+			wakeup-event-action = <EV_ACT_DEASSERTED>;
+			wakeup-source;
+		};
+	};
+
+	/* The rumble motor on PH2: pwm2's duty is its strength */
+	vibrator {
+		compatible = "pwm-vibrator";
+		pwms = <&pwm 2 50000 0>;
+		pwm-names = "enable";
+		pinctrl-0 = <&rumble_pin>;
+		pinctrl-names = "default";
+	};
+};
+
+/* The SP's X and Y keys are wired the other way round from the 2024's */
+&gpio_keys_gamepad {
+	/* Preserve the SP's X/Y wiring swap relative to the 2024. */
+	button-x { gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; }; /* PA2 */
+	button-y { gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; }; /* PA3 */
+};
+
+&pio {
+	rumble_pin: pwm2-ph-pin {
+		pins = "PH2";
+		function = "pwm2";
+	};
+};
+
+&r_i2c {
+	rtc_ext: rtc@51 {
+		compatible = "nxp,pcf8563";
+		reg = <0x51>;
+	};
+};

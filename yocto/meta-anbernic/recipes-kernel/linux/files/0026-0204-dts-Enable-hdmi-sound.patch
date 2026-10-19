@@ -89,24 +89,3 @@ index c26eacd59..4dd356159 100644
  		usbotg: usb@5100000 {
  			compatible = "allwinner,sun50i-h616-musb",
  				     "allwinner,sun8i-h3-musb";
-diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
-index 1f92e09cd..2db975e2f 100644
---- a/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
-+++ b/arch/arm64/boot/dts/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
-@@ -560,3 +560,16 @@ &tcon_lcd0_out_lcd {
- &pwm {
- 	status = "okay";
- };
-+
-+&ahub_dam_plat {
-+	status = "okay";
-+};
-+
-+&ahub1_plat {
-+	status = "okay";
-+};
-+
-+&ahub1_mach_hdmi {
-+	status = "okay";
-+};
-+
