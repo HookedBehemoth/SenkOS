@@ -111,7 +111,7 @@ static int frame_w, frame_h;
 /* The frame's shape on screen, width / height; 0: square pixels */
 static float aspect;
 static snd_pcm_t *audio;
-static int pad_fd = -1;
+static int pad_fd = -1, stick_fd = -1;
 /* The rumble motor (pwm-vibrator): one FF_RUMBLE effect, played at the
  * stronger of what the core asks of its two motors, once a frame */
 static int rumble_fd = -1;
@@ -172,7 +172,7 @@ static char opt_path[512], stem[512], rom_stem[512], save_dir[512], default_opt_
 static char game_opt_path[1100];
 static bool own[APPCTL_OPTIONS_MAX];
 static uint8_t core_value[APPCTL_OPTIONS_MAX];
-static uint16_t core_combo[APPCTL_OPTIONS_MAX];
+static uint32_t core_combo[APPCTL_OPTIONS_MAX];
 /* Rewind's ring, a whole state a slot; no slots: no rewind */
 static size_t state_size, rewind_slots, rewind_head, rewind_count;
 static uint8_t *sram_shadow;
@@ -187,7 +187,7 @@ static size_t sram_shadow_size;
 #define B(name) (1u << APPCTL_##name)
 static const struct {
   const char *key, *label;
-  uint16_t buttons;
+  uint32_t buttons;
   int id; /* libretro's joypad id; ANALOG_ID(..) for a stick; -1: a hotkey */
   unsigned keyboard; /* KEY_* */
 } bindings[] = {
@@ -212,19 +212,19 @@ static const struct {
     {"corehost_map_r2", "Button R2", B(R2), RETRO_DEVICE_ID_JOYPAD_R2, KEY_2},
     {"corehost_map_select", "Select", B(SELECT), RETRO_DEVICE_ID_JOYPAD_SELECT, KEY_RIGHTSHIFT},
     {"corehost_map_start", "Start", B(START), RETRO_DEVICE_ID_JOYPAD_START, KEY_ENTER},
-    /* No sticks to click: unbound until the player binds them */
-    {"corehost_map_l3", "Button L3", 0, RETRO_DEVICE_ID_JOYPAD_L3, KEY_3},
-    {"corehost_map_r3", "Button R3", 0, RETRO_DEVICE_ID_JOYPAD_R3, KEY_4},
+    /* Unbound where there are no sticks to click (publish_host) */
+    {"corehost_map_l3", "Button L3", B(L3), RETRO_DEVICE_ID_JOYPAD_L3, KEY_3},
+    {"corehost_map_r3", "Button R3", B(R3), RETRO_DEVICE_ID_JOYPAD_R3, KEY_4},
 /* Half an axis each: stick (left, right), axis (x, y), direction (-, +) */
 #define ANALOG_ID(stick, axis, plus) (16 + (stick) * 4 + (axis) * 2 + (plus))
-    {"corehost_map_lstick_left", "Left stick left", 0, ANALOG_ID(0, 0, 0), 0},
-    {"corehost_map_lstick_right", "Left stick right", 0, ANALOG_ID(0, 0, 1), 0},
-    {"corehost_map_lstick_up", "Left stick up", 0, ANALOG_ID(0, 1, 0), 0},
-    {"corehost_map_lstick_down", "Left stick down", 0, ANALOG_ID(0, 1, 1), 0},
-    {"corehost_map_rstick_left", "Right stick left", 0, ANALOG_ID(1, 0, 0), 0},
-    {"corehost_map_rstick_right", "Right stick right", 0, ANALOG_ID(1, 0, 1), 0},
-    {"corehost_map_rstick_up", "Right stick up", 0, ANALOG_ID(1, 1, 0), 0},
-    {"corehost_map_rstick_down", "Right stick down", 0, ANALOG_ID(1, 1, 1), 0},
+    {"corehost_map_lstick_left", "Left stick left", B(LS_LEFT), ANALOG_ID(0, 0, 0), 0},
+    {"corehost_map_lstick_right", "Left stick right", B(LS_RIGHT), ANALOG_ID(0, 0, 1), 0},
+    {"corehost_map_lstick_up", "Left stick up", B(LS_UP), ANALOG_ID(0, 1, 0), 0},
+    {"corehost_map_lstick_down", "Left stick down", B(LS_DOWN), ANALOG_ID(0, 1, 1), 0},
+    {"corehost_map_rstick_left", "Right stick left", B(RS_LEFT), ANALOG_ID(1, 0, 0), 0},
+    {"corehost_map_rstick_right", "Right stick right", B(RS_RIGHT), ANALOG_ID(1, 0, 1), 0},
+    {"corehost_map_rstick_up", "Right stick up", B(RS_UP), ANALOG_ID(1, 1, 0), 0},
+    {"corehost_map_rstick_down", "Right stick down", B(RS_DOWN), ANALOG_ID(1, 1, 1), 0},
 };
 enum { HOT_FAST, HOT_HOLD, HOT_HOLD2, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, BINDINGS = COUNTOF(bindings) };
 enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
@@ -292,7 +292,7 @@ static unsigned host_value(int which) {
   return atomic_load(&shm->options[at].value);
 }
 
-static uint16_t binding(int which) {
+static uint32_t binding(int which) {
   return binding_at[which] < 0 ? 0 : atomic_load(&shm->options[binding_at[which]].buttons);
 }
 
@@ -478,8 +478,11 @@ static void publish_host(void) {
   }
   /* A pad without sticks: the core's left stick gets the D-pad, its D-pad
    * Menu + the D-pad */
+  const uint32_t has = pad_has(pad_fd, stick_fd);
   const uint32_t lstick = 0xfu << ANALOG_ID(0, 0, 0);
-  const bool stick_on_dpad = (described & lstick) == lstick;
+  const bool stick_on_dpad = (described & lstick) == lstick && !(has & B(LS_UP));
+  /* Buttons only some pads have: unbound where they are missing */
+  const uint32_t optional = ~0u << APPCTL_L3;
   /* The game's buttons first, in the core's order (none told: ours), our
    * hotkeys last */
   int order[BINDINGS], n_order = 0;
@@ -505,8 +508,10 @@ static void publish_host(void) {
     if (o == NULL)
       continue;
     o->kind = APPCTL_BINDING;
-    static const uint16_t dpad[4] = {B(LEFT), B(RIGHT), B(UP), B(DOWN)};
-    uint16_t def = bindings[i].buttons;
+    static const uint32_t dpad[4] = {B(LEFT), B(RIGHT), B(UP), B(DOWN)};
+    uint32_t def = bindings[i].buttons;
+    if (def & optional & ~has)
+      def = 0;
     if (stick_on_dpad && id >= ANALOG_ID(0, 0, 0) && id < ANALOG_ID(1, 0, 0))
       def = dpad[id - ANALOG_ID(0, 0, 0)];
     else if (stick_on_dpad && id >= RETRO_DEVICE_ID_JOYPAD_UP && id <= RETRO_DEVICE_ID_JOYPAD_RIGHT)
@@ -534,7 +539,7 @@ static void load_options_from(const char *path, bool game) {
       continue;
     *eq = '\0';
     appctl_option *o = option(line);
-    uint16_t combo;
+    uint32_t combo;
     bool known = false;
     if (o != NULL && o->kind == APPCTL_BINDING && appctl_parse_combo(eq + 1, &combo)) {
       atomic_store(&o->buttons, combo);
@@ -586,7 +591,7 @@ static void sync_own(void) {
   }
 }
 
-static void write_option(FILE *f, const appctl_option *o, uint8_t value, uint16_t combo) {
+static void write_option(FILE *f, const appctl_option *o, uint8_t value, uint32_t combo) {
   if (o->kind == APPCTL_BINDING)
     appctl_write_combo(f, o->key, combo);
   else
@@ -753,7 +758,7 @@ static void audio_sample(int16_t left, int16_t right) {
 
 /* Held when the launcher gave the game back (Resume is pressed with A):
  * not the game's until let go */
-static uint16_t launcher_held;
+static uint32_t launcher_held;
 
 /* The window's events were dispatched before the frame (main) */
 static void input_poll(void) {}
@@ -763,9 +768,20 @@ static void key(unsigned code, bool down) {
     keys[code] = down;
 }
 
+/* The sticks this frame, and their directions held */
+static int16_t axes[4];
+static uint32_t stick_dirs;
+
+/* What is held, the sticks read anew, as appctl bits */
+static uint32_t pad_now(void) {
+  stick_read(stick_fd, axes);
+  stick_dirs = stick_held(axes, stick_dirs);
+  return pad_held(pad_fd) | stick_dirs;
+}
+
 /* What is held, as appctl bits */
-static uint16_t buttons_held(void) {
-  const uint16_t held = pad_held(pad_fd);
+static uint32_t buttons_held(void) {
+  const uint32_t held = pad_now();
   launcher_held &= held;
   return held & ~launcher_held;
 }
@@ -775,8 +791,8 @@ static uint16_t buttons_held(void) {
 static uint32_t active;
 
 static void update_bindings(void) {
-  const uint16_t held = buttons_held();
-  uint16_t combo[BINDINGS];
+  const uint32_t held = buttons_held();
+  uint32_t combo[BINDINGS];
   uint32_t on = 0;
   for (int i = 0; i < BINDINGS; i++) {
     combo[i] = binding(i);
@@ -800,13 +816,23 @@ static int16_t buttons(void) {
   return mask;
 }
 
-/* Full tilt; both axes held: the diagonal of a round stick's gate */
+/* A stick row's push, 0..32767: as far as the stick it is bound to alone
+ * goes, else full tilt while held */
+static int tilt(int row) {
+  const uint32_t combo = binding(row);
+  for (int dir = 0; dir < 8; dir++)
+    if (combo == 1u << (APPCTL_LS_UP + dir))
+      return launcher_held & combo ? 0 : stick_tilt(axes, dir);
+  return active >> row & 1 ? 32767 : 0;
+}
+
+/* Two full tilts: the diagonal of a round stick's gate */
 static int16_t stick(unsigned index, unsigned axis) {
   const int at = ANALOG + index * 4;
-  const int x = (int)(active >> (at + 1) & 1) - (int)(active >> at & 1);
-  const int y = (int)(active >> (at + 3) & 1) - (int)(active >> (at + 2) & 1);
+  const int x = tilt(at + 1) - tilt(at);
+  const int y = tilt(at + 3) - tilt(at + 2);
   const int v = axis ? y : x;
-  return (int16_t)(v * (x && y ? 23170 : 32767));
+  return (int16_t)(abs(x) == 32767 && abs(y) == 32767 ? v / 32767 * 23170 : v);
 }
 
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
@@ -2075,7 +2101,7 @@ static bool control(bool *paused) {
     for (unsigned i = 0; startup_options && i < host_option_at; i++)
       restart |= atomic_load(&shm->options[i].value) != started_with[i];
     /* What is held now was pressed for the launcher */
-    launcher_held = pad_held(pad_fd);
+    launcher_held = pad_now();
     if (audio != NULL)
       snd_pcm_prepare(audio);
     break;
@@ -2342,6 +2368,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   pad_fd = pad_open(0);
+  stick_fd = stick_open(0);
   rumble_fd = input_open(S("pwm-vibrator"), O_RDWR);
   core.retro_init();
 

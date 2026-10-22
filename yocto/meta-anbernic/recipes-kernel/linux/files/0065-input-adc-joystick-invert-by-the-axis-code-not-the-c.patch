@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Thu, 22 Oct 2026 12:00:00 +0200
+Subject: [PATCH] input: adc-joystick: invert by the axis' code, not the
+ channel's index
+
+adc_joystick_invert() looks up the axis' range by its ABS code, but both
+callers pass the channel's index. That only works while channel n reports
+code n: with four channels for ABS_X, ABS_Y, ABS_RX, ABS_RY, an inverted
+third channel reads ABS_Z's range (0, 0) and reports -val.
+
+Upstream-Status: Pending
+---
+--- a/drivers/input/joystick/adc-joystick.c
++++ b/drivers/input/joystick/adc-joystick.c
+@@ -45,7 +45,7 @@
+ 		if (ret < 0)
+ 			return;
+ 		if (joy->axes[i].inverted)
+-			val = adc_joystick_invert(input, i, val);
++			val = adc_joystick_invert(input, joy->axes[i].code, val);
+ 		input_report_abs(input, joy->axes[i].code, val);
+ 	}
+ 	input_sync(input);
+@@ -95,7 +95,7 @@
+ 		else
+ 			val &= GENMASK(msb, 0);
+ 		if (joy->axes[i].inverted)
+-			val = adc_joystick_invert(joy->input, i, val);
++			val = adc_joystick_invert(joy->input, joy->axes[i].code, val);
+ 		input_report_abs(joy->input, joy->axes[i].code, val);
+ 	}
+ 

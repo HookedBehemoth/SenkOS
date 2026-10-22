@@ -8,16 +8,20 @@ an unconnected one follows the pull. [tools/h700-fingerprint](../tools/h700-fing
 |---|---|---|
 | PH6, PH7, PH8, PH10 | boot0, before DRAM init | DRAM parameter set, see below |
 | PE6 | stock U-Boot | panel: high = original (FOG) panel, low = BOE ("v2") panel |
+| PE8 | ours (`boot.scr`) | L3: pulled up on the board where the sticks click (RG40XX H), unconnected on the SP |
 
-On our SP the DRAM straps are unconnected (all read high with the pull-up) and PE6 is driven high.
+On our SP the DRAM straps are unconnected (all read high with the pull-up) and PE6 is driven high. Our RG40XX H
+(LPDDR3) reads PH6 low, PH7/8/10 unconnected (14), and PE8, PE9 (L3, R3), PG16, PH4, PH5, PH9 high and PE11, PG15
+low on its own.
 
 What we do with them:
 - SPL (U-Boot patch 0008, `CONFIG_SUNXI_DRAM_H616_LPDDR3_STRAPS`) reads the DRAM straps like boot0 before DRAM
   init. 14 → LPDDR3: DCDC3 to 1.2 V and boot0's LPDDR3 set with ROCKNIX's DX delays (`tpr11` 0x10121013, `tpr12`
   0x0d0e0d0e); anything else → our LPDDR4 set. The kernel keeps that voltage: the dts gives DCDC3 a range
-  (1.1-1.2 V), as stock gives it the full range. The LPDDR3 path is untested: we have no LPDDR3 unit.
-- `boot.scr` loads `sun50i-h700-anbernic-rg35xx-sp-v2-panel.dtb` when PE6 is low (`gpio input PE6`). PE6 is driven by
-  the board, not the panel, so the panel needs no power or reset for it.
+  (1.1-1.2 V), as stock gives it the full range. Our RG40XX H boots through the LPDDR3 path.
+- `boot.scr` picks the board from PE8, read with the pull-down on: high = `rg40xx-h`, low = `rg35xx-sp`. Then the
+  `-v2-panel` dtb when PE6 is low (`gpio input PE6`). PE6 is driven by the board, not the panel, so the panel needs
+  no power or reset for it.
 
 ## Stock firmware
 

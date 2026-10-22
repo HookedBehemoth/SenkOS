@@ -165,6 +165,9 @@ bool launcher_input(nav *ui, int why, int value, size_t *page) {
     }
     return true;
   }
+  /* The left stick moves as the D-pad does */
+  if (pad && button >= APPCTL_LS_UP && button <= APPCTL_LS_RIGHT)
+    button += APPCTL_UP - APPCTL_LS_UP;
   /* The pad's Menu acts on its release, and only if nothing was pressed while
    * it was held: Menu plus a button or a volume key is a hotkey (a key: on the
    * press) */

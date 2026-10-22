@@ -145,7 +145,7 @@ typedef STRBUF(512) selected_path;
 typedef STRBUF(128) notice_buffer;
 typedef struct {
   int option;
-  uint16_t held, combo;
+  uint32_t held, combo;
   int first;
   uint64_t since;
 } capture_state;
@@ -206,7 +206,7 @@ bool launcher_power_page(nav *ui, ui_rect view, bool calibration);
 extern int launcher_power_focus;
 void launcher_show_failure(nav *ui, int kind, str title, str why, str key);
 bool launcher_capture_active(void);
-void launcher_set_binding(running *r, int i, uint16_t combo);
+void launcher_set_binding(running *r, int i, uint32_t combo);
 void launcher_step_option(running *r, int i, int by);
 void launcher_ignore(str key);
 

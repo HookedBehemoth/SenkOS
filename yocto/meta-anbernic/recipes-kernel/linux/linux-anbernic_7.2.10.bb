@@ -63,6 +63,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0061-input-axp20x-pek-the-AXP717-s-power-key-timings.patch \
     file://0063-drm-sun4i-latch-DE33-register-writes-at-vblank.patch \
     file://0064-drm-sun4i-switch-refresh-rate-without-a-modeset.patch \
+    file://0065-input-adc-joystick-invert-by-the-axis-code-not-the-c.patch \
 "
 SRC_URI[sha256sum] = "2feaa70453e91f541be6a5c9078d8168e081af45a3d9718054850538cff2ebf3"
 

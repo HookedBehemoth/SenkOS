@@ -31,8 +31,31 @@
 	compatible = "anbernic,rg40xx-panel", "panel-mipi-dpi-spi";
 };
 
+/* Stock; L3, R3 on PE8, PE9 as in the RG35XX H */
+&gpio_keys_gamepad {
+	/* X and Y wired as on the SP */
+	button-x { gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; }; /* PA2 */
+	button-y { gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; }; /* PA3 */
+
+	button-thumbl {
+		label = "GPIO Thumb Left";
+		gpios = <&pio 4 8 GPIO_ACTIVE_LOW>; /* PE8 */
+		linux,input-type = <EV_KEY>;
+		linux,code = <BTN_THUMBL>;
+	};
+
+	button-thumbr {
+		label = "GPIO Thumb Right";
+		gpios = <&pio 4 9 GPIO_ACTIVE_LOW>; /* PE9 */
+		linux,input-type = <EV_KEY>;
+		linux,code = <BTN_THUMBR>;
+	};
+};
+
+/* Every axis reads low pushed right or down */
+&axis_y { abs-range = <4096 0>; };
 &axis_rx { abs-range = <4096 0>; };
-&axis_ry { abs-range = <0 4096>; };
+&axis_ry { abs-range = <4096 0>; };
 
 / {
 	vibrator {

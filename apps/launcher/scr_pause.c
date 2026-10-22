@@ -93,7 +93,7 @@ static struct {
 } failure;
 static int settings_focus = -1;
 
-static str combo_text(uint16_t combo) {
+static str combo_text(uint32_t combo) {
   static STRBUF(160) out;
   out.n = 0;
   for (int b = 0; b < APPCTL_BUTTONS; b++)

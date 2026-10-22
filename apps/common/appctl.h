@@ -21,7 +21,7 @@
 
 #define APPCTL_ENV "LAUNCHER_CTL"
 #define APPCTL_MAGIC 0x4c544341u /* "ACTL" */
-#define APPCTL_VERSION 5
+#define APPCTL_VERSION 6
 
 enum {
   /* Stop running and wait; the app has stopped once it answers */
@@ -50,11 +50,16 @@ enum {
   APPCTL_UP, APPCTL_DOWN, APPCTL_LEFT, APPCTL_RIGHT,
   APPCTL_START, APPCTL_SELECT,
   APPCTL_A, APPCTL_B, APPCTL_X, APPCTL_Y,
+  APPCTL_L3, APPCTL_R3,
+  /* The sticks pushed past half way, in the D-pad's order */
+  APPCTL_LS_UP, APPCTL_LS_DOWN, APPCTL_LS_LEFT, APPCTL_LS_RIGHT,
+  APPCTL_RS_UP, APPCTL_RS_DOWN, APPCTL_RS_LEFT, APPCTL_RS_RIGHT,
   APPCTL_BUTTONS
 };
 static const char *const appctl_button_names[APPCTL_BUTTONS] = {
     "Menu", "L1", "L2", "R1", "R2", "Up", "Down", "Left", "Right",
-    "Start", "Select", "A", "B", "X", "Y"};
+    "Start", "Select", "A", "B", "X", "Y", "L3", "R3",
+    "LS Up", "LS Down", "LS Left", "LS Right", "RS Up", "RS Down", "RS Left", "RS Right"};
 
 /* Where an option is shown: the pause menu has an entry for each that has any */
 enum { APPCTL_SYSTEM, APPCTL_GRAPHICS, APPCTL_AUDIO, APPCTL_INPUT, APPCTL_CATEGORIES };
@@ -84,7 +89,7 @@ typedef struct {
   /* 1: this game's own value (or combo), apart from the defaults. The
    * launcher toggles it where the app has APPCTL_OWN_OPTIONS. */
   _Atomic uint8_t own;
-  _Atomic uint16_t buttons; /* a binding's: 1 << APPCTL_A ...; 0: none */
+  _Atomic uint32_t buttons; /* a binding's: 1 << APPCTL_A ...; 0: none */
 } appctl_option;
 
 typedef struct {
@@ -103,7 +108,7 @@ typedef struct {
 #define APPCTL_OWN_OPTIONS 1u
 
 /* A binding saved as "key=L1+A", names in any order; "" is none. False on a name we don't know. */
-static inline bool appctl_parse_combo(const char *text, uint16_t *out) {
+static inline bool appctl_parse_combo(const char *text, uint32_t *out) {
   *out = 0;
   while (*text) {
     const size_t len = strcspn(text, "+");
@@ -119,7 +124,7 @@ static inline bool appctl_parse_combo(const char *text, uint16_t *out) {
   return true;
 }
 
-static inline void appctl_write_combo(FILE *f, const char *key, uint16_t combo) {
+static inline void appctl_write_combo(FILE *f, const char *key, uint32_t combo) {
   fprintf(f, "%s=", key);
   for (int b = 0, first = 1; b < APPCTL_BUTTONS; b++)
     if (combo & (1u << b)) {

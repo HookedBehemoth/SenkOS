@@ -8,7 +8,7 @@
 			      <&adc_mux 2>, <&adc_mux 3>;
 		pinctrl-0 = <&joy_mux_pin>;
 		pinctrl-names = "default";
-		poll-interval = <60>;
+		poll-interval = <16>; /* a frame: games read it every frame */
 		#address-cells = <1>;
 		#size-cells = <0>;
 

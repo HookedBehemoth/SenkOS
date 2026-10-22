@@ -19,4 +19,18 @@ int pad_open(int flags);
 int pad_button(unsigned code);
 /* What is held now, a bit per APPCTL_* button: the device's state, not its
  * queue */
-uint16_t pad_held(int fd);
+uint32_t pad_held(int fd);
+/* The APPCTL_* buttons there are: the pad's (fd), the sticks' (stick, -1:
+ * none) */
+uint32_t pad_has(int fd, int stick);
+
+/* The sticks (adc-joystick), -1 on a pad without */
+int stick_open(int flags);
+/* Where they are now: left x, y, right x, y, -32767..32767 (down and right
+ * positive), 0 inside the dead zone. Zeros for fd -1. */
+void stick_read(int fd, int16_t axes[4]);
+/* How far they push toward APPCTL_LS_UP + dir (dir < 8): 0..32767 */
+int stick_tilt(const int16_t axes[4], int dir);
+/* The directions pushed past half way, as APPCTL_LS_* bits. One in `was`
+ * stays down to a third: no flutter at the edge. */
+uint32_t stick_held(const int16_t axes[4], uint32_t was);

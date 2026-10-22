@@ -9,6 +9,7 @@
 
 #include "appctl.h"
 #include "str.h"
+#include "util.h"
 
 int input_open(str name, int flags) {
   glob_t g;
@@ -54,19 +55,64 @@ int pad_button(unsigned code) {
   case BTN_NORTH: return APPCTL_X;
   case BTN_WEST: return APPCTL_Y;
   case BTN_MODE: return APPCTL_MENU;
+  case BTN_THUMBL: return APPCTL_L3;
+  case BTN_THUMBR: return APPCTL_R3;
   default: return -1;
   }
 }
 
-uint16_t pad_held(int fd) {
+static uint32_t pad_bits(int fd, unsigned long request) {
   uint8_t bits[KEY_MAX / 8 + 1] = {0};
-  uint16_t held = 0;
-  if (fd < 0 || ioctl(fd, EVIOCGKEY(sizeof(bits)), bits) < 0)
+  uint32_t held = 0;
+  if (fd < 0 || ioctl(fd, request, bits) < 0)
     return 0;
   for (unsigned code = BTN_MISC; code <= BTN_DPAD_RIGHT; code++) {
     const int b = bits[code / 8] >> (code % 8) & 1 ? pad_button(code) : -1;
     if (b >= 0)
       held |= 1u << b;
+  }
+  return held;
+}
+
+uint32_t pad_held(int fd) { return pad_bits(fd, EVIOCGKEY(KEY_MAX / 8 + 1)); }
+
+uint32_t pad_has(int fd, int stick) {
+  const uint32_t sticks = ((1u << (APPCTL_RS_RIGHT + 1)) - 1) & ~((1u << APPCTL_LS_UP) - 1);
+  return pad_bits(fd, EVIOCGBIT(EV_KEY, KEY_MAX / 8 + 1)) | (stick >= 0 ? sticks : 0);
+}
+
+int stick_open(int flags) { return input_open(S("adc-joystick"), flags); }
+
+/* Of full tilt (~9%): a stick at rest reads off center */
+#define DEAD_ZONE 0x0c00
+
+void stick_read(int fd, int16_t axes[4]) {
+  static const unsigned codes[4] = {ABS_X, ABS_Y, ABS_RX, ABS_RY};
+  for (int i = 0; i < 4; i++) {
+    struct input_absinfo a;
+    axes[i] = 0;
+    if (fd < 0 || ioctl(fd, EVIOCGABS(codes[i]), &a) < 0 || a.maximum <= a.minimum)
+      continue;
+    const long half = (a.maximum - a.minimum) / 2;
+    long v = (a.value - a.minimum - half) * 32767 / half;
+    v = v > 0 ? MAX(v - DEAD_ZONE, 0) : MIN(v + DEAD_ZONE, 0);
+    v = v * 32767 / (32767 - DEAD_ZONE);
+    axes[i] = (int16_t)CLAMP(v, -32767, 32767);
+  }
+}
+
+int stick_tilt(const int16_t axes[4], int dir) {
+  /* up, down, left, right of the left stick, then the right one */
+  const int v = axes[(dir / 4) * 2 + (dir % 4 < 2)];
+  return dir % 2 ? MAX(v, 0) : MAX(-v, 0);
+}
+
+uint32_t stick_held(const int16_t axes[4], uint32_t was) {
+  uint32_t held = 0;
+  for (int dir = 0; dir < 8; dir++) {
+    const uint32_t bit = 1u << (APPCTL_LS_UP + dir);
+    if (stick_tilt(axes, dir) > (was & bit ? 32767 / 3 : 32767 / 2))
+      held |= bit;
   }
   return held;
 }

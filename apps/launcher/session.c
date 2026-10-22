@@ -130,7 +130,7 @@ str category_system(const category *c) {
   return slash < c->folder.n ? str_at(c->folder, slash + 1) : c->folder;
 }
 
-void launcher_set_binding(running *r, int i, uint16_t combo) {
+void launcher_set_binding(running *r, int i, uint32_t combo) {
   atomic_store(&r->shm->options[i].buttons, combo);
   run_request(r, APPCTL_OPTIONS, 0);
 }
