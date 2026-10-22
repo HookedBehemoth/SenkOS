@@ -7,21 +7,30 @@ game sees (VCOUNT, DISPSTAT, IRQs, DMA) runs as before.
 
 Upstream-Status: Pending
 ---
-diff -ru a/src/platform/libretro/libretro.c b/src/platform/libretro/libretro.c
---- a/src/platform/libretro/libretro.c	2026-10-13 20:08:24.245050779 +0200
-+++ b/src/platform/libretro/libretro.c	2026-10-13 20:08:24.256320949 +0200
-@@ -612,6 +612,14 @@
- 		}
- 	}
+--- a/src/platform/libretro/libretro.c	2026-10-20 23:04:51.262931968 +0200
++++ b/src/platform/libretro/libretro.c	2026-10-20 23:04:51.389922996 +0200
+@@ -1669,6 +1669,24 @@
+       updateAudioLatency = false;
+    }
  
-+#ifdef M_CORE_GBA
-+	/* A frame the frontend won't show (fast forward): not drawn, as mGBA's frameskip does it */
++	/* A frame the frontend won't show (fast forward): not drawn, as the frameskip above does it */
 +	int avEnable = 3;
-+	if (core->platform(core) == mPLATFORM_GBA &&
-+	    environCallback(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &avEnable) && !(avEnable & 1)) {
-+		((struct GBA*) core->board)->video.frameskipCounter = 1;
-+	}
++	if (environCallback(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &avEnable) && !(avEnable & 1)) {
++		switch (core->platform(core)) {
++#ifdef M_CORE_GBA
++		case mPLATFORM_GBA:
++			((struct GBA*) core->board)->video.frameskipCounter = 1;
++			break;
 +#endif
++#ifdef M_CORE_GB
++		case mPLATFORM_GB:
++			((struct GB*) core->board)->video.frameskipCounter = 1;
++			break;
++#endif
++		default:
++			break;
++		}
++	}
  	core->runFrame(core);
  	unsigned width, height;
- 	core->desiredVideoDimensions(core, &width, &height);
+ 	core->currentVideoSize(core, &width, &height);

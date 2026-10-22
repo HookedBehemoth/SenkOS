@@ -102,14 +102,29 @@ static str combo_text(uint16_t combo) {
   return out.n ? sb_str(out) : S("None");
 }
 
+/* A settings page: its rows' options */
+typedef struct {
+  const appctl_shm *shm;
+  const uint16_t *at;
+} option_page;
+
+/* A row's depth (appctl's, bounded: the app wrote it) */
+static int option_depth(const void *rows, size_t j) {
+  const option_page *page = rows;
+  return MIN(page->shm->options[page->at[j]].depth, 1);
+}
+
 static void launcher_settings(launcher_state *state, nav *ui, running *r,
                               ui_rect view) {
   settings_focus = -1;
   const uint32_t n =
       MIN(atomic_load(&r->shm->option_count), APPCTL_OPTIONS_MAX);
+  uint16_t at_row[APPCTL_OPTIONS_MAX];
   uint32_t rows = 0;
   for (uint32_t i = 0; i < n; i++)
-    rows += r->shm->options[i].category == settings_category(state);
+    if (r->shm->options[i].category == settings_category(state))
+      at_row[rows++] = (uint16_t)i;
+  const option_page page = {r->shm, at_row};
   if (rows == 0) {
     ui_text(ROW_TEXT, view.x + MARGIN * 2, view.y + MARGIN, S("No settings"),
             MUTED);
@@ -120,13 +135,15 @@ static void launcher_settings(launcher_state *state, nav *ui, running *r,
                        rows * ROW + MARGIN * 2, ROW, 0);
   nav_fill(ui, FOCUS, 6);
   gfx_clip(view.x, view.y, view.w, view.h);
-  for (uint32_t i = 0, at = 0; i < n; i++) {
-    if (r->shm->options[i].category != settings_category(state))
-      continue;
-    const ui_rect row = {view.x + MARGIN, view.y + MARGIN + at++ * ROW - offset,
-                         view.w - MARGIN * 2, ROW - 4};
+  for (uint32_t at = 0; at < rows; at++) {
+    const uint32_t i = at_row[at];
+    const int depth = option_depth(&page, at);
+    const ui_rect row = {view.x + MARGIN + depth * TREE, view.y + MARGIN + at * ROW - offset,
+                         view.w - MARGIN * 2 - depth * TREE, ROW - 4};
     const unsigned flags = nav_item(ui, nav_int(i), row, view);
     nav_ring(ui, row, 8);
+    if (row.y < view.y + view.h && row.y + row.h > view.y)
+      menu_tree(view, row, option_depth, &page, rows, at);
     if (flags & NAV_FOCUSED)
       settings_focus = (int)i;
     /* The app wrote these: bounded here */

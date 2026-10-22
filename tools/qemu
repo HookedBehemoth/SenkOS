@@ -1,0 +1,61 @@
+#!/bin/sh
+# The handheld's userspace on the host: the qemu image (yocto/qemu.yml) at 640x480 with 1 GB, GL
+# through virgl and Vulkan through venus on the host's GPU, sound into PipeWire, the keyboard as
+# the pad (qemupad: arrows, X A, Z B, S X, A Y, Q W E R shoulders, Enter start, right shift
+# select, Esc menu, - = volume, P power). Serial console on the terminal (ctrl-a x quits).
+# The disk (slots + /data) stays in $B/qemu/disk.img; each start writes the latest build into
+# slot a, so /data is kept. The first boot makes /data and reboots once, like a new card.
+#     tools/qemu [--new] [--headless]   --new: the disk anew; --headless: no window, console in
+#                                       $B/qemu/console.log (screenshots: `launcher screenshot`)
+#     tools/qemu ssh [command]          ssh in (10.55.0.1 in there, 127.0.0.1:2222 here)
+#     tools/qemu key x [ret ...]        press keys through qemu's monitor (qemu's key names)
+# Host: qemu-desktop (virtio-gpu-gl, egl-headless, virglrenderer with venus).
+set -e
+B=${ANBERNIC_BUILD_ROOT:-/mnt/multimedia/anbernic-yocto}
+D=$B/build-qemu/tmp/deploy/images/qemux86-64
+q=$B/qemu
+case $1 in
+ssh)
+	shift
+	exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+		-o ConnectTimeout=3 -p 2222 root@127.0.0.1 "$@"
+	;;
+key)
+	shift
+	for k; do
+		printf '{"execute":"qmp_capabilities"}\n{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"%s"}]}}\n' "$k" |
+			socat - UNIX-CONNECT:$q/qmp.sock >/dev/null
+		sleep 0.2
+	done
+	exit 0
+	;;
+esac
+display="gtk,gl=on" serial=mon:stdio
+for a; do
+	case $a in
+	--new) rm -f $q/disk.img ;;
+	--headless) display=egl-headless serial=file:$q/console.log ;;
+	*) echo "usage: $0 [--new] [--headless] | ssh [command] | key KEY..." >&2; exit 1 ;;
+	esac
+done
+mkdir -p $q
+if [ ! -e $q/disk.img ]; then
+	cp $D/senkos-image-qemux86-64.rootfs.wic $q/disk.img
+	truncate -s 8G $q/disk.img
+else
+	dd if=$D/senkos-image-qemux86-64.rootfs.squashfs-lz4 of=$q/disk.img bs=512 conv=notrunc status=none \
+		seek=$(partx -g -o START -n 2 $q/disk.img)
+fi
+# venus maps host memory into the guest: the guest's RAM has to be shareable
+exec qemu-system-x86_64 -machine q35,accel=kvm,memory-backend=mem -cpu host -smp 4 -m 1G \
+	-object memory-backend-memfd,id=mem,size=1G,share=on \
+	-kernel $D/bzImage -append "root=/dev/vda2 rootfstype=squashfs ro ab=a console=ttyS0 quiet" \
+	-drive file=$q/disk.img,format=raw,if=virtio \
+	-vga none -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=512M,xres=640,yres=480 -display $display \
+	-device virtio-keyboard-pci \
+	-audiodev pipewire,id=snd -device virtio-sound-pci,audiodev=snd \
+	-netdev user,id=net,net=10.55.0.0/24,host=10.55.0.2,dns=10.55.0.3,hostfwd=tcp:127.0.0.1:2222-10.55.0.1:22 \
+	-device virtio-net-pci,netdev=net \
+	-device i6300esb \
+	-qmp unix:$q/qmp.sock,server,wait=off \
+	-serial $serial

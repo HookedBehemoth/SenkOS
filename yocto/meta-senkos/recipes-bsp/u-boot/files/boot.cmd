@@ -25,8 +25,8 @@ part uuid ${devtype} ${devnum}:${rootpart} rootuuid
 setenv kernel_addr_r 0x40200000
 load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 # PE6 is low on units with the BOE ("v2") panel (docs/straps.md); gpio input returns the level
-setenv fdtfile sun50i-h700-anbernic-rg35xx-sp.dtb
-if gpio input PE6; then setenv fdtfile sun50i-h700-anbernic-rg35xx-sp-v2-panel.dtb; fi
+setenv fdtfile sun50i-h700-anbernic-rg40xx-h.dtb
+if gpio input PE6; then setenv fdtfile sun50i-h700-anbernic-rg40xx-h-v2-panel.dtb; fi
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
 fdt addr ${fdt_addr_r}
 fdt resize

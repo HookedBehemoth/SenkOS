@@ -83,7 +83,8 @@ void control_launch_path(nav *ui) {
         if (a->exec.n > 0 && (str_eq(sb_str(a->arg), sb_str(path)) ||
                               str_eq(sb_str(a->dir), sb_str(path)))) {
           session_start(ui, sb_str(a->name), sb_str(a->icon), sb_str(a->exec),
-                        sb_str(a->arg), sb_str(a->dir), a->flags);
+                        sb_str(a->arg), sb_str(a->dir), category_system(&categories[i]),
+                        a->flags);
           return;
         }
       }

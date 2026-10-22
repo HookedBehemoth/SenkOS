@@ -48,6 +48,31 @@ static void marquee(int px, float x, int y, float room, str text,
   gfx_clip(view.x, view.y, view.w, view.h);
 }
 
+void menu_tree(ui_rect view, ui_rect r, int (*depth_of)(const void *rows, size_t j), const void *rows,
+               size_t count, size_t i) {
+  const int depth = depth_of(rows, i);
+  const float mid = r.y + r.h / 2;
+  for (int k = 1; k <= depth; k++) {
+    const float lx =
+        view.x + MARGIN + (k - 1) * TREE + MARGIN + ICON_PX / 2 - 1;
+    bool on = false;
+    for (size_t j = i + 1; j < count && depth_of(rows, j) >= k && !on; j++)
+      on = depth_of(rows, j) == k;
+    if (k < depth) {
+      if (on)
+        ui_fill(lx, r.y - 4, 2, ROW, DIM);
+      continue;
+    }
+    const float from = i > 0 && depth_of(rows, i - 1) == k - 1
+                           ? r.y - 4 - (ROW - 4) / 2 + ICON_PX / 2 + 3
+                           : r.y - 4;
+    ui_fill(lx, from, 2, (on ? r.y + r.h : mid + 1) - from, DIM);
+    ui_fill(lx, mid - 1, r.x - 2 - lx, 2, DIM);
+  }
+}
+
+static int entry_depth(const void *rows, size_t j) { return ((const entry *)rows)[j].depth; }
+
 const entry *menu(nav *ui, const entry *entries, size_t count, ui_rect view) {
   if (count == 0) {
     ui_text(ROW_TEXT, view.x + MARGIN * 2, view.y + MARGIN, S("Nothing here"),
@@ -84,24 +109,7 @@ const entry *menu(nav *ui, const entry *entries, size_t count, ui_rect view) {
       chosen = &entries[i];
     if (!shown)
       continue;
-    const float mid = r.y + r.h / 2;
-    for (int k = 1; k <= depth; k++) {
-      const float lx =
-          view.x + MARGIN + (k - 1) * TREE + MARGIN + ICON_PX / 2 - 1;
-      bool on = false;
-      for (size_t j = i + 1; j < count && entries[j].depth >= k && !on; j++)
-        on = entries[j].depth == k;
-      if (k < depth) {
-        if (on)
-          ui_fill(lx, r.y - 4, 2, ROW, DIM);
-        continue;
-      }
-      const float from = i > 0 && entries[i - 1].depth == k - 1
-                             ? r.y - 4 - (ROW - 4) / 2 + ICON_PX / 2 + 3
-                             : r.y - 4;
-      ui_fill(lx, from, 2, (on ? r.y + r.h : mid + 1) - from, DIM);
-      ui_fill(lx, mid - 1, r.x - 2 - lx, 2, DIM);
-    }
+    menu_tree(view, r, entry_depth, entries, count, i);
     int x = (int)r.x + MARGIN;
     if (entries[i].icon >= 0) {
       ui_icon(entries[i].icon, ICON_PX, x, (int)r.y + ((int)r.h - ICON_PX) / 2,

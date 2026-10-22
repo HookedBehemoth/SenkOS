@@ -21,7 +21,7 @@
 
 #define APPCTL_ENV "LAUNCHER_CTL"
 #define APPCTL_MAGIC 0x4c544341u /* "ACTL" */
-#define APPCTL_VERSION 4
+#define APPCTL_VERSION 5
 
 enum {
   /* Stop running and wait; the app has stopped once it answers */
@@ -79,6 +79,8 @@ typedef struct {
   _Atomic uint8_t value;
   uint8_t kind;
   uint8_t category;
+  /* 1: belongs to the option before it at 0 (corehost: a shader's parameters) */
+  uint8_t depth;
   /* 1: this game's own value (or combo), apart from the defaults. The
    * launcher toggles it where the app has APPCTL_OWN_OPTIONS. */
   _Atomic uint8_t own;

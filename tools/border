@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# A RetroArch overlay made for the handheld's screen (Onion OS's 640x480 ones), for corehost:
+# OUT.png as it is, and OUT.cfg with where the game goes (overlay0_viewport). That is the cfg's
+# viewport, else the window the image leaves open around its middle (not fully opaque: grids and
+# shading over the game count), snapped to the game at an integer scale or fitted to the screen
+# when it is that within a few pixels (the image's own edges are soft). key=value arguments are
+# added to the cfg for corehost to set when the overlay is picked (its options, the core's).
+# recipes-emulators/libretro-overlays runs it; by hand for overlays in /data/OS/assets/overlays.
+#     tools/border CFG OUT NATIVE_W NATIVE_H [key=value...]     (GBA: 240 160, GB: 160 144)
+import os
+import shutil
+import sys
+
+from PIL import Image
+
+SLOP = 6  # pixels
+
+
+def window(values, img):
+    if 'overlay0_viewport' in values:
+        vx, vy, vw, vh = (float(v) for v in values['overlay0_viewport'].split(','))
+        return vx * img.width, vy * img.height, vw * img.width, vh * img.height
+    alpha = img.getchannel('A')
+    cx, cy = img.width // 2, img.height // 2
+    open_at = lambda x, y: alpha.getpixel((x, y)) < 255
+    if not open_at(cx, cy):
+        return None
+    l, r, t, b = cx, cx, cy, cy
+    while l > 0 and open_at(l - 1, cy):
+        l -= 1
+    while r < img.width - 1 and open_at(r + 1, cy):
+        r += 1
+    while t > 0 and open_at(cx, t - 1):
+        t -= 1
+    while b < img.height - 1 and open_at(cx, b + 1):
+        b += 1
+    return l, t, r - l + 1, b - t + 1
+
+
+def main():
+    if len(sys.argv) < 5:
+        sys.exit('usage: border CFG OUT NATIVE_W NATIVE_H [key=value...]')
+    cfg, out = sys.argv[1], sys.argv[2]
+    nw, nh = int(sys.argv[3]), int(sys.argv[4])
+    values = {}
+    for line in open(cfg, errors='replace'):
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, value = line.split('=', 1)
+            values[key.strip()] = value.strip().strip('"')
+    png = os.path.join(os.path.dirname(cfg), values['overlay0_overlay'])
+    img = Image.open(png).convert('RGBA')
+    found = window(values, img)
+    if found is None or found[2] < nw or found[3] < nh:
+        sys.exit('border: %s: no window for the game' % cfg)
+    x, y, w, h = found
+    # The sizes it may be meant for: integer scales, and fitted to the screen
+    fit = min(img.width / nw, img.height / nh)
+    sizes = [(nw * k, nh * k) for k in range(1, int(fit) + 1)] + [(round(nw * fit), round(nh * fit))]
+    for sw, sh in sizes:
+        if abs(sw - w) <= SLOP and abs(sh - h) <= SLOP:
+            x, y, w, h = round(x + w / 2 - sw / 2), round(y + h / 2 - sh / 2), sw, sh
+            x, y = min(max(x, 0), img.width - w), min(max(y, 0), img.height - h)
+            break
+    shutil.copyfile(png, out + '.png')
+    with open(out + '.cfg', 'w') as f:
+        f.write('overlays = 1\noverlay0_overlay = %s.png\noverlay0_full_screen = true\n'
+                'overlay0_viewport = "%g,%g,%g,%g"\n'
+                % (os.path.basename(out), x / img.width, y / img.height, w / img.width, h / img.height))
+        if len(sys.argv) > 5:
+            f.write('# Picked: corehost sets these\n')
+        for kv in sys.argv[5:]:
+            key, value = kv.split('=', 1)
+            f.write('%s = "%s"\n' % (key, value))
+
+
+main()

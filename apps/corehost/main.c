@@ -71,8 +71,10 @@
 #include "libretro_vulkan.h"
 
 #include "appctl.h"
+#include "cfg.h"
 #include "libretro.h"
 #include "pad.h"
+#include "shader.h"
 #include "util.h"
 #include "win.h"
 
@@ -152,6 +154,8 @@ static struct {
 static int ctl = -1, ctl_mem = -1;
 static appctl_shm *shm;
 static bool options_changed;
+/* Our options changed (and first thing): the shader and overlay follow */
+static bool host_changed = true;
 /* Restarted for options: the state to go on from, in this slot */
 #define RESTART_SLOT 99
 static char **args;
@@ -226,8 +230,9 @@ enum { HOT_FAST, HOT_HOLD, HOT_HOLD2, HOT_REWIND, HOT_SAVE, HOT_LOAD, HOTKEYS, B
 enum { ANALOG = BINDINGS - 8 }; /* the first stick row */
 _Static_assert(BINDINGS <= 32, "active is a bit per binding");
 
-/* Our own options, after the core's: these choices, then the bindings */
-enum { HOST_SCALE, HOST_FILTER, HOST_FAST, HOST_RUMBLE, HOST_CHOICES };
+/* Our own options, after the core's: these choices, the shader's parameters,
+ * then the bindings */
+enum { HOST_SCALE, HOST_FILTER, HOST_SHADER, HOST_OVERLAY, HOST_FAST, HOST_RUMBLE, HOST_CHOICES };
 static const struct {
   const char *key, *label, *values;
   int category;
@@ -235,13 +240,18 @@ static const struct {
 } host_options[HOST_CHOICES] = {
     {"corehost_scale", "Scaling", "Integer|Fit|Stretch", APPCTL_GRAPHICS, 0},
     {"corehost_filter", "Filter", "Sharp|Smooth", APPCTL_GRAPHICS, 0},
+    /* Off, then what is in the shader and overlay directories (listings) */
+    {"corehost_shader", "Shader", "Off", APPCTL_GRAPHICS, 0},
+    {"corehost_overlay", "Overlay", "Off", APPCTL_GRAPHICS, 0},
     /* Frames run per frame shown */
     {"corehost_fast_speed", "Fast forward speed", "2x|3x|4x|6x|8x", APPCTL_SYSTEM, 1},
-    /* Last: left out without a motor or a core that rumbles (host_value: 0, On) */
+    /* Left out without a motor or a core that rumbles (host_value: 0, On) */
     {"corehost_rumble", "Rumble", "On|Off", APPCTL_INPUT, 0},
 };
 static const int fast_speeds[] = {2, 3, 4, 6, 8};
 static unsigned host_option_at; /* index of the first one in shm */
+static int host_at[HOST_CHOICES]; /* each one's index in shm; -1: left out */
+static unsigned param_at; /* the shader's parameters' first row */
 /* Published once the game is loaded: the input descriptors are in by then */
 static bool host_published;
 static int binding_at[BINDINGS]; /* index in shm; -1: not shown, never pressed */
@@ -275,8 +285,8 @@ static appctl_option *option(const char *key) {
 }
 
 static unsigned host_value(int which) {
-  const unsigned at = host_option_at + which;
-  if (at >= atomic_load(&shm->option_count) ||
+  const int at = host_at[which];
+  if (!host_published || at < 0 || (uint32_t)at >= atomic_load(&shm->option_count) ||
       strcmp(shm->options[at].key, host_options[which].key) != 0)
     return 0;
   return atomic_load(&shm->options[at].value);
@@ -295,6 +305,7 @@ static appctl_option *new_option(const char *key, const char *label, int categor
   snprintf(o->key, sizeof(o->key), "%s", key);
   snprintf(o->label, sizeof(o->label), "%s", label);
   o->count = 0;
+  o->depth = 0;
   o->kind = APPCTL_CHOICE;
   o->category = category;
   atomic_store(&o->value, 0);
@@ -351,15 +362,119 @@ static void add_definition(const char *key, const char *desc, const char *catego
   publish();
 }
 
-/* Scaling, filter and fast forward speed, then the bindings */
+/* Shader presets and overlays: the image's and the player's ($COREHOST_SHADERS,
+ * $COREHOST_OVERLAYS; a name there over the image's), each by its file name
+ * without the extension, sorted; paths: under the directory. Overlays are the
+ * game's system's: in its folder there ($LAUNCHER_SYSTEM: "gba"). */
+typedef struct {
+  char names[APPCTL_VALUES - 1][APPCTL_TEXT];
+  char paths[APPCTL_VALUES - 1][512];
+  int n;
+  const char *dirs[2], *ext;
+} listing;
+static listing shaders = {.dirs = {COREHOST_SHADERS, NULL}, .ext = ".slangp"};
+static listing overlays = {.dirs = {COREHOST_OVERLAYS, NULL}, .ext = ".cfg"};
+
+static void list_dir(listing *l, const char *root, const char *sub) {
+  char path[1024];
+  snprintf(path, sizeof(path), "%s/%s", root, sub);
+  DIR *d = opendir(path);
+  for (struct dirent *e; d != NULL && (e = readdir(d)) != NULL;) {
+    if (e->d_name[0] == '.')
+      continue;
+    char rel[512];
+    snprintf(rel, sizeof(rel), "%s%s%s", sub, sub[0] ? "/" : "", e->d_name);
+    const str name = str_c(e->d_name), ext = str_c(l->ext);
+    if (e->d_type == DT_DIR) {
+      list_dir(l, root, rel);
+      continue;
+    }
+    if (!str_iends(name, ext) || name.n - ext.n >= APPCTL_TEXT)
+      continue;
+    bool seen = false;
+    for (int i = 0; i < l->n; i++)
+      seen |= strncmp(l->names[i], name.p, name.n - ext.n) == 0 && l->names[i][name.n - ext.n] == '\0';
+    if (seen || l->n >= (int)COUNTOF(l->names))
+      continue;
+    snprintf(l->names[l->n], APPCTL_TEXT, "%.*s", (int)(name.n - ext.n), name.p);
+    snprintf(l->paths[l->n++], sizeof(l->paths[0]), "%s/%s", root, rel);
+  }
+  if (d != NULL)
+    closedir(d);
+}
+
+static void list(listing *l, const char *env, const char *sub) {
+  l->dirs[1] = getenv(env);
+  l->n = 0;
+  for (int i = 1; i >= 0; i--)
+    if (l->dirs[i] != NULL)
+      list_dir(l, l->dirs[i], sub);
+  /* By name, their paths along */
+  for (int i = 1; i < l->n; i++)
+    for (int j = i; j > 0 && strcmp(l->names[j - 1], l->names[j]) > 0; j--) {
+      char name[APPCTL_TEXT], path[512];
+      memcpy(name, l->names[j], sizeof(name)), memcpy(path, l->paths[j], sizeof(path));
+      memcpy(l->names[j], l->names[j - 1], sizeof(name)), memcpy(l->paths[j], l->paths[j - 1], sizeof(path));
+      memcpy(l->names[j - 1], name, sizeof(name)), memcpy(l->paths[j - 1], path, sizeof(path));
+    }
+}
+
+/* A parameter's row: its steps, 64 of them at most, the nearest its value */
+static void add_param(const shader_param *p) {
+  char key[APPCTL_TEXT];
+  snprintf(key, sizeof(key), "corehost_param_%s", p->name);
+  appctl_option *o = new_option(key, p->desc[0] ? p->desc : p->name, APPCTL_GRAPHICS);
+  if (o == NULL)
+    return;
+  o->depth = 1; /* under Shader */
+  const int steps = p->step > 0 && p->max > p->min ? (int)floorf((p->max - p->min) / p->step + 0.5f) + 1 : 1;
+  const int n = MIN(steps, APPCTL_VALUES);
+  float best = INFINITY;
+  for (int i = 0; i < n; i++) {
+    const float v = steps > 1 ? p->min + roundf((float)i * (steps - 1) / MAX(n - 1, 1)) * p->step : p->value;
+    snprintf(o->values[i], APPCTL_TEXT, "%g", v);
+    if (fabsf(v - p->value) < best) {
+      best = fabsf(v - p->value);
+      atomic_store(&o->value, i);
+    }
+  }
+  o->count = n;
+  publish();
+}
+
+/* Scaling, filter, shader, overlay and fast forward speed, the shader's
+ * parameters, then the bindings */
 static void publish_host(void) {
   host_option_at = atomic_load(&shm->option_count);
-  for (int i = 0; i < HOST_CHOICES - !rumble_asked; i++) {
+  if (!host_published) {
+    list(&shaders, "COREHOST_SHADERS", "");
+    const char *system = getenv("LAUNCHER_SYSTEM");
+    if (system != NULL && system[0] != '\0' && strchr(system, '/') == NULL)
+      list(&overlays, "COREHOST_OVERLAYS", system);
+  }
+  /* GL cores' frames don't go through Vulkan: no shaders, no overlay */
+  const bool gl = hw_on && !vk_on;
+  for (int i = 0; i < HOST_CHOICES; i++) {
+    host_at[i] = -1;
+    const listing *l = i == HOST_SHADER ? &shaders : i == HOST_OVERLAY ? &overlays : NULL;
+    if ((i == HOST_RUMBLE && !rumble_asked) || (l != NULL && (gl || l->n == 0)))
+      continue;
     char desc[128];
     snprintf(desc, sizeof(desc), "%s; %s", host_options[i].label, host_options[i].values);
+    const uint32_t at = atomic_load(&shm->option_count);
     add_option(host_options[i].key, desc, host_options[i].category);
-    if (host_option_at + i < atomic_load(&shm->option_count))
-      atomic_store(&shm->options[host_option_at + i].value, host_options[i].def);
+    if (at >= atomic_load(&shm->option_count))
+      continue;
+    appctl_option *o = &shm->options[at];
+    for (int v = 0; l != NULL && v < l->n && o->count < APPCTL_VALUES; v++)
+      snprintf(o->values[o->count++], APPCTL_TEXT, "%s", l->names[v]);
+    atomic_store(&o->value, host_options[i].def);
+    host_at[i] = (int)at;
+    if (i == HOST_SHADER) {
+      param_at = atomic_load(&shm->option_count);
+      for (int p = 0; p < shader_param_count(); p++)
+        add_param(&shader_params()[p]);
+    }
   }
   /* A pad without sticks: the core's left stick gets the D-pad, its D-pad
    * Menu + the D-pad */
@@ -920,7 +1035,8 @@ static bool vk_swapchain(void) {
       .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
       .imageExtent = vk.extent,
       .imageArrayLayers = 1,
-      .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      /* The shader's last pass draws into it */
+      .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
       .preTransform = caps.currentTransform,
       .compositeAlpha = caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                             ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
@@ -930,6 +1046,7 @@ static bool vk_swapchain(void) {
       .oldSwapchain = old,
   };
   vkDeviceWaitIdle(vk.device);
+  shader_forget_targets();
   if (vkCreateSwapchainKHR(vk.device, &info, NULL, &vk.swapchain) != VK_SUCCESS)
     return false;
   if (old != VK_NULL_HANDLE)
@@ -1144,6 +1261,7 @@ static bool sw_resize(unsigned w, unsigned h, VkDeviceSize size) {
     if (f == VK_FRAMES - 1)
       vk.staging_size = size;
   }
+  shader_forget_input();
   vkDestroyImage(vk.device, vk.frame, NULL);
   vkFreeMemory(vk.device, vk.frame_memory, NULL);
   vk.frame_memory = VK_NULL_HANDLE;
@@ -1155,7 +1273,8 @@ static bool sw_resize(unsigned w, unsigned h, VkDeviceSize size) {
                                  .arrayLayers = 1,
                                  .samples = VK_SAMPLE_COUNT_1_BIT,
                                  .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                 .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+                                 .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                          VK_IMAGE_USAGE_SAMPLED_BIT};
   VkMemoryRequirements req;
   if (vkCreateImage(vk.device, &ici, NULL, &vk.frame) != VK_SUCCESS)
     return vk.frame = VK_NULL_HANDLE, false;
@@ -1290,19 +1409,34 @@ static void vk_present(int x, int y, int w, int h) {
     const VkImageLayout layout = vk.image.image_layout;
     const VkImageLayout read = layout == VK_IMAGE_LAYOUT_GENERAL ? layout : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     const bool transfer = vk.src_family != VK_QUEUE_FAMILY_IGNORED && vk.src_family != vk.family;
-    vk_barrier(cmd, source, layout, read, transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED,
-               transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED, &range);
-    const VkImageBlit blit = {
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, range.baseArrayLayer, 1},
-        .srcOffsets = {{0, 0, 0}, {frame_w, frame_h, 1}},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .dstOffsets = {{x, y, 0}, {x + w, y + h, 1}},
-    };
-    vkCmdBlitImage(cmd, source, read, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                   host_value(HOST_FILTER) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
-    vk_barrier(cmd, source, read, layout, transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED,
-               transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED, &range);
+    /* Through the shader: sampled where it is (GENERAL, or as a core leaves it) */
+    if (shader_loaded() && (layout == VK_IMAGE_LAYOUT_GENERAL || layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+      static uint32_t frame_count;
+      if (transfer)
+        vk_barrier(cmd, source, layout, layout, vk.src_family, vk.family, &range);
+      const shader_input in = {source, vk.image.image_view, layout,
+                               source == vk.frame ? frame_format : vk.image.create_info.format,
+                               (uint32_t)frame_w, (uint32_t)frame_h};
+      shader_draw(cmd, f, &in, target, vk.extent, (VkRect2D){{x, y}, {(uint32_t)w, (uint32_t)h}}, frame_count++);
+      if (transfer)
+        vk_barrier(cmd, source, layout, layout, vk.family, vk.src_family, &range);
+    } else {
+      vk_barrier(cmd, source, layout, read, transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED,
+                 transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED, &range);
+      const VkImageBlit blit = {
+          .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, range.baseArrayLayer, 1},
+          .srcOffsets = {{0, 0, 0}, {frame_w, frame_h, 1}},
+          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+          .dstOffsets = {{x, y, 0}, {x + w, y + h, 1}},
+      };
+      vkCmdBlitImage(cmd, source, read, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                     host_value(HOST_FILTER) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+      vk_barrier(cmd, source, read, layout, transfer ? vk.family : VK_QUEUE_FAMILY_IGNORED,
+                 transfer ? vk.src_family : VK_QUEUE_FAMILY_IGNORED, &range);
+    }
   }
+  /* The overlay over the game (its window and grid) */
+  border_draw(cmd, target, vk.extent);
   /* Laid out at 160 lines: a texel a font pixel */
   const int n_rects = overlay_rects(160, 160);
   if (n_rects > 0 && vk_overlay()) {
@@ -1957,6 +2091,7 @@ static bool control(bool *paused) {
   case APPCTL_RESET: core.retro_reset(); break;
   case APPCTL_OPTIONS:
     options_changed = true;
+    host_changed = true;
     sync_own();
     save_options();
     break;
@@ -1966,10 +2101,80 @@ static bool control(bool *paused) {
   return true;
 }
 
+/* What a picked overlay's cfg asks for besides its image (tools/border: its
+ * README's settings): the options it names, ours and the core's, set as the
+ * player would, and saved */
+static void overlay_settings(const char *path) {
+  FILE *f = fopen(path, "r");
+  const str text = str_read(f); /* closes f */
+  cfg_reader r = cfg_init(text);
+  bool any = false;
+  for (cfg_event e; (e = cfg_next(&r)) != CFG_END;) {
+    if (e != CFG_VALUE || (r.key.n >= 7 && memcmp(r.key.p, "overlay", 7) == 0))
+      continue;
+    str value = r.value;
+    if (value.n >= 2 && value.p[0] == '"' && value.p[value.n - 1] == '"')
+      value = str_head(str_at(value, 1), value.n - 2);
+    char key[APPCTL_TEXT];
+    if (str_copy(key, sizeof(key), r.key) != r.key.n)
+      continue;
+    appctl_option *o = option(key);
+    for (unsigned i = 0; o != NULL && o->kind == APPCTL_CHOICE && i < o->count; i++)
+      if (str_eq(str_c(o->values[i]), value)) {
+        atomic_store(&o->value, i);
+        any = true;
+      }
+  }
+  free((void *)text.p);
+  if (any) {
+    options_changed = true;
+    sync_own();
+    save_options();
+  }
+}
+
+/* The shader and overlay the options name, and the shader's parameters. A
+ * new shader has its own parameters: the rows are published anew (the
+ * launcher's change is saved by then, APPCTL_OPTIONS). */
+static void apply_host(void) {
+  static unsigned shader_on, border_on;
+  /* Past the first: the options are the player's from here on */
+  static bool picked;
+  if (!vk_on || vk.device == VK_NULL_HANDLE)
+    return;
+  const shader_vk c = {vk.gpu, vk.device, vk.queue, vk.family, &vk.queue_lock, vk.format};
+  const unsigned want = host_value(HOST_SHADER);
+  if (want != shader_on) {
+    shader_on = want;
+    shader_unload();
+    if (want > 0 && (!shader_load(&c, shaders.paths[want - 1], host_value(HOST_FILTER) != 0)))
+      notify("Shader failed");
+    atomic_store(&shm->option_count, host_option_at);
+    publish_and_load();
+  }
+  const unsigned border = host_value(HOST_OVERLAY);
+  if (border != border_on) {
+    border_on = border;
+    border_unload();
+    if (border > 0 && !border_load(&c, overlays.paths[border - 1]))
+      notify("Overlay failed");
+    else if (border > 0 && picked)
+      overlay_settings(overlays.paths[border - 1]);
+  }
+  picked = true;
+  for (int i = 0; i < shader_param_count() && param_at + i < atomic_load(&shm->option_count); i++) {
+    const appctl_option *o = &shm->options[param_at + i];
+    shader_params()[i].value = strtof(o->values[atomic_load(&o->value) % APPCTL_VALUES], NULL);
+  }
+}
+
 static void present(void) {
   const int w = vk_on ? (int)vk.extent.width : window.w, h = vk_on ? (int)vk.extent.height : window.h;
   rect dst = {0, 0, w, h};
-  if (frame_w > 0 && frame_h > 0) {
+  float viewport[4];
+  if (vk_on && border_viewport(viewport)) {
+    dst = (rect){(int)(viewport[0] * w), (int)(viewport[1] * h), (int)(viewport[2] * w), (int)(viewport[3] * h)};
+  } else if (frame_w > 0 && frame_h > 0) {
     /* Integer scaling goes by the height: N64's 640x240 is a 4:3 picture */
     const float shown_w = aspect > 0 ? frame_h * aspect : frame_w;
     const float fit = MIN(w / shown_w, (float)h / frame_h);
@@ -2220,6 +2425,11 @@ int main(int argc, char **argv) {
       running &= why != WIN_QUIT;
     if (ctl >= 0 && !control(&paused))
       running = false;
+    /* While paused too: a new shader's parameters show in the launcher's menu */
+    if (host_changed) {
+      host_changed = false;
+      apply_host();
+    }
     if (restart && running && !paused)
       restart_core();
     restart = false;

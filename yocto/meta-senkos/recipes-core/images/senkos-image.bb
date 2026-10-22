@@ -13,7 +13,8 @@ inherit image
 # libav*, libgomp: the libretro cores (PPSSPP's FFmpeg, OpenMP); vulkan-loader, xkbcommon etc. come anyway
 # fusermount3, libfuse2: AppImages mount themselves. gmp ... fribidi: what AppImages leave to the host
 # (AppImage's excludelist) and we'd otherwise lack
-# The libretro cores: run by corehost, as the emulators in senkos-data (senkos-base) say
+# The libretro cores: run by corehost, as the emulators in senkos-data (senkos-base) say; corehost's
+# shader presets and overlays
 IMAGE_INSTALL = " \
     base-files \
     base-passwd \
@@ -72,6 +73,7 @@ IMAGE_INSTALL = " \
     libretro-fceumm libretro-snes9x libretro-gambatte libretro-mgba libretro-genesis-plus-gx \
     libretro-beetle-pce-fast libretro-pcsx-rearmed libretro-fbneo libretro-beetle-ngp libretro-beetle-wswan \
     libretro-stella2014 libretro-handy libretro-gpsp libretro-freej2me libretro-mupen64plus-next libretro-flycast libretro-ppsspp \
+    libretro-shaders libretro-overlays \
 "
 # The rest of the games' platform (binaries built on Debian), and all of it again for armhf (multilib, senkos.conf)
 PORTS_PLATFORM = "libstdc++ libgcc zlib libgallium libegl-mesa libglvnd mesa-vulkan-drivers vulkan-loader \
@@ -80,10 +82,10 @@ PORTS_PLATFORM = "libstdc++ libgcc zlib libgallium libegl-mesa libglvnd mesa-vul
     libxi libxcursor libxrandr libxinerama libxfixes libxtst libxscrnsaver \
     libpng freetype fontconfig libogg libvorbis libopus libflac mpg123 libmodplug opusfile libtheora libsndfile1 \
     libcurl libcrypto expat libzstd libbz2 libjpeg-turbo libsqlite3 util-linux-libuuid glib-2.0 cairo dbus-lib"
-IMAGE_INSTALL += "${PORTS_PLATFORM} \
-    ${@' '.join('lib32-' + p for p in d.getVar('PORTS_PLATFORM').split())} \
+IMAGE_INSTALL += "${PORTS_PLATFORM}"
+IMAGE_INSTALL += "${@'' if not d.getVar('MULTILIBS') else ' '.join('lib32-' + p for p in d.getVar('PORTS_PLATFORM').split()) + ' \
     lib32-pipewire-alsa lib32-pipewire-modules-client-device lib32-pipewire-modules-adapter lib32-pipewire-modules-metadata \
-    lib32-pipewire-modules-session-manager lib32-pipewire-spa-plugins-audioconvert"
+    lib32-pipewire-modules-session-manager lib32-pipewire-spa-plugins-audioconvert'}"
 # Developer builds (SENKOS_DEV, dev.yml): debuggers and tracers
 IMAGE_INSTALL += "${@'gdb gdbserver strace perf trace-cmd' if d.getVar('SENKOS_DEV') == '1' else ''}"
 IMAGE_LINGUAS = ""
@@ -278,3 +280,13 @@ WKS_FILE = "senkos.wks.in"
 WKS_FILE_DEPENDS = "wic-native e2fsprogs-native dosfstools-native mtools-native bmaptool-native u-boot"
 # Kernel + dtbs live in each slot's /boot; the FAT partition has the boot script and splash
 IMAGE_BOOT_FILES = "boot.scr splash.lz4 splash-light.lz4"
+
+# qemu (qemu.yml, tools/qemu): the same slots and /data on a virtio disk; qemu loads the kernel,
+# no U-Boot. No device tree on x86; cores that are arm64-only (dynarecs, the aarch64 JRE) left out.
+# senkos-qemu: the pad from the keyboard, the network for ssh.
+IMAGE_INSTALL:remove:qemuall = "kernel-devicetree libretro-flycast libretro-mupen64plus-next libretro-gpsp libretro-freej2me"
+IMAGE_INSTALL:append:qemuall = " senkos-qemu"
+IMAGE_FSTYPES:qemuall = "wic squashfs-lz4"
+WKS_FILE:qemuall = "senkos-qemu.wks.in"
+WKS_FILE_DEPENDS:qemuall = "wic-native e2fsprogs-native dosfstools-native mtools-native"
+IMAGE_BOOT_FILES:qemuall = ""

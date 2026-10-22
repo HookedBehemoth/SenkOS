@@ -1,0 +1,20 @@
+# The image for x86-64 qemu, to test userspace on the host (tools/qemu): rg35xx-sp.yml's distro and
+# image on oe-core's qemux86-64 with linux-yocto. GL through virgl, Vulkan through venus (Mesa's
+# virtio driver), both on the host's GPU. In a build dir of its own (build-qemu, see ./kas):
+# a bitbake there doesn't lock out the handheld's builds. Sstate and downloads are shared.
+#     ./kas build qemu.yml
+#     tools/qemu
+header:
+  version: 18
+  includes:
+    - rg35xx-sp.yml
+
+machine: qemux86-64
+
+local_conf_header:
+  senkos-qemu: |
+    PACKAGECONFIG:append:pn-mesa = " virtio"
+    # oe-core's x86 drivers: target LLVM (llvmpipe, radeonsi...) for GPUs qemu doesn't have
+    PACKAGECONFIG:remove:pn-mesa = "libclc gallium-llvm intel amd nouveau svga"
+    # tools/qemu runs the host's qemu: not runqemu's, which would build qemu (and Mesa) natively
+    IMAGE_CLASSES:remove = "qemuboot"

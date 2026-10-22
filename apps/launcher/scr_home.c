@@ -155,7 +155,7 @@ static void choose_home(nav *ui, void *choice) {
     running *r = running_at((size_t)chosen->arg);
     if (r != NULL)
       session_start(ui, sb_str(r->label), sb_str(r->icon), sb_str(r->exec),
-                    sb_str(r->arg), sb_str(r->dir), r->flags);
+                    sb_str(r->arg), sb_str(r->dir), sb_str(r->system), r->flags);
     return;
   }
   if (chosen->action != LAUNCH_APP || launcher.draw.page == 0)
@@ -173,7 +173,7 @@ static void choose_home(nav *ui, void *choice) {
     launcher_show_failure(ui, FAIL_LAUNCH, sb_str(a->name), sb_str(why), S(""));
   } else {
     session_start(ui, sb_str(a->name), sb_str(a->icon), sb_str(a->exec),
-                  sb_str(a->arg), sb_str(a->dir), a->flags);
+                  sb_str(a->arg), sb_str(a->dir), category_system(c), a->flags);
   }
 }
 

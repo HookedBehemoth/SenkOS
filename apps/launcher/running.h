@@ -17,6 +17,8 @@ typedef struct {
   /* What it was launched with: the same again resumes it */
   STRBUF(512) exec, arg;
   STRBUF(256) dir;
+  /* The game's system: its folder's name ("gba"), "" for an app; LAUNCHER_SYSTEM for it */
+  STRBUF(32) system;
   int ctl;
   appctl_shm *shm;
   unsigned flags; /* APP_* (apps.h) */
@@ -33,7 +35,7 @@ extern running runs[RUNNING_MAX];
 
 /* win_wake(UI_EXITED, pid) when it is gone. NULL when there is no free slot
  * or the fork failed. */
-running *run_launch(str label, str icon, str exec, str arg, str dir);
+running *run_launch(str label, str icon, str exec, str arg, str dir, str system);
 /* `script` (sh -c, with $1 and $2) as an app runs, but waited for: true if it exited with 0 */
 bool run_helper(const char *script, const char *arg1, const char *arg2);
 /* Started as root: shell from here on, as above; false if that failed. As anyone else: nothing

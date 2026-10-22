@@ -157,7 +157,7 @@ bool run_helper(const char *script, const char *arg1, const char *arg2) {
   return pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-running *run_launch(str label, str icon, str exec, str arg, str dir) {
+running *run_launch(str label, str icon, str exec, str arg, str dir, str system) {
   running *r = NULL;
   for (size_t i = 0; i < RUNNING_MAX && r == NULL; i++)
     if (runs[i].pid == 0)
@@ -170,6 +170,7 @@ running *run_launch(str label, str icon, str exec, str arg, str dir) {
   sb_set(r->icon, icon);
   sb_set(r->exec, exec);
   sb_set(r->arg, arg);
+  sb_set(r->system, system);
   sb_set(r->dir, dir);
   int pair[2];
   const int mem = memfd_create("appctl", MFD_CLOEXEC);
@@ -188,13 +189,16 @@ running *run_launch(str label, str icon, str exec, str arg, str dir) {
   size_t n = 0;
   while (base[n] != NULL)
     n++;
-  char **env = malloc((n + 2) * sizeof(*env));
+  char **env = malloc((n + 3) * sizeof(*env));
   char channel[64];
   snprintf(channel, sizeof(channel), APPCTL_ENV "=%d,%d", pair[1], mem);
+  STRBUF(64) sys;
+  sb_set(sys, S("LAUNCHER_SYSTEM="), system);
   if (env != NULL) {
     memcpy(env, base, n * sizeof(*env));
     env[n] = channel;
-    env[n + 1] = NULL;
+    env[n + 1] = sys.p;
+    env[n + 2] = NULL;
   }
   char procs[64];
   snprintf(procs, sizeof(procs), APPS_CGROUP "/%d", (int)(r - runs));

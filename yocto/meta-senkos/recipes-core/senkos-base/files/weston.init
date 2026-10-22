@@ -31,7 +31,8 @@ if [ "$1" = session ]; then
 fi
 ui() {
 	export HOME=/data
-	export XDG_CONFIG_HOME=/data/OS/config COREHOST_SAVE=/data/OS/saves COREHOST_SYSTEM=/data/OS/assets/emulator
+	export XDG_CONFIG_HOME=/data/OS/config COREHOST_SAVE=/data/OS/saves COREHOST_SYSTEM=/data/OS/assets/emulator \
+		COREHOST_SHADERS=/data/OS/assets/shaders COREHOST_OVERLAYS=/data/OS/assets/overlays
 	. /etc/profile.d/wayland.sh
 	. /etc/profile.d/panvk.sh
 	. /etc/profile.d/zz-data.sh

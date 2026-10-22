@@ -1,13 +1,16 @@
 SUMMARY = "Game Boy Advance (mGBA) libretro core"
 LICENSE = "MPL-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=815ca599c9df247a0c7f619bab123dad"
-SRC_URI = "https://github.com/mgba-emu/mgba/archive/refs/tags/${PV}.tar.gz;downloadfilename=mgba-${PV}.tar.gz \
+# libretro's fork, as RetroArch has it: its core has color correction, interframe blending and
+# frameskip options. No releases: the commit archive, pinned by its checksum.
+LIBRETRO_REV = "7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6"
+PV = "0+git${@d.getVar('LIBRETRO_REV')[:10]}"
+SRC_URI = "https://github.com/libretro/mgba/archive/${LIBRETRO_REV}.tar.gz;downloadfilename=mgba-libretro-${LIBRETRO_REV}.tar.gz \
     file://0004-mgba-skip-unshown-frames.patch"
-SRC_URI[sha256sum] = "91d6fbd32abcbdf030d58d3f562de25ebbc9d56040d513ff8e5c19bee9dacf14"
-# No source tarball among the release assets; the tag archive is pinned by the checksum above
+SRC_URI[sha256sum] = "5cbf639e527fb586bf33e14d59037eab35f78f45154e0b79c784fff474c3bc37"
 ERROR_QA:remove = "src-uri-bad"
 WARN_QA:remove = "src-uri-bad"
-S = "${UNPACKDIR}/mgba-${PV}"
+S = "${UNPACKDIR}/mgba-${LIBRETRO_REV}"
 
 inherit cmake pkgconfig
 DEPENDS = "zlib libpng"

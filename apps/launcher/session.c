@@ -60,7 +60,7 @@ static void hand_over(nav *ui, running *r) {
 
 /* The same app again comes back instead of starting twice (two of a game
  * would share its save) */
-void session_start(nav *ui, str label, str icon, str exec, str arg, str dir,
+void session_start(nav *ui, str label, str icon, str exec, str arg, str dir, str system,
                    unsigned flags) {
   running *r = run_same(exec, arg, dir);
   if (r != NULL) {
@@ -70,7 +70,7 @@ void session_start(nav *ui, str label, str icon, str exec, str arg, str dir,
     layer_show(&window, false);
     return;
   }
-  r = run_launch(label, icon, exec, arg, dir);
+  r = run_launch(label, icon, exec, arg, dir, system);
   if (r == NULL)
     return;
   r->flags = flags;
@@ -123,6 +123,11 @@ void quit_front(nav *ui) {
   pad_listen(false);
   pad_grab(false);
   run_quit(launcher.front);
+}
+
+str category_system(const category *c) {
+  const size_t slash = str_rfind(c->folder, '/');
+  return slash < c->folder.n ? str_at(c->folder, slash + 1) : c->folder;
 }
 
 void launcher_set_binding(running *r, int i, uint16_t combo) {

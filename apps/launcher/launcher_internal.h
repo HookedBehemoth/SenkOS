@@ -211,6 +211,9 @@ void launcher_step_option(running *r, int i, int by);
 void launcher_ignore(str key);
 
 const entry *menu(nav *ui, const entry *entries, size_t count, ui_rect view);
+/* Row i's tree lines (its depth > 0) at r, the menu's rows' depths by depth_of */
+void menu_tree(ui_rect view, ui_rect r, int (*depth_of)(const void *rows, size_t j), const void *rows,
+               size_t count, size_t i);
 int launcher_tiles(nav *ui, const category *category, ui_rect view);
 const entry *dialog_box(nav *ui, int w, int h, str title, str text,
                         const entry *entries, size_t count);
@@ -222,7 +225,10 @@ void quit_front(nav *ui);
 void show_perf(void);
 bool showing_pause(void);
 screen_stack *session_home_screens(void);
-void session_start(nav *ui, str label, str icon, str exec, str arg, str dir, unsigned flags);
+void session_start(nav *ui, str label, str icon, str exec, str arg, str dir, str system,
+                   unsigned flags);
+/* A category's system for LAUNCHER_SYSTEM: its folder's last name ("roms/gba": "gba") */
+str category_system(const category *c);
 void session_pause(nav *ui);
 void session_app_exited(nav *ui, running *r, size_t *page);
 bool session_starting(void);

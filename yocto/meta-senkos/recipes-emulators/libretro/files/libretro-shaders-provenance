@@ -1,0 +1,16 @@
+Shaders in libretro's slang-shaders without a notice of their own, and where their license comes from:
+
+handheld/shaders/lcd-cgwg/lcd-grid-v2.slang, by cgwg: GPL-2.0-or-later. cgwg in
+http://board.byuu.org/viewtopic.php?p=26075#p26075 (quoted in crt/shaders/crt-geom.slang):
+"Feel free to distribute my shaders under the GPL."
+
+crt/shaders/fakelottes.slang, by hunterk, from crt-lottes ("PUBLIC DOMAIN CRT STYLED SCAN-LINE
+SHADER", Timothy Lottes): public domain.
+
+handheld/shaders/color/lut/GBA-LUT.slang, GBC-LUT.slang, a LUT shader modified by Pokefan531:
+public domain, as Pokefan531's other color shaders in handheld/shaders/color (gba-color.slang,
+gbc-color.slang: "Public domain").
+
+handheld/shaders/gb-palette/gb-palette.slang, reshade/shaders/LUT/multiLUT.slang: BSD-2-Clause
+(libretro-shaders-bsd), as libretro's shaders ported from bacondither's Adaptive-sharpen
+(https://github.com/libretro/glsl-shaders/issues/76).

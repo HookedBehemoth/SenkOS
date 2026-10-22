@@ -1,5 +1,7 @@
 #!/bin/sh
 # Build/download/sstate dirs live on /mnt/multimedia: /home's btrfs runs out of metadata space.
 B=${ANBERNIC_BUILD_ROOT:-/mnt/multimedia/anbernic-yocto}
-export KAS_CONTAINER_ENGINE=podman KAS_BUILD_DIR=$B/build DL_DIR=$B/downloads SSTATE_DIR=$B/sstate-cache
+# qemu.yml in a build dir of its own, so the two machines' bitbakes don't lock each other out
+case " $* " in *[\ /]qemu.yml\ *) build=build-qemu ;; *) build=build ;; esac
+export KAS_CONTAINER_ENGINE=podman KAS_BUILD_DIR=$B/$build DL_DIR=$B/downloads SSTATE_DIR=$B/sstate-cache
 exec "$(dirname "$0")/kas-container" "$@"
