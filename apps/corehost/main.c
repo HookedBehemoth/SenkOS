@@ -111,7 +111,7 @@ static int frame_w, frame_h;
 /* The frame's shape on screen, width / height; 0: square pixels */
 static float aspect;
 static snd_pcm_t *audio;
-static int pad_fd = -1, stick_fd = -1;
+static int pad_fd = -1;
 /* The rumble motor (pwm-vibrator): one FF_RUMBLE effect, played at the
  * stronger of what the core asks of its two motors, once a frame */
 static int rumble_fd = -1;
@@ -478,7 +478,7 @@ static void publish_host(void) {
   }
   /* A pad without sticks: the core's left stick gets the D-pad, its D-pad
    * Menu + the D-pad */
-  const uint32_t has = pad_has(pad_fd, stick_fd);
+  const uint32_t has = pad_has(pad_fd);
   const uint32_t lstick = 0xfu << ANALOG_ID(0, 0, 0);
   const bool stick_on_dpad = (described & lstick) == lstick && !(has & B(LS_UP));
   /* Buttons only some pads have: unbound where they are missing */
@@ -774,7 +774,7 @@ static uint32_t stick_dirs;
 
 /* What is held, the sticks read anew, as appctl bits */
 static uint32_t pad_now(void) {
-  stick_read(stick_fd, axes);
+  stick_read(pad_fd, axes);
   stick_dirs = stick_held(axes, stick_dirs);
   return pad_held(pad_fd) | stick_dirs;
 }
@@ -2368,7 +2368,6 @@ int main(int argc, char **argv) {
     return 1;
   }
   pad_fd = pad_open(0);
-  stick_fd = stick_open(0);
   rumble_fd = input_open(S("pwm-vibrator"), O_RDWR);
   core.retro_init();
 

@@ -2,7 +2,8 @@
  * The built-in pad, straight from evdev, its buttons as appctl.h names them.
  * Not SDL's game controller: with a joystick open, SDL_WaitEvent polls every
  * millisecond, and SDL has no fd to poll the pad by.
- * The built-in pad only, raw codes as it labels them.
+ * The built-in pad only (anbernic-gamepad: its buttons and sticks), raw codes
+ * as it labels them.
  */
 #pragma once
 
@@ -20,13 +21,10 @@ int pad_button(unsigned code);
 /* What is held now, a bit per APPCTL_* button: the device's state, not its
  * queue */
 uint32_t pad_held(int fd);
-/* The APPCTL_* buttons there are: the pad's (fd), the sticks' (stick, -1:
- * none) */
-uint32_t pad_has(int fd, int stick);
+/* The APPCTL_* buttons the pad (fd) has, its sticks' directions too */
+uint32_t pad_has(int fd);
 
-/* The sticks (adc-joystick), -1 on a pad without */
-int stick_open(int flags);
-/* Where they are now: left x, y, right x, y, -32767..32767 (down and right
+/* The pad's sticks (fd: pad_open's) where they are now: left x, y, right x, y, -32767..32767 (down and right
  * positive), 0 inside the dead zone. Zeros for fd -1. */
 void stick_read(int fd, int16_t axes[4]);
 /* How far they push toward APPCTL_LS_UP + dir (dir < 8): 0..32767 */

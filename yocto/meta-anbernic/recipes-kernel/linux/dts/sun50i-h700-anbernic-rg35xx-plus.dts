@@ -32,6 +32,12 @@
 	regulator-max-microvolt = <1200000>;
 };
 
+/* The RTL8821CS' supply, for its Bluetooth too: on before hci_h5 resets
+ * that, and while the WiFi card is powered off */
+&reg_cldo4 {
+	regulator-always-on;
+};
+
 /* SDIO WiFi RTL8821CS */
 &mmc1 {
 	mmc-pwrseq = <&wifi_pwrseq>;
@@ -64,5 +70,7 @@
 		device-wake-gpios = <&pio 6 17 GPIO_ACTIVE_HIGH>; /* PG17 */
 		enable-gpios = <&pio 6 19 GPIO_ACTIVE_HIGH>; /* PG19 */
 		host-wake-gpios = <&pio 6 16 GPIO_ACTIVE_HIGH>; /* PG16 */
+		/* Not read by hci_h5: only so the PMIC probes first (fw_devlink) */
+		vbat-supply = <&reg_cldo4>;
 	};
 };

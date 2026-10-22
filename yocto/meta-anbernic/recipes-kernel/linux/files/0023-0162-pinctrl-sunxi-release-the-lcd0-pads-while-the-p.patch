@@ -13,31 +13,6 @@ Upstream-Status: Pending [ROCKNIX H700 series, https://github.com/ROCKNIX/distri
  drivers/pinctrl/sunxi/pinctrl-sun50i-h616.c   | 84 ++++++++++++-------
  4 files changed, 78 insertions(+), 29 deletions(-)
 
-diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi b/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
-index 16203c7e3..c26eacd59 100644
---- a/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
-+++ b/arch/arm64/boot/dts/allwinner/sun50i-h616.dtsi
-@@ -429,6 +429,20 @@ lcd0_rgb888_pins: lcd0-rgb888-pins {
- 				function = "lcd0";
- 			};
- 
-+			/* Pad buffers off, no bias: nothing driven into an unpowered panel. */
-+			/omit-if-no-ref/
-+			lcd0_suspend_pins: lcd0-suspend-pins {
-+				pins = "PD0", "PD1", "PD2", "PD3",
-+				       "PD4", "PD5", "PD6", "PD7",
-+				       "PD8", "PD9", "PD10", "PD11",
-+				       "PD12", "PD13", "PD14", "PD15",
-+				       "PD16", "PD17", "PD18", "PD19",
-+				       "PD20", "PD21", "PD22", "PD23",
-+				       "PD24", "PD25", "PD26", "PD27";
-+				function = "io_disabled";
-+				bias-disable;
-+			};
-+
- 			/omit-if-no-ref/
- 			lvds0_pins: lvds0-pins {
- 				pins = "PD0", "PD1", "PD2", "PD3", "PD4",
 diff --git a/drivers/gpu/drm/panel/panel-mipi.c b/drivers/gpu/drm/panel/panel-mipi.c
 index ebabda409..98603c700 100644
 --- a/drivers/gpu/drm/panel/panel-mipi.c

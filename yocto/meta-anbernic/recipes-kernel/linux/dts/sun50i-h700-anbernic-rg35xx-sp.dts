@@ -37,7 +37,14 @@
 };
 
 /* The SP's X and Y keys are wired the other way round from the 2024's */
-&gpio_keys_gamepad {
+&panel {
+	compatible = "anbernic,rg35xx-plus-panel", "panel-mipi-dpi-spi";
+	/* The original (FOG) panel by its ID, else the BOE ("v2") one */
+	firmware-names = "anbernic,rg35xx-plus-panel", "anbernic,rg35xx-sp-v2-panel";
+	display-ids = <0x305200 0xffff00>;
+};
+
+&gamepad {
 	/* Preserve the SP's X/Y wiring swap relative to the 2024. */
 	button-x { gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; }; /* PA2 */
 	button-y { gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; }; /* PA3 */

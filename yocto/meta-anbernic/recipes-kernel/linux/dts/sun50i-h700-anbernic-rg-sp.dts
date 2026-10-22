@@ -12,6 +12,9 @@
 	rocknix-dt-id = "sun50i-h700-anbernic-rg-sp";
 };
 
+/* One panel only */
 &panel {
 	compatible = "anbernic,rg34xx-sp-v2-panel", "panel-mipi-dpi-spi";
+	/delete-property/ firmware-names;
+	/delete-property/ display-ids;
 };
