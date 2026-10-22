@@ -14,7 +14,8 @@
 | Wi-Fi/BT | Realtek **RTL8821CS**, SDIO + BT over UART | `rtl8821cs` (vendor), `btrtl` (firmware built in) |
 | Storage | No eMMC or SPI flash. TF1 boots, TF2 has card detect | TF1 `mmcblk0`, TF2 `mmcblk1` |
 | Lid | Hall sensor on a SoC GPIO | `SW_LID` (gpio-keys) |
-| Buttons | D-pad, A/B/X/Y, L1/R1/L2/R2, Select/Start/Menu, volume; no sticks | `gpio-keys-gamepad`, `gpio-keys-volume` |
+| Buttons | D-pad, A/B/X/Y, L1/R1/L2/R2, Select/Start/Menu, volume; no sticks | `Anbernic Gamepad` (our `anbernic-gamepad` driver: every board's buttons and sticks as one device, the same buttons on all), `gpio-keys-volume` |
+| Rumble | a motor on PH2 (pwm2) | the pad's `FF_RUMBLE` (the driver's `pwms`: duty is strength), so SDL finds it on the pad; `padtest` shows it |
 | USB | 1x USB-C OTG, ID pin on PI4 | musb: gadget to a PC, host through an OTG adapter |
 | LEDs | red status LED (PI11), RGB | gpio-leds |
 | UART | test pads on the board, 115200 8N1 | `ttyS0` |

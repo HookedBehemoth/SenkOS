@@ -6,9 +6,13 @@ PH7, PH8 and PH10 with pull-ups and uses the result as an index into its
 DRAM parameter sets: 0 and 15 LPDDR4, 14 LPDDR3 (1-13 DDR3).
 
 SUNXI_DRAM_H616_LPDDR3_STRAPS builds the LPDDR3 timings next to the
-LPDDR4 ones, reads the straps before DRAM init and, for LPDDR3, raises
-DCDC3 to 1.2 V and uses boot0's LPDDR3 parameters with the DX delays
-ROCKNIX's LPDDR3 builds use.
+LPDDR4 ones, reads the straps before DRAM init and, for LPDDR3, uses
+boot0's LPDDR3 parameters with the DX delays ROCKNIX's LPDDR3 builds use.
+The PMIC setup reads them too and sets DCDC3 (the DRAM supply) to 1.2 V
+for LPDDR3 rather than the LPDDR4 voltage: on a resume from super standby
+the DRAM is in self-refresh by then, and a dip would be out of its range.
+U-Boot proper gets the range the kernel has for vdd-dram, so its regulator
+driver keeps the voltage instead of setting the dts' fixed 1.1 V.
 
 To make that possible, the PHY init tables are picked by the DRAM type at
 runtime, and ns_to_t() takes the clock from the parameters (as boot0
@@ -17,10 +21,10 @@ does) instead of CONFIG_DRAM_CLK.
 Upstream-Status: Pending
 
 diff --git a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
-index a8fdda12..315533f8 100644
+index a8fdda12..b887575b 100644
 --- a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
 +++ b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
-@@ -168,13 +168,14 @@ struct dram_config {
+@@ -168,13 +168,15 @@ struct dram_config {
  	u8 bus_full_width;
  };
  
@@ -35,6 +39,7 @@ index a8fdda12..315533f8 100644
  
  void mctl_set_timing_params(const struct dram_para *para);
 +void mctl_set_timing_params_lpddr3(const struct dram_para *para);
++bool sunxi_dram_lpddr3(void);
  
  #endif /* _SUNXI_DRAM_SUN50I_H616_H */
 diff --git a/arch/arm/mach-sunxi/Kconfig b/arch/arm/mach-sunxi/Kconfig
@@ -58,20 +63,19 @@ index f984ea29..470aa043 100644
  
  config DRAM_TYPE
 diff --git a/arch/arm/mach-sunxi/dram_sun50i_h616.c b/arch/arm/mach-sunxi/dram_sun50i_h616.c
-index 42a0550e..e94fcf82 100644
+index 42a0550e..cc5aed1e 100644
 --- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
 +++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
-@@ -20,6 +20,9 @@
+@@ -20,6 +20,8 @@
  #include <asm/arch/dram_dw_helpers.h>
  #include <asm/arch/cpu.h>
  #include <asm/arch/prcm.h>
 +#include <asm/gpio.h>
-+#include <axp_pmic.h>
 +#include <sunxi_gpio.h>
  #include <linux/bitops.h>
  #include <linux/delay.h>
  
-@@ -228,42 +231,42 @@ static void mctl_set_addrmap(const struct dram_config *config)
+@@ -228,42 +230,42 @@ static void mctl_set_addrmap(const struct dram_config *config)
  }
  
  #ifdef CONFIG_DRAM_SUNXI_PHY_ADDR_MAP_1
@@ -124,7 +128,7 @@ index 42a0550e..e94fcf82 100644
  };
  #endif /* CONFIG_DRAM_SUNXI_PHY_ADDR_MAP_0 */
  #define MASK_BYTE(reg, nr) (((reg) >> ((nr) * 8)) & 0x1f)
-@@ -909,6 +912,7 @@ static bool mctl_phy_init(const struct dram_para *para,
+@@ -909,6 +911,7 @@ static bool mctl_phy_init(const struct dram_para *para,
  	struct sunxi_mctl_ctl_reg * const mctl_ctl =
  			(struct sunxi_mctl_ctl_reg *)SUNXI_DRAM_CTL0_BASE;
  	u32 val, val2, *ptr, mr0, mr2;
@@ -132,7 +136,7 @@ index 42a0550e..e94fcf82 100644
  	int i;
  
  	if (para->type == SUNXI_DRAM_TYPE_LPDDR4)
-@@ -963,8 +967,19 @@ static bool mctl_phy_init(const struct dram_para *para,
+@@ -963,8 +966,19 @@ static bool mctl_phy_init(const struct dram_para *para,
  	writel(val2, SUNXI_DRAM_PHY0_BASE + 0x370);
  	writel(val2, SUNXI_DRAM_PHY0_BASE + 0x37c);
  
@@ -153,7 +157,7 @@ index 42a0550e..e94fcf82 100644
  		writel(phy_init[i], &ptr[i]);
  
  	if (para->tpr10 & TPR10_CA_BIT_DELAY)
-@@ -1268,7 +1283,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
+@@ -1268,7 +1282,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
  
  	mctl_set_addrmap(config);
  
@@ -165,7 +169,7 @@ index 42a0550e..e94fcf82 100644
  
  	writel(0, &mctl_ctl->pwrctl);
  
-@@ -1340,19 +1358,69 @@ static const struct dram_para para = {
+@@ -1340,19 +1357,66 @@ static const struct dram_para para = {
  	.tpr12 = CONFIG_DRAM_SUNXI_TPR12,
  };
  
@@ -189,7 +193,7 @@ index 42a0550e..e94fcf82 100644
 + * boot0 picks its DRAM set from PH6, PH7, PH8 and PH10 (bits 0-3, pulled up):
 + * 14 is LPDDR3; 0 and 15 LPDDR4 (1-13 would be DDR3, not seen on boards).
 + */
-+static bool dram_straps_lpddr3(void)
++bool sunxi_dram_lpddr3(void)
 +{
 +	static const u32 pins[] = { SUNXI_GPH(6), SUNXI_GPH(7), SUNXI_GPH(8), SUNXI_GPH(10) };
 +	u32 idx = 0;
@@ -218,11 +222,8 @@ index 42a0550e..e94fcf82 100644
  	unsigned long size;
  
 +#ifdef CONFIG_SUNXI_DRAM_H616_LPDDR3_STRAPS
-+	if (dram_straps_lpddr3()) {
-+		/* SPL set DCDC3 (the DRAM supply) for LPDDR4; LPDDR3 needs 1.2 V */
-+		axp_set_dcdc3(1200);
++	if (sunxi_dram_lpddr3())
 +		p = &para_lpddr3;
-+	}
 +#endif
 +
  	setbits_le32(prcm + CCU_PRCM_RES_CAL_CTRL, BIT(8));
@@ -407,3 +408,34 @@ index 6f5c4acb..bbe40146 100644
  
  	/* set DRAM timing */
  	writel((twtp << 24) | (tfaw << 16) | (trasmax << 8) | tras,
+diff --git a/board/sunxi/board.c b/board/sunxi/board.c
+index 6fab0251..9e8986d5 100644
+--- a/board/sunxi/board.c
++++ b/board/sunxi/board.c
+@@ -624,7 +624,10 @@ void sunxi_board_init(void)
+ #ifdef CONFIG_AXP_DCDC2_VOLT
+ 	power_failed |= axp_set_dcdc2(CONFIG_AXP_DCDC2_VOLT);
+ #endif
+-#ifdef CONFIG_AXP_DCDC3_VOLT
++#ifdef CONFIG_SUNXI_DRAM_H616_LPDDR3_STRAPS
++	/* DCDC3 is the DRAM supply: LPDDR3 needs 1.2 V */
++	power_failed |= axp_set_dcdc3(sunxi_dram_lpddr3() ? 1200 : CONFIG_AXP_DCDC3_VOLT);
++#elif defined(CONFIG_AXP_DCDC3_VOLT)
+ 	power_failed |= axp_set_dcdc3(CONFIG_AXP_DCDC3_VOLT);
+ #endif
+ #ifdef CONFIG_AXP_DCDC4_VOLT
+diff --git a/dts/upstream/src/arm64/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts b/dts/upstream/src/arm64/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
+index 1a750c5f..25574140 100644
+--- a/dts/upstream/src/arm64/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
++++ b/dts/upstream/src/arm64/allwinner/sun50i-h700-anbernic-rg35xx-2024.dts
+@@ -271,8 +271,9 @@
+ 
+ 			reg_dcdc3: dcdc3 {
+ 				regulator-always-on;
++				/* LPDDR4 or LPDDR3, set up by SPL; a range keeps its voltage */
+ 				regulator-min-microvolt = <1100000>;
+-				regulator-max-microvolt = <1100000>;
++				regulator-max-microvolt = <1200000>;
+ 				regulator-name = "vdd-dram";
+ 			};
+ 

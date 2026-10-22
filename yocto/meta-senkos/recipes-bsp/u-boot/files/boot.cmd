@@ -26,15 +26,14 @@ setenv kernel_addr_r 0x40200000
 load ${devtype} ${devnum}:${rootpart} ${kernel_addr_r} /boot/Image
 # The board by its straps (docs/straps.md); gpio input returns the level, so `if` is low.
 # PE8 is L3, pulled up on the board where the sticks click; elsewhere it floats: read with
-# the pull-down on (PE pull register 0, PE8 = 2 << 16), then the pulls as they were.
+# the pull-down on (PE pull register 0, PE8 = 2 << 16), then the pulls as they were. The
+# panel is the kernel's to tell apart (by its ID).
 setexpr.l pulls *0x0300B0AC
 mw.l 0x0300B0AC 0x20000
 setenv board rg40xx-h
 if gpio input PE8; then setenv board rg35xx-sp; fi
 mw.l 0x0300B0AC ${pulls}
-# PE6 is low on units with the BOE ("v2") panel
 setenv fdtfile sun50i-h700-anbernic-${board}.dtb
-if gpio input PE6; then setenv fdtfile sun50i-h700-anbernic-${board}-v2-panel.dtb; fi
 load ${devtype} ${devnum}:${rootpart} ${fdt_addr_r} /boot/${fdtfile}
 fdt addr ${fdt_addr_r}
 fdt resize

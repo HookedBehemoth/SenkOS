@@ -14,6 +14,12 @@
 
 enum { CAPTURE_MS = 5000 };
 static bool menu_down, menu_combo;
+
+/* The front app takes Menu itself: Menu + Start pauses it */
+static bool menu_is_app(void) {
+  return launcher.front != NULL && !showing_pause() && run_controlled(launcher.front) &&
+         launcher.front->shm->flags & APPCTL_MENU_START;
+}
 bool launcher_capture_active(void) { return launcher.capture.option >= 0; }
 
 void launcher_key(unsigned code, bool down) {
@@ -178,6 +184,12 @@ bool launcher_input(nav *ui, int why, int value, size_t *page) {
     if (!tapped)
       return true;
   } else if (!down) {
+    return true;
+  }
+  if (pad && menu_is_app() && (button == APPCTL_MENU || (menu_down && button == APPCTL_START))) {
+    menu_combo = true;
+    if (button == APPCTL_START)
+      session_pause(ui);
     return true;
   }
   if (button == APPCTL_MENU) {

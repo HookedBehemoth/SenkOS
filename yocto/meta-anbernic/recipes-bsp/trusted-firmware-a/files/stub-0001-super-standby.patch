@@ -10,6 +10,11 @@ SoC. Waking up is a cold boot, SPL brings DRAM back and jumps to the warm entry.
 power is still on 2-3 s later (RTC seconds: the arch timer may have stopped with the
 oscillator), the stub puts the clocks back, clears the handshake and sleeps in WFI as before.
 
+Built against U-Boot 2026.07's DRAM driver, the release our SPL uses (it reads the LPDDR3
+vref from the right byte of tpr6): its mctl_calc_size() checks the last quarter of DRAM with
+mctl_check_memory() (dram_helpers.c, not built into the stub; it writes the word back) and
+printf()s a failure.
+
 Upstream-Status: Pending
 
 ---
@@ -27,6 +32,26 @@ index 0aeec2f..05bf6ab 100644
  	src/dram/dram_sun50i_h616.o src/dram/dram_dw_helpers.o src/dram/dram_timing.o
  
  $(SRC_DIR)/$(OUT): stub.elf
+diff --git a/compat/stub_compat.h b/compat/stub_compat.h
+index fbd5eaf..1cce863 100644
+--- a/compat/stub_compat.h
++++ b/compat/stub_compat.h
+@@ -25,6 +25,7 @@ typedef unsigned long ulong;
+ 	_Static_assert(offsetof(struct s, m) == (o), "check_member " #m)
+ 
+ #define debug(...)		do { } while (0)
++#define printf(...)		do { } while (0)
+ 
+ #define CFG_SYS_SDRAM_BASE	0x40000000UL
+ 
+@@ -32,6 +33,7 @@ void *memcpy(void *dst, const void *src, size_t n);
+ void *memset(void *s, int c, size_t n);
+ void udelay(unsigned long us);
+ void mctl_await_completion(u32 *reg, u32 mask, u32 val);
++bool mctl_check_memory(unsigned long addr);
+ __attribute__((noreturn)) void stub_panic(void);
+ void stage(u32 code);
+ u64 stub_deadline(unsigned long timeout_us);
 diff --git a/src/clock.c b/src/clock.c
 index e65f76a..35b64dc 100644
 --- a/src/clock.c
@@ -82,6 +107,29 @@ index e65f76a..35b64dc 100644
 +
  /* Everything back except the CPU clock, which stays on OSC24M during DRAM init */
  void clocks_up(void)
+ {
+diff --git a/src/lib.c b/src/lib.c
+index 6dab3c1..1b0980b 100644
+--- a/src/lib.c
++++ b/src/lib.c
+@@ -168,6 +168,18 @@ void dbg_hex(u32 val)
+ 	dbg_puts(buf);
+ }
+ 
++/* U-Boot's size check (dram_helpers.c, not built here): the word is written back */
++bool mctl_check_memory(unsigned long addr)
++{
++	u32 orig = readl(addr), val;
++
++	writel(~orig, addr);
++	val = readl(addr);
++	writel(orig, addr);
++
++	return ~orig == val;
++}
++
+ /* The OS watchdog keeps counting during WFI: stop it for the whole sleep. */
+ void wdog_save_disable(void)
  {
 diff --git a/src/main.c b/src/main.c
 index 749ed01..29fa3b9 100644

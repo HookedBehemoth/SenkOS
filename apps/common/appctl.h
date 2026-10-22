@@ -21,7 +21,7 @@
 
 #define APPCTL_ENV "LAUNCHER_CTL"
 #define APPCTL_MAGIC 0x4c544341u /* "ACTL" */
-#define APPCTL_VERSION 6
+#define APPCTL_VERSION 7
 
 enum {
   /* Stop running and wait; the app has stopped once it answers */
@@ -99,13 +99,15 @@ typedef struct {
   /* Set after the options are filled in */
   _Atomic uint32_t option_count;
   appctl_option options[APPCTL_OPTIONS_MAX];
-  /* APPCTL_OWN_OPTIONS */
+  /* APPCTL_OWN_OPTIONS, APPCTL_MENU_START */
   uint32_t flags;
 } appctl_shm;
 
 /* Its options can be made this game's own (Y in the launcher), apart from the defaults
  * (corehost: the core's) */
 #define APPCTL_OWN_OPTIONS 1u
+/* Menu is the app's (padtest shows it): Menu + Start opens the launcher's menu instead */
+#define APPCTL_MENU_START 2u
 
 /* A binding saved as "key=L1+A", names in any order; "" is none. False on a name we don't know. */
 static inline bool appctl_parse_combo(const char *text, uint32_t *out) {

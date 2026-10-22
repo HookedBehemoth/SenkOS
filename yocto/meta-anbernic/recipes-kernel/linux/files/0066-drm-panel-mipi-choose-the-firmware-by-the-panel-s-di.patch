@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Thu, 22 Oct 2026 12:00:00 +0200
+Subject: [PATCH] drm/panel: mipi: choose the firmware by the panel's display ID
+
+A board can come with one of several panels, which differ in their init
+sequence and timings. `firmware-names` lists their firmware, `display-ids`
+an <id mask> pair for each but the last, which takes any other ID. At probe
+the panel is powered, reset and asked for its ID (a few tries, 10 ms apart,
+until one matches), then switched off again; the modes come from the chosen
+firmware. The SPI bus is set up before the firmware for that.
+
+Upstream-Status: Pending
+---
+--- a/drivers/gpu/drm/panel/panel-mipi.c
++++ b/drivers/gpu/drm/panel/panel-mipi.c
+@@ -432,7 +432,54 @@
+ 	return 0;
+ }
+ 
+-static struct panel_firmware *panel_mipi_load_firmware(struct device *dev)
++static int panel_mipi_read_display_id(struct panel_mipi *mipi);
++
++/*
++ * The firmware for the panel that is there, where a board has a choice of panels:
++ * `firmware-names` lists them, `display-ids` an <id mask> pair for each but the last,
++ * which is for any other ID. The panel is powered, reset and asked for its ID, then
++ * switched off again (prepare starts it from there). Without `firmware-names`: the
++ * one named after the first compatible.
++ */
++static int panel_mipi_firmware_name(struct device *dev, struct panel_mipi *mipi,
++				    const char **name)
++{
++	struct device_node *np = dev->of_node;
++	int n = of_property_count_strings(np, "firmware-names");
++	int i, try, id = -1, err;
++	u32 want, mask;
++
++	if (n <= 0)
++		return of_property_read_string_index(np, "compatible", 0, name);
++
++	err = regulator_bulk_enable(ARRAY_SIZE(mipi->supplies), mipi->supplies);
++	if (err)
++		return err;
++	gpiod_set_value_cansleep(mipi->reset, 1);
++	msleep(1);
++	gpiod_set_value_cansleep(mipi->reset, 0);
++	/* A panel answers once it is ready: a few chances before the default */
++	for (try = 0, i = n - 1; try < 5 && i == n - 1; try++) {
++		msleep(10);
++		id = panel_mipi_read_display_id(mipi);
++		for (i = 0; i < n - 1; i++)
++			if (id >= 0 &&
++			    !of_property_read_u32_index(np, "display-ids", 2 * i, &want) &&
++			    !of_property_read_u32_index(np, "display-ids", 2 * i + 1, &mask) &&
++			    (id & mask) == want)
++				break;
++	}
++	gpiod_set_value_cansleep(mipi->reset, 1);
++	regulator_bulk_disable(ARRAY_SIZE(mipi->supplies), mipi->supplies);
++
++	err = of_property_read_string_index(np, "firmware-names", i, name);
++	if (!err)
++		dev_info(dev, "Display ID %06x: %s\n", id, *name);
++	return err;
++}
++
++static struct panel_firmware *panel_mipi_load_firmware(struct device *dev,
++						      struct panel_mipi *mipi)
+ {
+ 	const struct firmware *blob;
+ 	const struct panel_firmware_header *hdr;
+@@ -444,8 +491,7 @@
+ 	char filename[128];
+ 	int err;
+ 
+-	err = of_property_read_string_index(dev->of_node, "compatible", 0,
+-					    &firmware_name);
++	err = panel_mipi_firmware_name(dev, mipi, &firmware_name);
+ 	if (err)
+ 		return ERR_PTR(err);
+ 
+@@ -968,7 +1014,9 @@
+ 	return 0;
+ }
+ 
+-static int panel_mipi_probe(struct device *dev, int connector_type)
++/* bus_init: the bus' commands set up before the firmware is chosen (by the panel's ID) */
++static int panel_mipi_probe(struct device *dev, int connector_type,
++			    int (*bus_init)(struct device *dev, struct panel_mipi *mipi))
+ {
+ 	struct panel_mipi *mipi;
+ 	int err;
+@@ -999,8 +1047,14 @@
+ 				     "%pOF: Failed to get GPIO for RESET\n",
+ 				     dev->of_node);
+ 
++	if (bus_init) {
++		err = bus_init(dev, mipi);
++		if (err)
++			return err;
++	}
++
+ 	/* Load the firmware */
+-	mipi->firmware = panel_mipi_load_firmware(dev);
++	mipi->firmware = panel_mipi_load_firmware(dev, mipi);
+ 	if (IS_ERR(mipi->firmware))
+ 		return dev_err_probe(dev, PTR_ERR(mipi->firmware),
+ 				     "Failed to load firmware\n");
+@@ -1032,7 +1086,7 @@
+ 	struct panel_mipi *mipi;
+ 	int err;
+ 
+-	err = panel_mipi_probe(&dsi->dev, DRM_MODE_CONNECTOR_DSI);
++	err = panel_mipi_probe(&dsi->dev, DRM_MODE_CONNECTOR_DSI, NULL);
+ 	if (err)
+ 		return err;
+ 
+@@ -1074,32 +1128,31 @@
+ 	return 0;
+ }
+ 
+-static int panel_mipi_spi_probe(struct spi_device *spi)
++static int panel_mipi_spi_init(struct device *dev, struct panel_mipi *mipi)
+ {
+-	struct panel_mipi *mipi;
+ 	struct gpio_desc *dc;
+ 	int err;
+ 
+-	err = panel_mipi_probe(&spi->dev, DRM_MODE_CONNECTOR_DPI);
+-	if (err)
+-		return err;
+-
+-	mipi = dev_get_drvdata(&spi->dev);
+ 	mipi->write_command = panel_mipi_dbi_write;
+ 	mipi->read_command = panel_mipi_dbi_read;
+ 
+-	dc = devm_gpiod_get_optional(&spi->dev, "dc", GPIOD_OUT_LOW);
++	dc = devm_gpiod_get_optional(dev, "dc", GPIOD_OUT_LOW);
+ 	if (IS_ERR(dc))
+-		return dev_err_probe(&spi->dev, PTR_ERR(dc),
++		return dev_err_probe(dev, PTR_ERR(dc),
+ 				     "Failed to get GPIO for D/CX\n");
+ 
+-	err = mipi_dbi_spi_init(spi, &mipi->dbi, dc);
++	err = mipi_dbi_spi_init(to_spi_device(dev), &mipi->dbi, dc);
+ 	if (err)
+-		return dev_err_probe(&spi->dev, err, "Failed to init SPI\n");
++		return dev_err_probe(dev, err, "Failed to init SPI\n");
+ 
+ 	return 0;
+ }
+ 
++static int panel_mipi_spi_probe(struct spi_device *spi)
++{
++	return panel_mipi_probe(&spi->dev, DRM_MODE_CONNECTOR_DPI, panel_mipi_spi_init);
++}
++
+ static void panel_mipi_dsi_remove(struct mipi_dsi_device *dsi)
+ {
+ 	mipi_dsi_detach(dsi);

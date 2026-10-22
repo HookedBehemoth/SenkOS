@@ -16,7 +16,8 @@ export SDL_VIDEODRIVER=wayland
 export SDL_VIDEO_ALLOW_SCREENSAVER=1
 # SDL2 talks to PipeWire only when asked by name; ALSA (pipewire-alsa) for the 32-bit one
 export SDL_AUDIODRIVER=pipewire,alsa
-# Built-in pad (gpio-keys-gamepad) by label, not position: SDL's guess from the evdev codes makes
-# the A button (BTN_EAST) SDL's B, and games that confirm with A cancel instead (STK quits).
-# Joystick buttons are keycode order: BTN_SOUTH EAST NORTH WEST TL TR TL2 TR2 SELECT START MODE, DPAD_UP DOWN LEFT RIGHT
-export SDL_GAMECONTROLLERCONFIG="19000000010000000100000000010000,gpio-keys-gamepad,a:b1,b:b0,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,back:b8,start:b9,guide:b10,dpup:b11,dpdown:b12,dpleft:b13,dpright:b14,platform:Linux,"
+# Built-in pad (anbernic-gamepad, the same buttons on every board) by label, not position: SDL's
+# guess from the evdev codes makes the A button (BTN_EAST) SDL's B, and games that confirm with A
+# cancel instead (STK quits). Joystick buttons are keycode order: BTN_SOUTH EAST NORTH WEST TL TR
+# TL2 TR2 SELECT START MODE THUMBL THUMBR, DPAD_UP DOWN LEFT RIGHT; axes X Y RX RY where there are sticks
+export SDL_GAMECONTROLLERCONFIG="19000000010000000100000000010000,Anbernic Gamepad,a:b1,b:b0,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,back:b8,start:b9,guide:b10,leftstick:b11,rightstick:b12,dpup:b13,dpdown:b14,dpleft:b15,dpright:b16,leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Linux,"

@@ -7,7 +7,7 @@ an unconnected one follows the pull. [tools/h700-fingerprint](../tools/h700-fing
 | Pins | Read by | Meaning |
 |---|---|---|
 | PH6, PH7, PH8, PH10 | boot0, before DRAM init | DRAM parameter set, see below |
-| PE6 | stock U-Boot | panel: high = original (FOG) panel, low = BOE ("v2") panel |
+| PE6 | stock U-Boot | panel: high = original (FOG) panel, low = BOE ("v2") panel (we read the panel's ID instead) |
 | PE8 | ours (`boot.scr`) | L3: pulled up on the board where the sticks click (RG40XX H), unconnected on the SP |
 
 On our SP the DRAM straps are unconnected (all read high with the pull-up) and PE6 is driven high. Our RG40XX H
@@ -17,11 +17,15 @@ low on its own.
 What we do with them:
 - SPL (U-Boot patch 0008, `CONFIG_SUNXI_DRAM_H616_LPDDR3_STRAPS`) reads the DRAM straps like boot0 before DRAM
   init. 14 → LPDDR3: DCDC3 to 1.2 V and boot0's LPDDR3 set with ROCKNIX's DX delays (`tpr11` 0x10121013, `tpr12`
-  0x0d0e0d0e); anything else → our LPDDR4 set. The kernel keeps that voltage: the dts gives DCDC3 a range
-  (1.1-1.2 V), as stock gives it the full range. Our RG40XX H boots through the LPDDR3 path.
-- `boot.scr` picks the board from PE8, read with the pull-down on: high = `rg40xx-h`, low = `rg35xx-sp`. Then the
-  `-v2-panel` dtb when PE6 is low (`gpio input PE6`). PE6 is driven by the board, not the panel, so the panel needs
-  no power or reset for it.
+  0x0d0e0d0e); anything else → our LPDDR4 set. DCDC3 is set once, where SPL sets up the PMIC (a resume from
+  super standby finds the DRAM in self-refresh there). U-Boot proper and the kernel keep that voltage: both dts
+  give DCDC3 a range (1.1-1.2 V), as stock gives it the full range; upstream U-Boot's fixed 1.1 V would be applied. Our RG40XX H boots through the LPDDR3 path.
+- `boot.scr` picks the board from PE8, read with the pull-down on: high = `rg40xx-h`, low = `rg35xx-sp`.
+- PE6 isn't read: U-Boot has seen it low on an original-panel SP (in Linux it is high whatever the pull), and the
+  BOE init sequence on that panel leaves it black. The kernel tells the panels apart by their display ID instead
+  (`firmware-names`/`display-ids` on the panel node, kernel patch 0066): the original (FOG) panel answers `3052xx`
+  (its init sequence pages with `ff 30 52 0x`, as stock's does), any other ID gets the BOE ("v2") firmware. The
+  RG40XX H's BOE panel answers `000000`.
 
 ## Stock firmware
 

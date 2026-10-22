@@ -8,14 +8,16 @@ stub from SRAM that
 3. retrains the DRAM controller without touching its contents and returns to Linux.
 
 Step 3 needs the exact DRAM parameters the SPL used, so the stub is built from U-Boot's own DRAM driver
-and our U-Boot defconfig ([TF-A bbappend](../yocto/meta-anbernic/recipes-bsp/trusted-firmware-a/trusted-firmware-a_%.bbappend)).
-BL31 refuses to suspend if the parameters don't match at runtime. The stub also pauses the watchdog.
+(the release our U-Boot recipe uses) and our U-Boot defconfig, a second one for LPDDR3 boards from
+[`stub-lpddr3_defconfig`](../yocto/meta-anbernic/recipes-bsp/trusted-firmware-a/files/stub-lpddr3_defconfig)
+(the parameters U-Boot patch 0008 picks by the straps) ([TF-A bbappend](../yocto/meta-anbernic/recipes-bsp/trusted-firmware-a/trusted-firmware-a_%.bbappend)).
+BL31 takes the stub whose DRAM type and clock match the running DRAM, and offers no deep sleep if none does. The stub also pauses the watchdog.
 
 ## Pieces
 
 | Where | What |
 |---|---|
-| TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4) |
+| TF-A | `SYSTEM_SUSPEND` patch + [h700-suspend-stub](https://github.com/Jacob-Matthew-Cook/h700-suspend-stub) (LPDDR4, LPDDR3) |
 | Kernel | PM fixes for the power-key wake event, MMC, the TF2 slot power, the USB PHY clock, the display pipeline and LCD pads, the codec, and a suspend OPP (patches 0018-0024, 0027) |
 | `sysd` | lid close, the power key let go within 1 s (held longer, the launcher shows Sleep / Reboot / Power off) or the launcher's `suspend` request (Sleep) → `/usr/sbin/suspend` (`echo mem > /sys/power/state`). Stays asleep while the lid is closed; ignores the power-key press that woke it, and a `suspend` request within 1.5 s of waking. Reacts only to events, so a misread lid at boot can't suspend. Locks the VT (`VT_LOCKSWITCH`) meanwhile: with no framebuffer (fbdev emulation off) the kernel would switch to a text console for every sleep, and seatd would take the display from Weston and give it back |
 | `senkos.init` | rebinds the USB gadget when musb comes back detached |

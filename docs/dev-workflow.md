@@ -172,10 +172,12 @@ files there but can't rename or delete root's.
   is logged and gets a dialog at home; "Ignore for this app" adds it to `launcher-ignored`.
 - **Pause menu:** Menu pauses the app and shows a menu over a blur of its last frame; Menu or B resumes. Menu acts on
   release, and only when no other button or volume key was pressed meanwhile (Menu plus a button is the app's
-  hotkey, plus a volume key the backlight). While paused the launcher grabs the pad (EVIOCGRAB). An app with a control
+  hotkey, plus a volume key the backlight). While paused the launcher grabs the pad (EVIOCGRAB), taking and giving it back only once nothing is held, so neither side misses a release. An app with a control
   channel ([appctl.h](../apps/common/appctl.h): a `SOCK_SEQPACKET` socketpair with fixed-size requests and a memfd
   holding the options, nothing serialized), like corehost, gets Resume, Save state, Load state, Settings, Restart,
   Home and Quit. Load state, Restart and Quit ask first, Quit not when the `.desktop` has `X-SenkOS-AskQuit=false`.
+  One with `APPCTL_MENU_START` keeps Menu for itself and opens the menu on Menu + Start
+  ([padtest](../apps/padtest/main.c): SDL's view of the pad and its rumble, copied to `/data/apps/benchmarks`).
   Others are paused with SIGSTOP and get Resume, Settings, Home and Quit. Quit is SIGTERM. Home leaves the app paused
   on the Running page; Menu at home brings back the last one. The menu comes back as it was left.
 - **Settings:** the app's categories with options (System, Graphics, Audio, Input; Left/Right change one), then Power
@@ -210,8 +212,8 @@ How it renders, paces and resamples is in [main.c](../apps/corehost/main.c)'s he
   yet, corehost reads the save RAM next to the ROM (`ROM.srm`, else `ROM.sav`) and never writes it.
 - **Options:** `OS/config/corehost/<core>.opt` over the image's defaults
   ([corehost/defaults](../apps/corehost/defaults)). Core options v2 categories map to Graphics, Audio and Input, the
-  rest to System. corehost adds scaling and filter, fast forward speed, and under Input Rumble (the motor, a `pwm-vibrator`
-  input device, kernel patch 0062; shown when the core asks for rumble) and a binding per input the core
+  rest to System. corehost adds scaling and filter, fast forward speed, and under Input Rumble (the motor, the pad's
+  `FF_RUMBLE`; shown when the core asks for rumble) and a binding per input the core
   describes (SET_INPUT_DESCRIPTORS, by its names; a stick is a row per direction), then the hotkeys. With a left
   stick and no stick on the pad, the stick defaults to the D-pad and the core's D-pad to Menu + D-pad. Y makes an
   option or binding the game's own (blue label, `<core>/<ROM name>.opt`); Y again gives it back. A core that reads

@@ -1,0 +1,82 @@
+From bf0bd72d2a3e40ee5fc184e62da5fb7f8d1cad12 Mon Sep 17 00:00:00 2001
+From: SenkOS
+Date: Sun, 25 Oct 2026 11:18:52 +0100
+Subject: [PATCH] iio: adc: sun20i-gpadc: set the ADC up again on resume
+
+The H616 suspends with the SoC's power cut (TF-A's super standby), which clears the control,
+channel enable and data IRQ enable registers. The driver writes the latter two only when the
+channel changes, so every read after the wake-up timed out (the RG40XX H's sticks). Write the
+control register again on resume and forget the last channel.
+
+Upstream-Status: Pending
+---
+ drivers/iio/adc/sun20i-gpadc-iio.c | 28 +++++++++++++++++++++++++---
+ 1 file changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/iio/adc/sun20i-gpadc-iio.c b/drivers/iio/adc/sun20i-gpadc-iio.c
+index baa7661..4dfc4ed 100644
+--- a/drivers/iio/adc/sun20i-gpadc-iio.c
++++ b/drivers/iio/adc/sun20i-gpadc-iio.c
+@@ -157,6 +157,13 @@ static const struct iio_info sun20i_gpadc_iio_info = {
+ 	.fwnode_xlate = sun20i_gpadc_fwnode_xlate,
+ };
+ 
++static void sun20i_gpadc_hw_init(struct sun20i_gpadc_iio *info)
++{
++	writel(FIELD_PREP(SUN20I_GPADC_CTRL_ADC_AUTOCALI_EN_MASK, 1) |
++	       FIELD_PREP(SUN20I_GPADC_CTRL_WORK_MODE_MASK, SUN20I_GPADC_WORK_MODE_SINGLE),
++	       info->regs + SUN20I_GPADC_CTRL);
++}
++
+ static void sun20i_gpadc_reset_assert(void *data)
+ {
+ 	struct reset_control *rst = data;
+@@ -204,6 +211,7 @@ static int sun20i_gpadc_probe(struct platform_device *pdev)
+ 
+ 	info = iio_priv(indio_dev);
+ 	info->last_channel = -1;
++	platform_set_drvdata(pdev, info);
+ 
+ 	mutex_init(&info->lock);
+ 	init_completion(&info->completion);
+@@ -246,9 +254,7 @@ static int sun20i_gpadc_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed requesting irq %d\n", irq);
+ 
+-	writel(FIELD_PREP(SUN20I_GPADC_CTRL_ADC_AUTOCALI_EN_MASK, 1) |
+-	       FIELD_PREP(SUN20I_GPADC_CTRL_WORK_MODE_MASK, SUN20I_GPADC_WORK_MODE_SINGLE),
+-	       info->regs + SUN20I_GPADC_CTRL);
++	sun20i_gpadc_hw_init(info);
+ 
+ 	ret = devm_iio_device_register(dev, indio_dev);
+ 	if (ret)
+@@ -257,6 +263,21 @@ static int sun20i_gpadc_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++/* The power may have been cut (H616 super standby): channel and IRQ enables are gone */
++static int sun20i_gpadc_resume(struct device *dev)
++{
++	struct sun20i_gpadc_iio *info = dev_get_drvdata(dev);
++
++	mutex_lock(&info->lock);
++	sun20i_gpadc_hw_init(info);
++	info->last_channel = -1;
++	mutex_unlock(&info->lock);
++
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(sun20i_gpadc_pm_ops, NULL, sun20i_gpadc_resume);
++
+ static const struct of_device_id sun20i_gpadc_of_id[] = {
+ 	{ .compatible = "allwinner,sun20i-d1-gpadc" },
+ 	{ .compatible = "allwinner,sun55i-a523-gpadc" },
+@@ -268,6 +289,7 @@ static struct platform_driver sun20i_gpadc_driver = {
+ 	.driver = {
+ 		.name = SUN20I_GPADC_DRIVER_NAME,
+ 		.of_match_table = sun20i_gpadc_of_id,
++		.pm = pm_sleep_ptr(&sun20i_gpadc_pm_ops),
+ 	},
+ 	.probe = sun20i_gpadc_probe,
+ };

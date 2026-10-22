@@ -18,7 +18,7 @@
 #include "util.h"
 
 enum { PAD, VOLUME, POWER, DEVICES };
-static const char *const names[DEVICES] = {"gpio-keys-gamepad", "gpio-keys-volume", "axp20x-pek"};
+static const char *const names[DEVICES] = {"Anbernic Gamepad", "gpio-keys-volume", "axp20x-pek"};
 static const struct {
   unsigned short key, dev, code;
 } keys[] = {
@@ -29,7 +29,8 @@ static const struct {
     {KEY_Q, PAD, BTN_TL},             {KEY_W, PAD, BTN_TR},
     {KEY_E, PAD, BTN_TL2},            {KEY_R, PAD, BTN_TR2},
     {KEY_ENTER, PAD, BTN_START},      {KEY_RIGHTSHIFT, PAD, BTN_SELECT},
-    {KEY_ESC, PAD, BTN_MODE},         {KEY_MINUS, VOLUME, KEY_VOLUMEDOWN},
+    {KEY_ESC, PAD, BTN_MODE},         {KEY_1, PAD, BTN_THUMBL},
+    {KEY_2, PAD, BTN_THUMBR},         {KEY_MINUS, VOLUME, KEY_VOLUMEDOWN},
     {KEY_EQUAL, VOLUME, KEY_VOLUMEUP}, {KEY_P, POWER, KEY_POWER},
 };
 
@@ -41,6 +42,9 @@ static int create(int dev) {
     if (keys[i].dev == dev)
       ioctl(fd, UI_SET_KEYBIT, keys[i].code);
   struct uinput_setup setup = {.id = {.bustype = BUS_VIRTUAL}};
+  /* The pad's ids, as SDL's mapping (wayland.sh) names it */
+  if (dev == PAD)
+    setup.id = (struct input_id){.bustype = BUS_HOST, .vendor = 1, .product = 1, .version = 0x100};
   snprintf(setup.name, sizeof(setup.name), "%s", names[dev]);
   if (ioctl(fd, UI_DEV_SETUP, &setup) < 0 || ioctl(fd, UI_DEV_CREATE) < 0)
     return -1;

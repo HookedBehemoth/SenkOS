@@ -4,7 +4,7 @@
  */
 
 #include "sun50i-h700-anbernic-rg35xx-plus.dts"
-#include "sun50i-h700-anbernic-adc-joystick.dtsi"
+#include "sun50i-h700-anbernic-sticks.dtsi"
 
 / {
 	model = "Anbernic RG40XX H";
@@ -29,25 +29,22 @@
 
 &panel {
 	compatible = "anbernic,rg40xx-panel", "panel-mipi-dpi-spi";
+	/* The original (FOG) panel by its ID, else the BOE ("v2") one */
+	firmware-names = "anbernic,rg40xx-panel", "anbernic,rg40xx-v2-panel";
+	display-ids = <0x305200 0xffff00>;
 };
 
 /* Stock; L3, R3 on PE8, PE9 as in the RG35XX H */
-&gpio_keys_gamepad {
-	/* X and Y wired as on the SP */
-	button-x { gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; }; /* PA2 */
-	button-y { gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; }; /* PA3 */
-
+&gamepad {
 	button-thumbl {
 		label = "GPIO Thumb Left";
 		gpios = <&pio 4 8 GPIO_ACTIVE_LOW>; /* PE8 */
-		linux,input-type = <EV_KEY>;
 		linux,code = <BTN_THUMBL>;
 	};
 
 	button-thumbr {
 		label = "GPIO Thumb Right";
 		gpios = <&pio 4 9 GPIO_ACTIVE_LOW>; /* PE9 */
-		linux,input-type = <EV_KEY>;
 		linux,code = <BTN_THUMBR>;
 	};
 };
@@ -57,12 +54,12 @@
 &axis_rx { abs-range = <4096 0>; };
 &axis_ry { abs-range = <4096 0>; };
 
-/ {
-	vibrator {
-		compatible = "pwm-vibrator";
-		pwms = <&pwm 3 1000000 0>;
-		pwm-names = "enable";
-		pinctrl-0 = <&pwm3_pin>;
-		pinctrl-names = "default";
-	};
+/* The rumble motor */
+&gamepad {
+	pwms = <&pwm 3 1000000 0>;
+};
+
+&pwm {
+	pinctrl-0 = <&pwm3_pin>;
+	pinctrl-names = "default";
 };

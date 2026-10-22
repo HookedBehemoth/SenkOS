@@ -25,22 +25,23 @@
 			wakeup-source;
 		};
 	};
-
-	/* The rumble motor on PH2: pwm2's duty is its strength */
-	vibrator {
-		compatible = "pwm-vibrator";
-		pwms = <&pwm 2 50000 0>;
-		pwm-names = "enable";
-		pinctrl-0 = <&rumble_pin>;
-		pinctrl-names = "default";
-	};
 };
 
-/* The SP's X and Y keys are wired the other way round from the 2024's */
-&gpio_keys_gamepad {
-	/* Preserve the SP's X/Y wiring swap relative to the 2024. */
-	button-x { gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; }; /* PA2 */
-	button-y { gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; }; /* PA3 */
+/* The rumble motor on PH2 */
+&gamepad {
+	pwms = <&pwm 2 50000 0>;
+};
+
+&pwm {
+	pinctrl-0 = <&rumble_pin>;
+	pinctrl-names = "default";
+};
+
+&panel {
+	compatible = "anbernic,rg35xx-plus-panel", "panel-mipi-dpi-spi";
+	/* The original (FOG) panel by its ID, else the BOE ("v2") one */
+	firmware-names = "anbernic,rg35xx-plus-panel", "anbernic,rg35xx-sp-v2-panel";
+	display-ids = <0x305200 0xffff00>;
 };
 
 &pio {

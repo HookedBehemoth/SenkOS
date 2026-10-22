@@ -24,12 +24,12 @@ Upstream-Status: Pending
 ---
 
 diff --git a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
-index 315533f..d93d77a 100644
+index b887575b..d095181d 100644
 --- a/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
 +++ b/arch/arm/include/asm/arch-sunxi/dram_sun50i_h616.h
-@@ -178,4 +178,24 @@ static inline int ns_to_t(const struct dram_para *para, int nanoseconds)
- void mctl_set_timing_params(const struct dram_para *para);
+@@ -179,4 +179,24 @@ void mctl_set_timing_params(const struct dram_para *para);
  void mctl_set_timing_params_lpddr3(const struct dram_para *para);
+ bool sunxi_dram_lpddr3(void);
  
 +/*
 + * Super standby handshake with TF-A, in RTC general purpose registers (the RTC domain keeps
@@ -53,7 +53,7 @@ index 315533f..d93d77a 100644
 +
  #endif /* _SUNXI_DRAM_SUN50I_H616_H */
 diff --git a/arch/arm/mach-sunxi/Kconfig b/arch/arm/mach-sunxi/Kconfig
-index 470aa04..0c1bdec 100644
+index 470aa043..0c1bdec8 100644
 --- a/arch/arm/mach-sunxi/Kconfig
 +++ b/arch/arm/mach-sunxi/Kconfig
 @@ -715,6 +715,14 @@ config SUNXI_DRAM_A523_LPDDR4
@@ -72,7 +72,7 @@ index 470aa04..0c1bdec 100644
  	bool "Also support LPDDR3 boards, told apart by the boot0 DRAM straps"
  	depends on DRAM_SUN50I_H616 && SUNXI_DRAM_H616_LPDDR4 && AXP717_POWER
 diff --git a/arch/arm/mach-sunxi/dram_sun50i_h616.c b/arch/arm/mach-sunxi/dram_sun50i_h616.c
-index e94fcf8..b15193e 100644
+index cc5aed1e..c0f537e5 100644
 --- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
 +++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
 @@ -12,6 +12,8 @@
@@ -84,14 +84,13 @@ index e94fcf8..b15193e 100644
  #include <init.h>
  #include <log.h>
  #include <asm/io.h>
-@@ -19,12 +21,14 @@
+@@ -19,11 +21,13 @@
  #include <asm/arch/dram.h>
  #include <asm/arch/dram_dw_helpers.h>
  #include <asm/arch/cpu.h>
 +#include <asm/arch/pmic_bus.h>
  #include <asm/arch/prcm.h>
  #include <asm/gpio.h>
- #include <axp_pmic.h>
  #include <sunxi_gpio.h>
  #include <linux/bitops.h>
  #include <linux/delay.h>
@@ -99,7 +98,7 @@ index e94fcf8..b15193e 100644
  
  enum {
  	MBUS_QOS_LOWEST = 0,
-@@ -63,6 +67,9 @@ static void mbus_configure_port(u8 port,
+@@ -62,6 +66,9 @@ static void mbus_configure_port(u8 port,
  	mbus_configure_port(port, true, priority, \
  			    MBUS_QOS_ ## qos, 0, acs, bwl0, bwl1, bwl2)
  
@@ -109,7 +108,7 @@ index e94fcf8..b15193e 100644
  static void mctl_set_master_priority(void)
  {
  	struct sunxi_mctl_com_reg * const mctl_com =
-@@ -1054,6 +1061,10 @@ static bool mctl_phy_init(const struct dram_para *para,
+@@ -1053,6 +1060,10 @@ static bool mctl_phy_init(const struct dram_para *para,
  	writel(0, &mctl_ctl->swctl);
  	clrbits_le32(&mctl_ctl->dfimisc, 0x20);
  
@@ -120,7 +119,7 @@ index e94fcf8..b15193e 100644
  	clrbits_le32(&mctl_ctl->pwrctl, 0x20);
  	writel(1, &mctl_ctl->swctl);
  	mctl_await_completion(&mctl_ctl->swstat, 1, 1);
-@@ -1288,6 +1299,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
+@@ -1287,6 +1298,10 @@ static bool mctl_ctrl_init(const struct dram_para *para,
  	else
  		mctl_set_timing_params(para);
  
@@ -131,7 +130,7 @@ index e94fcf8..b15193e 100644
  	writel(0, &mctl_ctl->pwrctl);
  
  	setbits_le32(&mctl_ctl->dfiupd[0], BIT(31) | BIT(30));
-@@ -1399,6 +1414,71 @@ static bool dram_straps_lpddr3(void)
+@@ -1398,6 +1413,71 @@ bool sunxi_dram_lpddr3(void)
  }
  #endif
  
@@ -203,8 +202,8 @@ index e94fcf8..b15193e 100644
  unsigned long sunxi_dram_init(void)
  {
  	void *const prcm = (void *)SUNXI_PRCM_BASE;
-@@ -1414,6 +1494,23 @@ unsigned long sunxi_dram_init(void)
- 	}
+@@ -1410,6 +1490,23 @@ unsigned long sunxi_dram_init(void)
+ 		p = &para_lpddr3;
  #endif
  
 +#ifdef CONFIG_SUNXI_SUPER_STANDBY

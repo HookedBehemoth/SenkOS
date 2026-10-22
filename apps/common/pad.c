@@ -35,7 +35,7 @@ int input_open(str name, int flags) {
   return fd;
 }
 
-int pad_open(int flags) { return input_open(S("gpio-keys-gamepad"), flags); }
+int pad_open(int flags) { return input_open(S("Anbernic Gamepad"), flags); }
 
 int pad_button(unsigned code) {
   switch (code) {
@@ -76,12 +76,12 @@ static uint32_t pad_bits(int fd, unsigned long request) {
 
 uint32_t pad_held(int fd) { return pad_bits(fd, EVIOCGKEY(KEY_MAX / 8 + 1)); }
 
-uint32_t pad_has(int fd, int stick) {
+uint32_t pad_has(int fd) {
   const uint32_t sticks = ((1u << (APPCTL_RS_RIGHT + 1)) - 1) & ~((1u << APPCTL_LS_UP) - 1);
-  return pad_bits(fd, EVIOCGBIT(EV_KEY, KEY_MAX / 8 + 1)) | (stick >= 0 ? sticks : 0);
+  uint8_t abs[ABS_MAX / 8 + 1] = {0};
+  const bool has_sticks = fd >= 0 && ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs)), abs) >= 0 && (abs[0] & 1 << ABS_X);
+  return pad_bits(fd, EVIOCGBIT(EV_KEY, KEY_MAX / 8 + 1)) | (has_sticks ? sticks : 0);
 }
-
-int stick_open(int flags) { return input_open(S("adc-joystick"), flags); }
 
 /* Of full tilt (~9%): a stick at rest reads off center */
 #define DEAD_ZONE 0x0c00

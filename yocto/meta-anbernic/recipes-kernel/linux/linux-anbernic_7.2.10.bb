@@ -14,13 +14,13 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://defconfig \
     file://dts \
     file://firmware \
+    file://drivers \
     file://0001-0002-rg35xx-enable-HDMI-LCD.patch \
     file://0002-0003-Update-sun8i_tcon_top.c.patch \
     file://0004-0008-v8_20260804_james_hilliard1_introduce_allwinner.patch \
     file://0006-0040-Revert-usb-musb-Fix-hardware-lockup-on-first-Rx.patch \
     file://0007-0110-v2_20250226_kikuchan98_drm_panel_add_generic_mi.patch \
     file://0012-0151-phy-fix-OTG-host-mode.patch \
-    file://0015-0154-rocknix-dt-id.patch \
     file://0016-0155-sun4i-set-rgb-connector-as-DSI.patch \
     file://0018-0157-input-axp20x-pek-do-not-report-the-key-press-th.patch \
     file://0019-0158-mmc-sunxi-mmc-mask-data0-when-updating-the-cloc.patch \
@@ -28,12 +28,7 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0022-0161-drm-sun4i-gate-the-display-pipeline-across-syst.patch \
     file://0023-0162-pinctrl-sunxi-release-the-lcd0-pads-while-the-p.patch \
     file://0024-0163-asoc-sun4i-codec-suspend-the-codec-and-switch-t.patch \
-    file://0025-0200-h700-update-opps.patch \
-    file://0026-0204-dts-Enable-hdmi-sound.patch \
-    file://0027-0210-h616-cpu-opp-mark-480MHz-as-suspend-opp.patch \
-    file://0029-arm64-dts-allwinner-add-RG35XX-SP-v2-panel-dts.patch \
     file://0030-drm-sun4i-rgb-set-panel-orientation-before-connector.patch \
-    file://0031-arm64-dts-allwinner-h616-add-the-video-engine-Cedrus.patch \
     file://0032-iommu-sun50i-only-translate-masters-that-are-IOMMU-c.patch \
     file://0033-drivers-staging-media-sunxi-cedrus-add-H616-variant.patch \
     file://0034-media-cedrus-Don-t-CPU-map-source-buffers.patch \
@@ -43,7 +38,6 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0038-media-cedrus-Add-P010-capture-format-and-shared-10-b.patch \
     file://0039-media-cedrus-Add-VP9-P010-output-support.patch \
     file://0040-media-cedrus-Add-H265-P010-output-support.patch \
-    file://0042-arm64-dts-allwinner-h616-put-the-display-engine-behind-the-IOMMU.patch \
     file://0044-iommu-sun50i-program-the-IOMMU-again-after-a-power-l.patch \
     file://0045-thermal-sun8i-calibrate-and-set-up-the-sensors-again.patch \
     file://0046-drm-sun4i-mixer-set-the-DE33-mixer-up-again-on-resum.patch \
@@ -63,7 +57,8 @@ SRC_URI = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${PV}.tar.xz \
     file://0061-input-axp20x-pek-the-AXP717-s-power-key-timings.patch \
     file://0063-drm-sun4i-latch-DE33-register-writes-at-vblank.patch \
     file://0064-drm-sun4i-switch-refresh-rate-without-a-modeset.patch \
-    file://0065-input-adc-joystick-invert-by-the-axis-code-not-the-c.patch \
+    file://0066-drm-panel-mipi-choose-the-firmware-by-the-panel-s-di.patch \
+    file://0067-iio-adc-sun20i-gpadc-set-the-ADC-up-again-on-resume.patch \
 "
 SRC_URI[sha256sum] = "2feaa70453e91f541be6a5c9078d8168e081af45a3d9718054850538cff2ebf3"
 
@@ -72,5 +67,15 @@ S = "${UNPACKDIR}/linux-${PV}"
 # Panel init + wifi/bt firmware built in (CONFIG_EXTRA_FIRMWARE): no initramfs
 do_configure:prepend() {
     cp -rT ${UNPACKDIR}/firmware ${S}/external-firmware
-    install -m 0644 ${UNPACKDIR}/dts/sun50i-h700-anbernic-*.dts ${UNPACKDIR}/dts/sun50i-h700-anbernic-*.dtsi ${S}/arch/arm64/boot/dts/allwinner/
+    # Our device trees, the SoC's too: in place of the kernel's, and each board's dtb built
+    dts=${S}/arch/arm64/boot/dts/allwinner
+    install -m 0644 ${UNPACKDIR}/dts/*.dts ${UNPACKDIR}/dts/*.dtsi $dts/
+    for f in ${UNPACKDIR}/dts/*.dts; do
+        dtb=$(basename $f .dts).dtb
+        grep -q " $dtb\$" $dts/Makefile || echo "dtb-\$(CONFIG_ARCH_SUNXI) += $dtb" >> $dts/Makefile
+    done
+    # The built-in pad (buttons and sticks as one device)
+    install -m 0644 ${UNPACKDIR}/drivers/anbernic-gamepad.c ${S}/drivers/input/joystick/
+    grep -q anbernic-gamepad ${S}/drivers/input/joystick/Makefile ||
+        echo 'obj-y += anbernic-gamepad.o' >> ${S}/drivers/input/joystick/Makefile
 }

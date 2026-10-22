@@ -5,7 +5,7 @@
  */
 
 #include "sun50i-h700-anbernic-rg35xx-plus.dts"
-#include "sun50i-h700-anbernic-adc-joystick.dtsi"
+#include "sun50i-h700-anbernic-sticks.dtsi"
 
 / {
 	model = "Anbernic RG CubeXX";
@@ -40,12 +40,12 @@
 &axis_rx { abs-range = <4096 0>; };
 &axis_ry { abs-range = <0 4096>; };
 
-/ {
-	vibrator {
-		compatible = "pwm-vibrator";
-		pwms = <&pwm 3 1000000 0>;
-		pwm-names = "enable";
-		pinctrl-0 = <&pwm3_pin>;
-		pinctrl-names = "default";
-	};
+/* The rumble motor */
+&gamepad {
+	pwms = <&pwm 3 1000000 0>;
+};
+
+&pwm {
+	pinctrl-0 = <&pwm3_pin>;
+	pinctrl-names = "default";
 };

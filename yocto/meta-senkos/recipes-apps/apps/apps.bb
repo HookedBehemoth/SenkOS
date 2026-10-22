@@ -1,4 +1,4 @@
-SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, Weston's shell, the media player, corehost, downloadd, sysd, refreshtest, qemupad, and common/ and bus/ (our D-Bus interfaces) that they share"
+SUMMARY = "Our apps, built in one go from the repo's apps/: the launcher, Weston's shell, the media player, corehost, downloadd, sysd, refreshtest, padtest, qemupad, and common/ and bus/ (our D-Bus interfaces) that they share"
 # Ours; the icons are Lucide's (ISC), corehost's libretro headers MIT, the shell (from
 # Weston's kiosk-shell) MIT. Listed so their
 # texts land in the image with ours (the launcher's Licenses screen).
@@ -14,7 +14,7 @@ S = "${UNPACKDIR}/apps"
 
 inherit meson pkgconfig deploy
 
-# No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev).
+# No SDL: common/ is the window (Wayland, xdg-shell) and the pad (evdev). padtest only: it shows SDL's view.
 # common/ui: Vulkan, HarfBuzz, fontconfig, FreeType, the image decoders.
 # shell: libweston. launcher: Weston's capture protocol, ALSA, zlib, libpulse (the volume keys),
 # libsquashfuse (AppImages' names and icons). mediaplayer: GStreamer.
@@ -23,10 +23,10 @@ inherit meson pkgconfig deploy
 # from eglGetProcAddress), ALSA, zlib.
 DEPENDS = "weston vulkan-loader vulkan-headers glslang-native harfbuzz fontconfig freetype \
     libpng libjpeg-turbo libwebp wayland wayland-native wayland-protocols alsa-lib zlib pulseaudio curl zstd openssl squashfuse \
-    gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2"
+    gstreamer1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-bad virtual/egl virtual/libgles2 libsdl2 libsdl2-ttf"
 
 # A package each, so each app brings what it needs at runtime
-PACKAGES =+ "launcher senkos-shell mediaplayer corehost downloadd sysd refreshtest qemupad"
+PACKAGES =+ "launcher senkos-shell mediaplayer corehost downloadd sysd refreshtest padtest qemupad"
 FILES:launcher = "${bindir}/launcher"
 FILES:senkos-shell = "${libdir}/weston/senkos-shell.so"
 RDEPENDS:senkos-shell = "weston"
@@ -36,6 +36,9 @@ FILES:sysd = "${sbindir}/sysd ${sbindir}/suspend ${datadir}/dbus-1/system.d/org.
 RDEPENDS:sysd = "dbus"
 # A test pattern, not in the image: copied to /data/apps/benchmarks to try a refresh rate
 FILES:refreshtest = "${bindir}/refreshtest"
+# The same for the pad as SDL sees it, rumble included
+FILES:padtest = "${bindir}/padtest"
+RDEPENDS:padtest = "liberation-fonts"
 # qemu's keyboard as the pad (senkos-qemu)
 FILES:qemupad = "${bindir}/qemupad"
 # TLS: the server

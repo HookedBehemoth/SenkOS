@@ -26,10 +26,22 @@
 	};
 };
 
+/* X and Y are wired the other way round from the 2024's */
+&gamepad {
+	button-x { gpios = <&pio 0 2 GPIO_ACTIVE_LOW>; }; /* PA2 */
+	button-y { gpios = <&pio 0 3 GPIO_ACTIVE_LOW>; }; /* PA3 */
+};
+
 /* SPL selects LPDDR3 (1.2 V) or LPDDR4 (1.1 V) from the DRAM straps. */
 &reg_dcdc3 {
 	regulator-min-microvolt = <1100000>;
 	regulator-max-microvolt = <1200000>;
+};
+
+/* The RTL8821CS' supply, for its Bluetooth too: on before hci_h5 resets
+ * that, and while the WiFi card is powered off */
+&reg_cldo4 {
+	regulator-always-on;
 };
 
 /* SDIO WiFi RTL8821CS */
@@ -64,5 +76,7 @@
 		device-wake-gpios = <&pio 6 17 GPIO_ACTIVE_HIGH>; /* PG17 */
 		enable-gpios = <&pio 6 19 GPIO_ACTIVE_HIGH>; /* PG19 */
 		host-wake-gpios = <&pio 6 16 GPIO_ACTIVE_HIGH>; /* PG16 */
+		/* Not read by hci_h5: only so the PMIC probes first (fw_devlink) */
+		vbat-supply = <&reg_cldo4>;
 	};
 };
