@@ -15,8 +15,8 @@ if [ ! -e $pm/control.txt ]; then
 		exit 1
 	}
 fi
-# What PortMaster and the ports source for this OS (control.txt names it by os-release's NAME)
-ln -sfn /usr/share/senkos/portmaster/mod_SenkOS.txt $pm/mod_SenkOS.txt
+# What PortMaster and the ports source for this OS (control.txt names them by os-release's NAME)
+for f in mod_SenkOS.txt libgl_SenkOS.txt; do ln -sfn /usr/share/senkos/portmaster/$f $pm/$f; done
 # Their dot folders and runtime mount points (~/godot, ~/mono) off /data's top. bind_directories
 # links into ~/.local/share and ~/.config without making them.
 export HOME=/data/OS/saves/ports

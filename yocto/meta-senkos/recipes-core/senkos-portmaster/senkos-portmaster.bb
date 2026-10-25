@@ -7,7 +7,7 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c5
 # PortMaster's GUI release: `portmaster` extracts it onto the card when it isn't there, then it
 # updates itself
 PORTMASTER_VERSION = "2026.10.24-1611"
-SRC_URI = "file://portmaster file://mod_SenkOS.txt file://mount file://umount file://portmaster.desktop file://portmaster.png \
+SRC_URI = "file://portmaster file://mod_SenkOS.txt file://libgl_SenkOS.txt file://mount file://umount file://portmaster.desktop file://portmaster.png \
     https://github.com/PortsMaster/PortMaster-GUI/releases/download/${PORTMASTER_VERSION}/PortMaster.zip;downloadfilename=PortMaster-${PORTMASTER_VERSION}.zip;unpack=0 \
 "
 SRC_URI[sha256sum] = "a1c6df01b40cbefeef9ce1f6d3d48ad7c365e75fa4c10438d865ea39ce93e0cd"
@@ -20,6 +20,7 @@ do_install() {
     install -Dm0755 ${S}/portmaster ${D}${bindir}/portmaster
     install -Dm0644 ${S}/mod_SenkOS.txt ${D}${datadir}/senkos/portmaster/mod_SenkOS.txt
     sed -i 's#@LIBDIR@#${libdir}#' ${D}${datadir}/senkos/portmaster/mod_SenkOS.txt
+    install -Dm0644 ${S}/libgl_SenkOS.txt ${D}${datadir}/senkos/portmaster/libgl_SenkOS.txt
     install -m0644 ${S}/PortMaster-${PORTMASTER_VERSION}.zip ${D}${datadir}/senkos/portmaster/PortMaster.zip
     install -Dm0755 ${S}/mount ${D}${libexecdir}/portmaster/mount
     install -Dm0755 ${S}/umount ${D}${libexecdir}/portmaster/umount
