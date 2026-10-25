@@ -10,7 +10,7 @@ SRC_URI = "git://github.com/u-osmi/rtl8821cs-arm64.git;protocol=https;branch=mai
 
 inherit module
 
-COMPATIBLE_MACHINE = "rg35xx-sp"
+COMPATIBLE_MACHINE = "h700"
 
 # Use Yocto's kernel toolchain and prepared build, bypassing the upstream
 # standalone Makefile's host/platform detection and installation commands.

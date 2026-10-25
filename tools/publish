@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEPLOY = Path('/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp')
+DEPLOY = Path('/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/h700')
 
 
 def settings():
@@ -74,9 +74,9 @@ def admin(path, body=None, content_type='application/json', method='PUT'):
 
 def os_release(args):
     deploy = Path(args.deploy)
-    slot = (deploy / 'senkos-image-rg35xx-sp.rootfs.squashfs-lz4').resolve()
-    card = (deploy / 'senkos-image-rg35xx-sp.rootfs.wic.gz').resolve()
-    bmap = (deploy / 'senkos-image-rg35xx-sp.rootfs.wic.bmap').resolve()
+    slot = (deploy / 'senkos-image-h700.rootfs.squashfs-lz4').resolve()
+    card = (deploy / 'senkos-image-h700.rootfs.wic.gz').resolve()
+    bmap = (deploy / 'senkos-image-h700.rootfs.wic.bmap').resolve()
     build = subprocess.run(['unsquashfs', '-cat', str(slot), 'etc/build'], capture_output=True, text=True,
                            check=True).stdout.strip()
     if len(build) != 14 or not build.isdigit():

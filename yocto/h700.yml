@@ -1,7 +1,7 @@
 header:
   version: 18
 
-machine: rg35xx-sp
+machine: h700
 distro: senkos
 target: senkos-image
 

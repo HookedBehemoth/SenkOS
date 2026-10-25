@@ -5,7 +5,7 @@
 # usage: tools/ota [rootfs.squashfs-lz4]      (default: latest senkos-image build)
 set -e
 cd "$(dirname "$0")"
-img=${1:-/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/rg35xx-sp/senkos-image-rg35xx-sp.rootfs.squashfs-lz4}
+img=${1:-/mnt/multimedia/anbernic-yocto/build/tmp/deploy/images/h700/senkos-image-h700.rootfs.squashfs-lz4}
 from=$(./ssh 'sed -n "s/.* ab=\([ab]\).*/\1/p" /proc/cmdline')
 echo "booted slot: $from, flashing $(readlink -f "$img")"
 ./ssh -C 'ab flash' < "$img"

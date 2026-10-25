@@ -6,8 +6,8 @@
 set -e
 cd "$(dirname "$0")"
 # kas-container takes its work dir from the cwd
-(cd ../yocto && ./kas build --target apps rg35xx-sp.yml)
-bin=${ANBERNIC_BUILD_ROOT:-/mnt/multimedia/anbernic-yocto}/build/tmp/deploy/images/rg35xx-sp/launcher
+(cd ../yocto && ./kas build --target apps h700.yml)
+bin=${ANBERNIC_BUILD_ROOT:-/mnt/multimedia/anbernic-yocto}/build/tmp/deploy/images/h700/launcher
 o=/data/OS/overlay/usr/bin
 # Copied, then checked: an interrupted copy leaves a short file that `cat` doesn't fail on
 size=$(wc -c < "$bin")

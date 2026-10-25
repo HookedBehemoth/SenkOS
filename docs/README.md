@@ -1,6 +1,6 @@
 # SenkOS docs
 
-A small, fast-booting OS for the Anbernic **RG35XX-SP** (Allwinner H700).
+A small, fast-booting OS for Anbernic's Allwinner **H700** handhelds (RG35XX-SP, RG40XX H).
 
 [Downloads](https://senkos.dev) · [Source](https://github.com/HookedBehemoth/SenkOS) · [Discord](https://discord.gg/JgN9gedHHQ)
 

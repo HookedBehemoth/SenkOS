@@ -12,6 +12,8 @@
 # (Windows 11 doesn't do guests and asks; macOS and Linux get in as guests, the player too).
 g=/sys/kernel/config/usb_gadget/g1
 ffs=/dev/ffs-mtp
+# What the PC lists the handheld as: the device tree's model, "Anbernic RG35XX SP" -> RG35XX-SP
+name=$(tr -d '\0' < /proc/device-tree/model | sed 's/^Anbernic //; s/ /-/g')
 
 # The gadget's third function: acm.usb0 or ffs.mtp. The host sees it unplugged and plugged in
 # again (ssh over NCM reconnects): unplugged for a second, or it misses that and keeps talking
@@ -48,7 +50,7 @@ smb_start() {
 	share() { printf '\n[%s]\n\tpath = %s\n\tread only = no\n\tguest ok = yes\n' "$2" "$1"; }
 	mkdir -p /run/ksmbd
 	{
-		printf '[global]\n\tnetbios name = RG35XX-SP\n\tserver string = RG35XX-SP\n'
+		printf '[global]\n\tnetbios name = %s\n\tserver string = %s\n' "$name" "$name"
 		printf '\tbind interfaces only = yes\n\tinterfaces = usb0\n\tguest account = player\n'
 		# The player is the guest too, and guests may list the shares only with this
 		printf '\n[ipc$]\n\tguest ok = yes\n'
@@ -58,6 +60,10 @@ smb_start() {
 	# MD4 of the empty password, base64 (what ksmbd.adduser writes)
 	echo 'player:MdbP4NFq6TG3PFnX4MCJwA==' > /run/ksmbd/ksmbdpwd.db
 	ksmbd.mountd 7>&-
+	# /etc/avahi/services is a link here
+	mkdir -p /run/avahi-services
+	printf '<service-group><name>%s</name><service><type>_smb._tcp</type><port>445</port></service></service-group>\n' \
+		"$name" > /run/avahi-services/smb.service
 	avahi-daemon -D 7>&-
 }
 
@@ -83,8 +89,8 @@ mtp_start() {
 		default_gid $player_gid
 		show_hidden_files 0
 		manufacturer "SenkOS"
-		product "RG35XX-SP"
-		serial "RG35XX-SP"
+		product "$name"
+		serial "$name"
 		firmware_version "1"
 		interface "MTP"
 		usb_vendor_id 0x1d6b

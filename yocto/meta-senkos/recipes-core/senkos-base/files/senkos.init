@@ -45,7 +45,7 @@ if [ ! -d $g ]; then
 	mkdir $g/strings/0x409 $g/configs/c.1 $g/functions/ncm.usb0 $g/functions/acm.usb0 \
 		$g/functions/ffs.mtp
 	echo SenkOS > $g/strings/0x409/manufacturer
-	echo RG35XX-SP > $g/strings/0x409/product
+	tr -d '\0' < /proc/device-tree/model | sed 's/^Anbernic //; s/ /-/g' > $g/strings/0x409/product
 	# fixed MACs: host keeps the same interface/connection across reboots
 	echo 02:35:58:00:00:01 > $g/functions/ncm.usb0/dev_addr
 	echo 02:35:58:00:00:02 > $g/functions/ncm.usb0/host_addr

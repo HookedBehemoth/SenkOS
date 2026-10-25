@@ -5,18 +5,18 @@ because the host (Arch, Python 3.14) isn't a supported Yocto host.
 
 ```
 cd yocto
-./kas build rg35xx-sp.yml                     # image
-./kas build --target apps rg35xx-sp.yml       # one recipe
-./kas shell rg35xx-sp.yml                     # bitbake shell
+./kas build h700.yml                     # image
+./kas build --target apps h700.yml       # one recipe
+./kas shell h700.yml                     # bitbake shell
 ```
 
 `./kas` wraps `kas-container` (podman) and puts `build/`, `downloads/` and `sstate-cache/` in
 `/mnt/multimedia/anbernic-yocto` (override with `ANBERNIC_BUILD_ROOT`). They can't live in /home: its btrfs
 runs out of metadata space under Yocto's many small files.
 
-Output in `build/tmp/deploy/images/rg35xx-sp/`:
-- `senkos-image-rg35xx-sp.rootfs.wic.gz` (+ `.wic.bmap`): a whole card
-- `senkos-image-rg35xx-sp.rootfs.squashfs-lz4`: one slot, what `tools/ota` flashes
+Output in `build/tmp/deploy/images/h700/`:
+- `senkos-image-h700.rootfs.wic.gz` (+ `.wic.bmap`): a whole card
+- `senkos-image-h700.rootfs.squashfs-lz4`: one slot, what `tools/ota` flashes
 
 ## Layers
 
@@ -31,7 +31,7 @@ Output in `build/tmp/deploy/images/rg35xx-sp/`:
 meta-anbernic, what any distro needs to boot the board:
 ```
 conf/machine/include/h700.inc      SoC: cortexa53-crypto tune, TF-A, U-Boot/SPL, kernel, Mesa's GPU driver
-conf/machine/rg35xx-sp.conf        board: dtbs, U-Boot defconfig, consoles, Wi-Fi
+conf/machine/h700.conf             board: dtbs, U-Boot defconfig, consoles, Wi-Fi
 recipes-bsp/                       U-Boot 2026.07 (sunxi/H616 patches: DRAM straps, super standby, off on a plug-in), TF-A (+ suspend stub)
 recipes-kernel/linux/              linux-anbernic: Linux 7.2 + patches, savedefconfig, built-in firmware
 recipes-graphics/mesa/             Mesa main snapshot + Mali-G31 fixes
@@ -54,7 +54,7 @@ recipes-emulators/, recipes-games/ libretro cores (in the image)
 ## Flashing a card
 
 ```
-sudo bmaptool copy …/senkos-image-rg35xx-sp.rootfs.wic.gz /dev/sdX
+sudo bmaptool copy …/senkos-image-h700.rootfs.wic.gz /dev/sdX
 ```
 Put it in **TF1**. The first boot creates `/data` from the rest of the card. After that, update over USB
 ([dev-workflow.md](dev-workflow.md)).

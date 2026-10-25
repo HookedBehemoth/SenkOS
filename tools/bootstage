@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Print the handheld's U-Boot bootstage records (needs a bootloader built with UBOOT_BOOTSTAGE = "1":
-# add it to local_conf_header in yocto/rg35xx-sp.yml, `./kas build --target u-boot`, flash it).
+# add it to local_conf_header in yocto/h700.yml, `./kas build --target u-boot`, flash it).
 # Times are from SoC reset. SPL's first mark comes after DRAM init: SPL has no heap before that.
 import os, struct, subprocess, sys, tarfile
 

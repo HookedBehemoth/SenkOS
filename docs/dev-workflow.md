@@ -26,8 +26,8 @@ stops it (sysd's `ssh off`), and `/data/OS/dropbear/disabled` keeps it off at bo
 | The launcher | `tools/deploy-launcher`: builds it, puts it in `/data/OS/overlay/usr/bin/launcher`, runs `overlay` and restarts it |
 | Weston's shell | `apps/shell` builds with the apps (`senkos-shell.so` in the deploy dir): into `/data/OS/overlay/usr/lib64/weston/` by a copy and a rename, then reboot (Weston has it mapped; `overlay` would write over it) |
 | corehost, mediaplayer, a core | copy it to the same path under `/data/OS/overlay` (`OS/overlay/usr/lib64/libretro/` for a core), then run `overlay` |
-| `boot.scr` ([boot.cmd](../yocto/meta-senkos/recipes-bsp/u-boot/files/boot.cmd)), the splash | `tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/rg35xx-sp/boot.scr`; not in a slot, so an OTA doesn't update them |
-| SPL/U-Boot/TF-A | `tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/rg35xx-sp/u-boot-sunxi-with-spl.bin`; shared by both slots. Recovery: flash the full `.wic.gz` from a PC |
+| `boot.scr` ([boot.cmd](../yocto/meta-senkos/recipes-bsp/u-boot/files/boot.cmd)), the splash | `tools/ssh 'cat > /uboot/boot.scr.new && mv /uboot/boot.scr.new /uboot/boot.scr && sync' < …/deploy/images/h700/boot.scr`; not in a slot, so an OTA doesn't update them |
+| SPL/U-Boot/TF-A | `tools/ssh 'dd of=/dev/mmcblk0 bs=1k seek=8 && sync' < …/deploy/images/h700/u-boot-sunxi-with-spl.bin`; shared by both slots. Recovery: flash the full `.wic.gz` from a PC |
 | [data/](../data) (files a new card gets: GPU benchmarks, …) | `tar cf - -C data . \| tools/ssh tar xf - -C /data` |
 
 An overlay goes back to the image's file with `tools/ssh rm /data/OS/overlay/<path>` and a reboot. When the control
