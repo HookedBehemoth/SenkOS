@@ -1,0 +1,8 @@
+#!/bin/sh
+# RetroArch from wherever this folder is, its settings in $XDG_CONFIG_HOME/retroarch: from
+# retroarch.cfg here the first time
+here=$(dirname "$(readlink -f "$0")")
+conf=${XDG_CONFIG_HOME:-$HOME/.config}/retroarch
+mkdir -p "$conf"
+[ -f "$conf/retroarch.cfg" ] || cp "$here/retroarch.cfg" "$conf/"
+exec "$here/retroarch" --config "$conf/retroarch.cfg" "$@"

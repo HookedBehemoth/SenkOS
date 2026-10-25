@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RetroArch
+Comment=libretro frontend with the image's cores
+Exec=./retroarch/run
+Icon=./retroarch/icon.png
+Keywords=emulator;libretro;
+Categories=Game;Emulator;
