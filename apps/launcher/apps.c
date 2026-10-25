@@ -675,9 +675,34 @@ static bool is_dir(const char *path) {
   return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+typedef STRBUF(256) folder_path;
+
+/* The category's folder under the data root, each part matched ignoring case (gba, GBA) */
+static void category_folder(const category *c, folder_path *out) {
+  sb_set(*out, root());
+  for (str rest = c->folder; rest.n > 0;) {
+    const str part = str_cut(&rest, '/');
+    const size_t at = out->n;
+    if (!sb_add(*out, S("/"), part) || is_dir(out->p))
+      continue;
+    out->p[at] = '\0';
+    DIR *dir = opendir(out->p);
+    out->p[at] = '/';
+    for (struct dirent *d; dir != NULL && (d = readdir(dir)) != NULL;)
+      if (str_ieq(str_c(d->d_name), part)) {
+        out->n = at;
+        sb_add(*out, S("/"), str_c(d->d_name));
+        break;
+      }
+    if (dir != NULL)
+      closedir(dir);
+  }
+}
+
 bool apps_present(const category *c) {
-  STRBUF(256) folder;
-  if ((sb_set(folder, root(), S("/"), c->folder) && is_dir(folder.p)) || (c->image.n > 0 && is_dir(c->image.p)))
+  folder_path folder;
+  category_folder(c, &folder);
+  if (is_dir(folder.p) || (c->image.n > 0 && is_dir(c->image.p)))
     return true;
   for (size_t i = 0; i < source_count; i++)
     if (&categories[sources[i].category] == c && is_dir(sources[i].path.p))
@@ -827,8 +852,8 @@ void apps_cores(void) {
 /* The category's folder, then its sources */
 void apps_scan(category *c) {
   c->count = 0;
-  STRBUF(256) folder;
-  sb_set(folder, root(), S("/"), c->folder);
+  folder_path folder;
+  category_folder(c, &folder);
   const str picks = c->roms.n > 0 ? str_read(config_file("-cores", "r")) : (str){0};
   const str matched = c->roms.n > 0 ? str_read(config_file("-matches", "r")) : (str){0};
   scan_folder(c, picks, matched, sb_str(folder));
