@@ -2,7 +2,7 @@ SUMMARY = "RG35XX-SP glue: USB gadget (network + serial console), A/B slots + /d
 LICENSE = "AGPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/AGPL-3.0-only;md5=73f1eb20517c55bf9493b7dd6e480788"
 
-SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://sdcard-mount file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://backlight.rules file://pipewire.conf file://wireplumber.conf file://wpa_supplicant-launcher.conf file://dbus-session.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock"
+SRC_URI = "file://senkos.init file://ab file://udhcpd.conf file://panvk.sh file://wayland.sh file://weston.init file://weston.ini file://sdcard.rules file://sdcard-mount file://usb-gadget-check file://stop-all file://save-settings file://usb file://overlay file://usb-gadget.rules file://data-init.init file://zz-data.sh file://uinput.rules file://wake.rules file://backlight.rules file://pipewire.conf file://wireplumber.conf file://wpa_supplicant-launcher.conf file://dbus-session.conf file://wifi file://wifi.conf file://90ntp file://updates file://clock file://h700-fingerprint"
 S = "${UNPACKDIR}"
 
 inherit allarch useradd
@@ -27,6 +27,7 @@ do_install() {
     install -Dm0755 ${S}/overlay ${D}${sbindir}/overlay
     install -Dm0755 ${S}/wifi ${D}${sbindir}/wifi
     install -Dm0755 ${S}/clock ${D}${sbindir}/clock
+    install -Dm0755 ${S}/h700-fingerprint ${D}${sbindir}/h700-fingerprint
     install -Dm0755 ${S}/90ntp ${D}${sysconfdir}/udhcpc.d/90ntp
     install -Dm0644 ${S}/updates ${D}${sysconfdir}/updates
     # udev would load it at boot, by the card's alias, Wi-Fi off or not: `wifi on` loads it by name

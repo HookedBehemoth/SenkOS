@@ -1,0 +1,70 @@
+#!/bin/sh
+# Prints what tells H700 handhelds (and their panel revisions) apart, for picking the dtb at boot.
+# Read-only, POSIX sh, no extra tools: runs as root on ROCKNIX, Knulli, muOS or ours.
+# Usage: sh h700-fingerprint > fingerprint.txt (ours runs it once at boot: /data/fingerprint.txt)
+
+s() { echo; echo "## $1"; }
+cat_all() { for f in "$@"; do [ -r "$f" ] && echo "$f: $(tr '\0' ' ' < "$f")"; done; }
+
+s "dt"
+cat_all /proc/device-tree/model /proc/device-tree/compatible /proc/device-tree/rocknix-dt-id
+
+s "panel id"
+dmesg | grep -i "display id"
+
+s "memory"
+grep MemTotal /proc/meminfo
+
+s "drm modes"
+for c in /sys/class/drm/card*-*; do [ -r "$c/modes" ] && echo "${c##*/}: $(cat "$c/status") $(tr '\n' ' ' < "$c/modes")"; done
+
+s "i2c"
+for d in /sys/bus/i2c/devices/*; do [ -r "$d/name" ] && echo "${d##*/}: $(cat "$d/name")"; done
+
+s "sdio"
+for d in /sys/bus/sdio/devices/*; do [ -r "$d/vendor" ] && echo "${d##*/}: $(cat "$d/vendor"):$(cat "$d/device")"; done
+
+s "input"
+grep -E "^N:" /proc/bus/input/devices
+
+s "iio"
+for d in /sys/bus/iio/devices/iio:device*; do
+	[ -d "$d" ] || continue
+	echo "${d##*/}: $(cat "$d/name" 2>/dev/null)"
+	for r in "$d"/in_*_raw; do [ -r "$r" ] && echo "  ${r##*/} = $(cat "$r")"; done
+done
+
+# No board ID on H700 boards: stock firmware reads pins the board ties high or low (docs/straps.md:
+# DRAM set from PH6/7/8/10, SP panel from PE6; ours: L3 on PE8). Every pin that's off (function 7)
+# is read as input with the pull-up, then the pull-down, then put back: a strapped pin reads the same both times.
+s "pins"
+rmw() { devmem $1 32 $(( ($(devmem $1 32) & ~$2) | $3 )); }
+pull() {
+	for i in $pins; do rmw $(( A + 0x1C + i / 16 * 4 )) $(( 3 << i % 16 * 2 )) $(( $1 << i % 16 * 2 )); done
+	sleep 0.2; devmem $(( A + 0x10 )) 32
+}
+if command -v devmem >/dev/null; then
+	for bank in C2 E4 F5 G6 H7 I8; do
+		A=$(( 0x0300B000 + ${bank#?} * 0x24 )) pins=
+		for r in 0 1 2 3; do
+			c=$(devmem $(( A + 4 * r )) 32)
+			for k in 0 1 2 3 4 5 6 7; do [ $(( c >> 4 * k & 0xF )) = 7 ] && pins="$pins $(( 8 * r + k ))"; done
+		done
+		[ -n "$pins" ] || continue
+		p0=$(devmem $(( A + 0x1C )) 32) p1=$(devmem $(( A + 0x20 )) 32)
+		for i in $pins; do rmw $(( A + i / 8 * 4 )) $(( 0xF << i % 8 * 4 )) 0; done
+		u=$(pull 1) d=$(pull 2)
+		for i in $pins; do
+			[ $i -lt 16 ] && p=$p0 || p=$p1
+			rmw $(( A + 0x1C + i / 16 * 4 )) $(( 3 << i % 16 * 2 )) $(( p & 3 << i % 16 * 2 ))
+			rmw $(( A + i / 8 * 4 )) $(( 0xF << i % 8 * 4 )) $(( 7 << i % 8 * 4 ))
+			echo "P${bank%?}$i pullup=$(( u >> i & 1 )) pulldown=$(( d >> i & 1 ))"
+		done
+	done
+else
+	echo "no devmem"
+fi
+
+s "gpio"
+[ -r /sys/kernel/debug/gpio ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+cat /sys/kernel/debug/gpio 2>/dev/null || echo "no debugfs"

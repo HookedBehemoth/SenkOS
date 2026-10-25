@@ -68,3 +68,7 @@ ip link set $ifc up
 
 usb-gadget-check </dev/null >/dev/null 2>&1 &
 usb </dev/null >/dev/null 2>&1 &
+
+# What tells this board apart, for supporting it (tools/h700-fingerprint); delete it to take a new one
+f=/data/OS/fingerprint.txt
+[ -e $f ] || { h700-fingerprint > $f.tmp 2>&1 && chown player:player $f.tmp && mv $f.tmp $f; } </dev/null &
