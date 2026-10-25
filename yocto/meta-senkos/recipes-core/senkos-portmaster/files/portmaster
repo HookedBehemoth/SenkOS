@@ -1,14 +1,19 @@
 #!/bin/sh
 # PortMaster's ports ($1, their .sh) and PortMaster itself (no argument), run as they are: bash
 # scripts that source PortMaster's control.txt. PortMaster lives where its generic install puts it,
-# /roms/ports (/roms is /data/roms); the first run downloads it. It updates itself.
+# /roms/ports (/roms is /data/roms): the image's PortMaster.zip, extracted there when it isn't. It
+# updates itself.
 pm=/roms/ports/PortMaster
-if [ ! -e $pm/PortMaster.sh ]; then
-	mkdir -p /roms/ports && cd /roms/ports || exit
-	wget -q -O PortMaster.zip.part https://github.com/PortsMaster/PortMaster-GUI/releases/latest/download/PortMaster.zip &&
-		unzip -oq PortMaster.zip.part && rm PortMaster.zip.part || exit
-	# unzip leaves modes out; PortMaster's own start does the same before running anything
-	chmod -R +x PortMaster
+# The ports' runtime (control.txt and what it sources: gptokeyb, runtimes), not just the GUI's
+if [ ! -e $pm/control.txt ]; then
+	# Extracted aside and moved in whole: a half-extracted one would stay half. The launcher shows
+	# the last line of stderr when an app fails.
+	new=/roms/ports/.PortMaster.new
+	rm -rf $new && mkdir -p $new && unzip -oq /usr/share/senkos/portmaster/PortMaster.zip -d $new &&
+		chmod -R +x $new/PortMaster && rm -rf $pm && mv $new/PortMaster $pm && rmdir $new || {
+		echo "Couldn't set up PortMaster on the card: is it full?" >&2
+		exit 1
+	}
 fi
 # What PortMaster and the ports source for this OS (control.txt names it by os-release's NAME)
 ln -sfn /usr/share/senkos/portmaster/mod_SenkOS.txt $pm/mod_SenkOS.txt

@@ -16,7 +16,7 @@ S = "${UNPACKDIR}"
 # apps/emulators on the card over them (apps/launcher/apps.h).
 do_install() {
     t=${D}${datadir}/senkos
-    install -d $t/data/apps/emulators $t/data/apps/systems $t/data/roms $t/data/music $t/data/videos \
+    install -d $t/data/apps/applications $t/data/apps/emulators $t/data/apps/systems $t/data/roms $t/data/music $t/data/videos \
         $t/data/OS/config $t/data/OS/saves $t/data/OS/overlay $t/data/OS/init.d $t/data/OS/profile.d $t/data/OS/dropbear \
         $t/data/OS/assets/emulator $t/data/OS/assets/splash $t/data/OS/assets/thumbnails \
         $t/data/OS/assets/shaders $t/data/OS/assets/overlays

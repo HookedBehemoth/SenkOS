@@ -2,7 +2,9 @@
  * What the launcher offers, by category, from folders under the data root
  * ($LAUNCHER_DATA, /data by default):
  *
- * - Applications, benchmarks: apps/{applications,benchmarks}.
+ * - Applications, benchmarks: apps/{applications,benchmarks}; Applications
+ *   also the image's .desktop files (APPLICATIONS, apps.c) but for those the
+ *   card has one of the same name of, which replaces or hides (Hidden=true) it.
  *   Each *.desktop (XDG desktop entry: Name, Exec, Path, Icon, Keywords,
  *   Categories) is an app; so is any other executable without a .desktop of
  *   the same name. Exec runs under sh -c, in Path or else the folder. Icon is
@@ -68,6 +70,7 @@ typedef struct {
 typedef struct {
   str name;
   str folder; /* under the data root */
+  str image;  /* the image's .desktop files under the card's, or none */
   /* Game systems, from a .system: Aliases, Patterns, MimeType, Pack, Order, Emulator */
   str names, roms, mimes, pack, emulator;
   int order;

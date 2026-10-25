@@ -7,9 +7,14 @@
 - **Where:** `/roms` is `/data/roms`, so PortMaster's generic paths hold: PortMaster itself in
   `/roms/ports/PortMaster`, ports' folders and `.sh` scripts in `/roms/ports`. The **Ports** system
   (`ports.system`) lists the scripts; its emulator, `portmaster.desktop`, runs one with `portmaster`.
-- **PortMaster app:** `apps/applications/portmaster.desktop` runs `portmaster` with no argument. The
-  first start downloads the latest `PortMaster.zip` from GitHub (no progress shown, ~24 MB); then
-  it updates itself. Its GUI (pugwash) is Python over the image's SDL2.
+- **PortMaster app:** the image's `/usr/share/senkos/applications/portmaster.desktop` (one of the
+  same name in the card's `apps/applications` replaces or hides it) runs `portmaster` with no
+  argument. PortMaster itself is a pinned release in the image (`PORTMASTER_VERSION`,
+  `/usr/share/senkos/portmaster/PortMaster.zip`); `portmaster` extracts it into `roms/ports` when
+  `roms/ports/PortMaster/control.txt` isn't there (aside first, then moved in), no internet needed,
+  and PortMaster updates itself from then on. Its GUI (pugwash) is Python over the image's SDL2.
+  The folder is the ports' runtime as well: every port sources its `control.txt`. If the extract
+  fails, the launcher shows why (an app that fails: its last stderr line).
 - **`portmaster`** links `mod_SenkOS.txt` into PortMaster's folder (the hook file `control.txt`
   users source by `CFW_NAME`, os-release's `NAME`), sets `HOME=/data/OS/saves/ports` (ports' dot
   folders, runtime mount points), runs the script with bash, and afterwards unmounts what the port

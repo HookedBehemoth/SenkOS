@@ -28,6 +28,10 @@ typedef struct {
    * after it (then that status isn't the app's) */
   int status;
   bool outlived;
+  /* Its stderr's read end (exit_thread forwards it to ours), -1 when it kept ours; and its last
+   * line, which says why when it exits with an error */
+  int err;
+  STRBUF(160) last_line;
   screen_stack screens;
 } running;
 

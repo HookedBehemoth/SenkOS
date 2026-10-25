@@ -31,6 +31,7 @@
  * apps/emulators on the card over them */
 #define SYSTEMS "/usr/share/senkos/systems"
 #define EMULATORS "/usr/share/senkos/emulators"
+#define APPLICATIONS "/usr/share/senkos/applications"
 
 /* The systems (apps_init), then the app folders */
 enum { CATEGORIES_MAX = 64 };
@@ -38,7 +39,7 @@ static category all[CATEGORIES_MAX];
 category *categories = all;
 size_t category_count;
 static const category app_folders[] = {
-    {.name = S("Applications"), .folder = S("apps/applications")},
+    {.name = S("Applications"), .folder = S("apps/applications"), .image = S(APPLICATIONS)},
     {.name = S("Benchmarks"), .folder = S("apps/benchmarks")},
 };
 
@@ -676,7 +677,7 @@ static bool is_dir(const char *path) {
 
 bool apps_present(const category *c) {
   STRBUF(256) folder;
-  if (sb_set(folder, root(), S("/"), c->folder) && is_dir(folder.p))
+  if ((sb_set(folder, root(), S("/"), c->folder) && is_dir(folder.p)) || (c->image.n > 0 && is_dir(c->image.p)))
     return true;
   for (size_t i = 0; i < source_count; i++)
     if (&categories[sources[i].category] == c && is_dir(sources[i].path.p))
@@ -831,6 +832,15 @@ void apps_scan(category *c) {
   const str picks = c->roms.n > 0 ? str_read(config_file("-cores", "r")) : (str){0};
   const str matched = c->roms.n > 0 ? str_read(config_file("-matches", "r")) : (str){0};
   scan_folder(c, picks, matched, sb_str(folder));
+  DIR *dir = c->image.n > 0 ? opendir(c->image.p) : NULL;
+  for (struct dirent *d; dir != NULL && (d = readdir(dir)) != NULL;) {
+    STRBUF(512) mine;
+    const str name = str_c(d->d_name);
+    if (str_iends(name, S(".desktop")) && sb_set(mine, sb_str(folder), S("/"), name) && !is_file(mine.p))
+      scan_entry(c, picks, matched, &(game_list){0}, c->image, name);
+  }
+  if (dir != NULL)
+    closedir(dir);
   for (size_t i = 0; i < source_count; i++)
     if (&categories[sources[i].category] == c)
       scan_folder(c, picks, matched, sb_str(sources[i].path));

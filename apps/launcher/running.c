@@ -107,14 +107,58 @@ const char *run_app_env(const char *name) {
   return NULL;
 }
 
+/* What the app wrote to stderr so far, on to ours (the log), its last line kept; closed at
+ * its end */
+static void drain_err(running *r, char *line, size_t *len) {
+  char buf[512];
+  ssize_t n;
+  while (r->err >= 0 && (n = read(r->err, buf, sizeof(buf))) != 0) {
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
+      if (errno == EAGAIN)
+        return;
+      break;
+    }
+    (void)!write(STDERR_FILENO, buf, (size_t)n);
+    for (ssize_t i = 0; i < n; i++)
+      if (buf[i] != '\n') {
+        if (*len < sizeof(r->last_line.p) - 1)
+          line[(*len)++] = buf[i];
+      } else if (*len > 0) {
+        sb_set(r->last_line, (str){line, *len});
+        *len = 0;
+      }
+  }
+  if (*len > 0)
+    sb_set(r->last_line, (str){line, *len});
+  *len = 0;
+  if (r->err >= 0)
+    close(r->err);
+  r->err = -1;
+}
+
 /* Wakes the UI once the app is gone: it, and all it started that lives on in its cgroup (a
- * launcher script's game, SRB2's after its crash handler reaped some other child). */
+ * launcher script's game, SRB2's after its crash handler reaped some other child). Its stderr
+ * is read meanwhile: a full pipe would stop it. */
 static void *exit_thread(void *data) {
   running *r = data;
   const pid_t pid = r->pid;
+  char line[sizeof(r->last_line.p)];
+  size_t len = 0;
+  const int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+  for (;;) {
+    struct pollfd p[2] = {{.fd = pidfd, .events = POLLIN}, {.fd = r->err, .events = POLLIN}};
+    if (pidfd < 0 || poll(p, 2, -1) < 0 || p[0].revents != 0)
+      break;
+    drain_err(r, line, &len);
+  }
+  if (pidfd >= 0)
+    close(pidfd);
   int status = 0;
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
     ;
+  drain_err(r, line, &len);
   r->status = status;
   /* "populated 0" once its cgroup is empty; the kernel flags the file when that changes */
   char path[64], events[128];
@@ -125,11 +169,15 @@ static void *exit_thread(void *data) {
     if (strstr(events, "populated 0") != NULL)
       break;
     r->outlived = true;
-    struct pollfd p = {.fd = fd, .events = POLLPRI};
-    poll(&p, 1, -1);
+    struct pollfd p[2] = {{.fd = fd, .events = POLLPRI}, {.fd = r->err, .events = POLLIN}};
+    poll(p, 2, -1);
+    drain_err(r, line, &len);
   }
   if (fd >= 0)
     close(fd);
+  if (r->err >= 0)
+    close(r->err);
+  r->err = -1;
   win_wake(UI_EXITED, pid);
   return NULL;
 }
@@ -204,6 +252,9 @@ running *run_launch(str label, str icon, str exec, str arg, str dir, str system)
   snprintf(procs, sizeof(procs), APPS_CGROUP "/%d", (int)(r - runs));
   mkdir(procs, 0755);
   strcat(procs, "/cgroup.procs");
+  int err[2] = {-1, -1};
+  if (pipe2(err, O_CLOEXEC | O_NONBLOCK) != 0)
+    err[0] = err[1] = -1;
   const pid_t parent = getpid();
   const pid_t pid = env != NULL ? fork() : -1;
   if (pid == 0) {
@@ -224,6 +275,9 @@ running *run_launch(str label, str icon, str exec, str arg, str dir, str system)
     /* The app's ends survive exec */
     fcntl(pair[1], F_SETFD, 0);
     fcntl(mem, F_SETFD, 0);
+    /* Blocking for the app: the read end alone is ours to not wait on */
+    if (err[1] >= 0 && (fcntl(err[1], F_SETFL, 0) != 0 || dup2(err[1], STDERR_FILENO) < 0))
+      _exit(126);
     if (r->dir.n > 0 && chdir(r->dir.p) != 0)
       _exit(127);
     execle("/bin/sh", "sh", "-c", r->exec.p, "sh", r->arg.p, (char *)NULL, env);
@@ -232,12 +286,17 @@ running *run_launch(str label, str icon, str exec, str arg, str dir, str system)
   free(env);
   close(pair[1]);
   close(mem);
+  if (err[1] >= 0)
+    close(err[1]);
   if (pid < 0) {
+    if (err[0] >= 0)
+      close(err[0]);
     close(pair[0]);
     munmap(map, sizeof(appctl_shm));
     return NULL;
   }
   r->pid = pid;
+  r->err = err[0];
   r->ctl = pair[0];
   r->shm = map;
   spawn("exit", exit_thread, r);
@@ -312,7 +371,7 @@ void run_quit(running *r) {
 }
 
 bool run_forget(running *r, str *why) {
-  static STRBUF(96) text;
+  static STRBUF(160) text;
   const int status = r->status;
   sb_set(text, S(""));
   if (!r->outlived) {
@@ -320,6 +379,8 @@ bool run_forget(running *r, str *why) {
       sb_fmt(text, "killed by signal %d (%s)", WTERMSIG(status), strsignal(WTERMSIG(status)));
     else if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
       sb_set(text, S("exited with status 127 (command not found)"));
+    else if (WIFEXITED(status) && WEXITSTATUS(status) != 0 && r->last_line.n > 0)
+      sb_set(text, sb_str(r->last_line));
     else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
       sb_fmt(text, "exited with status %d", WEXITSTATUS(status));
   }
