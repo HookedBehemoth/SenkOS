@@ -1,0 +1,8 @@
+[System]
+Name=Ports
+Folder=roms/ports
+Aliases=ports;
+Patterns=*.sh;
+MimeType=application/x-portmaster-port;
+Order=175
+Emulator=portmaster.desktop

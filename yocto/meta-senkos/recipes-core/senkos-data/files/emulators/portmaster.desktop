@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PortMaster
+Comment=PortMaster's ports: their scripts under bash (senkos-portmaster)
+Exec=portmaster %f
+MimeType=application/x-portmaster-port;
+Categories=Game;

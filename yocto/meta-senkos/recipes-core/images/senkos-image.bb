@@ -15,6 +15,7 @@ inherit image
 # (AppImage's excludelist) and we'd otherwise lack
 # The libretro cores: run by corehost, as the emulators in senkos-data (senkos-base) say; corehost's
 # shader presets and overlays
+# senkos-portmaster: PortMaster's ports as they are (bash, Python, /roms)
 IMAGE_INSTALL = " \
     base-files \
     base-passwd \
@@ -26,6 +27,7 @@ IMAGE_INSTALL = " \
     kernel-devicetree \
     ${MACHINE_EXTRA_RDEPENDS} ${MACHINE_EXTRA_RRECOMMENDS} \
     senkos-base \
+    senkos-portmaster \
     sysd \
     downloadd \
     wpa-supplicant wpa-supplicant-cli wireless-regdb-static iw \
@@ -86,6 +88,58 @@ IMAGE_INSTALL += "${PORTS_PLATFORM}"
 IMAGE_INSTALL += "${@'' if not d.getVar('MULTILIBS') else ' '.join('lib32-' + p for p in d.getVar('PORTS_PLATFORM').split()) + ' \
     lib32-pipewire-alsa lib32-pipewire-modules-client-device lib32-pipewire-modules-adapter lib32-pipewire-modules-metadata \
     lib32-pipewire-modules-session-manager lib32-pipewire-spa-plugins-audioconvert'}"
+# Libraries by their development names too (libSDL2.so, libopenal.so, libGL.so): what dlopens them by
+# those (SoLoud's SDL2 backend; engines and runtimes in /data) finds no -dev packages here. Each
+# installed recipe's -dev package's .so links, taken from its ipk, where their targets are installed.
+# After read-only-rootfs's removals (shadow's libsubid), while the package list is still there.
+ROOTFS_POSTUNINSTALL_COMMAND:append = " senkos_dev_names"
+python senkos_dev_names () {
+    import glob
+    import json
+    import subprocess
+    import oe.packagedata
+    from oe.rootfs import image_list_installed_packages
+
+    rootfs = d.getVar('IMAGE_ROOTFS')
+    pkgdata = d.getVar('PKGDATA_DIR')
+    # Each installed package's -dev and its recipe's (gcc-runtime has libstdc++-dev)
+    devs = set()
+    for p in image_list_installed_packages(d):
+        reverse = os.path.join(pkgdata, 'runtime-reverse', p)
+        devs |= {os.path.basename(os.readlink(reverse)) + '-dev', oe.packagedata.read_pkgdatafile(reverse)['PN'] + '-dev'}
+    links = {}
+    for dev in sorted(devs):
+        info = os.path.join(pkgdata, 'runtime', dev)
+        if not os.path.exists(info):
+            continue
+        data = oe.packagedata.read_pkgdatafile(info)
+        if not any(f.endswith('.so') for f in json.loads(data.get('FILES_INFO:' + dev, '{}'))):
+            continue
+        name = data.get('PKG:' + dev, dev)
+        ipks = glob.glob(os.path.join(d.getVar('DEPLOY_DIR_IPK'), '*', '%s_%s-%s_*.ipk' % (name, data['PKGV'], data['PKGR'])))
+        if len(ipks) != 1:
+            bb.fatal('senkos_dev_names: %s: %d ipks' % (name, len(ipks)))
+        listing = subprocess.run('ar p "%s" data.tar.zst | zstd -dc | tar -tv' % ipks[0], shell=True,
+                                 check=True, capture_output=True, text=True).stdout
+        for line in listing.splitlines():
+            if line.startswith('l') and ' -> ' in line:
+                path, target = line.split(None, 5)[5].split(' -> ')
+                links['/' + os.path.normpath(path)] = target
+    # Where the target is (in the image; a link may point at another of these: libSDL2.so)
+    def installed(path, target):
+        t = target if target.startswith('/') else os.path.join(os.path.dirname(path), target)
+        return os.path.exists(os.path.join(rootfs, t.lstrip('/'))) or \
+            (os.path.normpath(t) in links and os.path.lexists(os.path.join(rootfs, os.path.normpath(t).lstrip('/'))))
+    added = True
+    while added:
+        added = False
+        for path, target in links.items():
+            link = os.path.join(rootfs, path.lstrip('/'))
+            if path.endswith('.so') and not os.path.lexists(link) and installed(path, target):
+                os.symlink(target, link)
+                added = True
+}
+
 # Developer builds (SENKOS_DEV, dev.yml): debuggers and tracers
 IMAGE_INSTALL += "${@'gdb gdbserver strace perf trace-cmd' if d.getVar('SENKOS_DEV') == '1' else ''}"
 IMAGE_LINGUAS = ""

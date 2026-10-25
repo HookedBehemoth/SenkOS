@@ -1,0 +1,4 @@
+#!/bin/sh
+# The runtimes' FUSE mounts (mount here), anything else to the real umount
+for a; do case $a in -*) ;; *) t=$a ;; esac; done
+fusermount3 -u "$t" 2>/dev/null || exec /bin/umount "$@"

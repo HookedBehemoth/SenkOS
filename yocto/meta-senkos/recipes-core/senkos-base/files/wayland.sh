@@ -21,3 +21,6 @@ export SDL_AUDIODRIVER=pipewire,alsa
 # cancel instead (STK quits). Joystick buttons are keycode order: BTN_SOUTH EAST NORTH WEST TL TR
 # TL2 TR2 SELECT START MODE THUMBL THUMBR, DPAD_UP DOWN LEFT RIGHT; axes X Y RX RY where there are sticks
 export SDL_GAMECONTROLLERCONFIG="19000000010000000100000000010000,Anbernic Gamepad,a:b1,b:b0,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,back:b8,start:b9,guide:b10,leftstick:b11,rightstick:b12,dpup:b13,dpdown:b14,dpleft:b15,dpright:b16,leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Linux,"
+# No ICU in the image: .NET programs (ports' runtimes and tools) run without locale data rather
+# than abort
+export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1

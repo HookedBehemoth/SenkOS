@@ -1,0 +1,21 @@
+#!/bin/sh
+# Ports mount their runtimes as root elsewhere ($ESUDO mount X.squashfs DIR); here they're the
+# player: a squashfs image goes over FUSE, anything else to the real mount
+img= dir=
+scan() {
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-t|-o) shift ;;
+		-*) ;;
+		*) if [ -z "$img" ]; then img=$1; else dir=$1; fi ;;
+		esac
+		shift
+	done
+}
+scan "$@"
+if [ -n "$dir" ] && [ -f "$img" ] && [ "$(dd if="$img" bs=4 count=1 2>/dev/null)" = hsqs ]; then
+	# What's left of a port that was killed: its FUSE server went with it
+	fusermount3 -uz "$dir" 2>/dev/null
+	exec squashfuse_ll "$img" "$dir"
+fi
+exec /bin/mount "$@"

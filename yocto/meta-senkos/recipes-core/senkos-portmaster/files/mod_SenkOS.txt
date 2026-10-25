@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# SenkOS: PortMaster's ports and PortMaster itself run as the player (no root, no sudo), on Weston
+# (SDL2 on Wayland, X11 through Xwayland). Sourced after control.txt (`portmaster` puts it here).
+
+# The runtimes' squashfs images mount over FUSE (mount, umount there); bind mounts are symlinks
+export PATH="/usr/libexec/portmaster:$PATH"
+export PM_CAN_MOUNT=N
+
+# No console to draw on (PM_CUR_TTY: PortMaster's own start)
+CUR_TTY=/dev/null
+export PM_CUR_TTY=/dev/null
+
+# Use for Godot 2
+GODOT2_OPTS="-r ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} -f"
+
+# Use for Godot 3+
+GODOT_OPTS="--resolution ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} -f"
+
+# The built-in pad is the OS's SDL_GAMECONTROLLERCONFIG (wayland.sh): gamecontrollerdb.txt doesn't
+# know it
+get_controls() {
+  ANALOGSTICKS="${ANALOG_STICKS:-0}"
+  LOWRES="N"
+  DEVICE="${SDL_GAMECONTROLLERCONFIG%%,*}"
+  param_device="anbernic"
+
+  export SDL_GAMECONTROLLERCONFIG_FILE="${XDG_RUNTIME_DIR:-/tmp}/gamecontrollerdb.txt"
+  printf '%s\n' "$SDL_GAMECONTROLLERCONFIG" > "$SDL_GAMECONTROLLERCONFIG_FILE"
+  sdl_controllerconfig="$SDL_GAMECONTROLLERCONFIG"
+}
+
+# The GUI's pysdl2: SDL2 is in the libdir
+pm_hook_gui_env() {
+  export PYSDL2_DLL_PATH="@LIBDIR@"
+}

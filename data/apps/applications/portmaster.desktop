@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PortMaster
+Comment=Downloads ports into Ports (roms/ports); the first start downloads PortMaster itself
+Exec=portmaster
+Path=/data/roms
+Categories=Game;

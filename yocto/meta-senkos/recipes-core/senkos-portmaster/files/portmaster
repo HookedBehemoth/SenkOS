@@ -1,0 +1,27 @@
+#!/bin/sh
+# PortMaster's ports ($1, their .sh) and PortMaster itself (no argument), run as they are: bash
+# scripts that source PortMaster's control.txt. PortMaster lives where its generic install puts it,
+# /roms/ports (/roms is /data/roms); the first run downloads it. It updates itself.
+pm=/roms/ports/PortMaster
+if [ ! -e $pm/PortMaster.sh ]; then
+	mkdir -p /roms/ports && cd /roms/ports || exit
+	wget -q -O PortMaster.zip.part https://github.com/PortsMaster/PortMaster-GUI/releases/latest/download/PortMaster.zip &&
+		unzip -oq PortMaster.zip.part && rm PortMaster.zip.part || exit
+	# unzip leaves modes out; PortMaster's own start does the same before running anything
+	chmod -R +x PortMaster
+fi
+# What PortMaster and the ports source for this OS (control.txt names it by os-release's NAME)
+ln -sfn /usr/share/senkos/portmaster/mod_SenkOS.txt $pm/mod_SenkOS.txt
+# Their dot folders and runtime mount points (~/godot, ~/mono) off /data's top. bind_directories
+# links into ~/.local/share and ~/.config without making them.
+export HOME=/data/OS/saves/ports
+mkdir -p "$HOME/.local/share" "$HOME/.config"
+# Not exec: the runtimes' FUSE servers (mount here) are sessions of their own, out of reach of
+# the launcher's Quit, and keep the app's cgroup alive after the port is done. A trap rather
+# than the default, to outlive Quit's SIGTERM; bash gets it too.
+trap : TERM
+bash "${1:-$pm/PortMaster.sh}" &
+pid=$!
+until wait $pid; rc=$?; ! kill -0 $pid 2>/dev/null; do :; done
+awk '$3 == "fuse.squashfuse_ll" { print $2 }' /proc/mounts | while read -r m; do fusermount3 -uz "$m"; done
+exit $rc

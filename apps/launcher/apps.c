@@ -4,6 +4,7 @@
 #include "running.h"
 #include "util.h"
 #include "wake.h"
+#include "xml.h"
 
 #include <dirent.h>
 #include <elf.h>
@@ -502,7 +503,96 @@ static bool matches(str name, str patterns) {
   return false;
 }
 
-static void scan_entry(category *c, str picks, str matched, str folder, str name) {
+/* Art named by ES-style game lists (<game><path>./X</path><image>./Y</image></game>): the
+ * folder's gamelist.xml (a scraper's) and its folders' gameinfo.xml (a PortMaster port's own),
+ * paths in either the folder's, entities left as written. By path, sorted. */
+typedef struct {
+  str path, image;
+} listed;
+typedef struct {
+  char *text;
+  listed *games;
+  size_t count;
+} game_list;
+
+static void list_add_file(char **text, size_t *n, const char *path) {
+  const str s = str_read(fopen(path, "r"));
+  char *grown = s.p != NULL ? realloc(*text, *n + s.n + 1) : NULL;
+  if (grown != NULL) {
+    memcpy(grown + *n, s.p, s.n);
+    *n += s.n;
+    grown[*n] = '\0';
+    *text = grown;
+  }
+  free((char *)s.p);
+}
+
+/* Without a leading "./" */
+static str without_dot(str s) { return s.n >= 2 && s.p[0] == '.' && s.p[1] == '/' ? str_at(s, 2) : s; }
+
+static int by_path(const void *a, const void *b) {
+  const str x = ((const listed *)a)->path, y = ((const listed *)b)->path;
+  const int c = memcmp(x.p, y.p, x.n < y.n ? x.n : y.n);
+  return c != 0 ? c : (x.n > y.n) - (x.n < y.n);
+}
+
+static game_list game_list_read(str folder) {
+  game_list l = {0};
+  size_t n = 0;
+  STRBUF(512) path;
+  if (sb_set(path, folder, S("/gamelist.xml")))
+    list_add_file(&l.text, &n, path.p);
+  DIR *dir = opendir(folder.p);
+  for (struct dirent *d; dir != NULL && (d = readdir(dir)) != NULL;)
+    if (d->d_name[0] != '.' && (d->d_type == DT_DIR || d->d_type == DT_UNKNOWN) &&
+        sb_set(path, folder, S("/"), str_c(d->d_name), S("/gameinfo.xml")))
+      list_add_file(&l.text, &n, path.p);
+  if (dir != NULL)
+    closedir(dir);
+  size_t capacity = 0;
+  listed g = {0};
+  str *field = NULL;
+  xml_reader r = xml_init((str){l.text, n});
+  for (xml_event e; (e = xml_next(&r)) != XML_END;) {
+    if (e == XML_START)
+      field = str_eq(r.name, S("path")) ? &g.path : str_eq(r.name, S("image")) ? &g.image : NULL;
+    else if (e == XML_TEXT && field != NULL)
+      *field = without_dot(str_trim(r.content));
+    else if (e == XML_CLOSE && str_eq(r.name, S("game"))) {
+      if (g.path.n > 0 && g.image.n > 0) {
+        if (l.count == capacity) {
+          listed *grown = realloc(l.games, (capacity = capacity ? capacity * 2 : 16) * sizeof(*grown));
+          if (grown == NULL)
+            break;
+          l.games = grown;
+        }
+        l.games[l.count++] = g;
+      }
+      g = (listed){0};
+    } else
+      field = NULL;
+  }
+  if (l.count > 0)
+    qsort(l.games, l.count, sizeof(*l.games), by_path);
+  return l;
+}
+
+static void game_list_free(game_list *l) {
+  free(l->games);
+  free(l->text);
+}
+
+static void listed_art(const game_list *l, str folder, str name, app *a) {
+  const listed key = {name, {0}}, *g = l->count ? bsearch(&key, l->games, l->count, sizeof(key), by_path) : NULL;
+  if (g == NULL)
+    return;
+  if (g->image.p[0] == '/' ? sb_set(a->icon, g->image) : sb_set(a->icon, folder, S("/"), g->image))
+    if (is_file(a->icon.p))
+      return;
+  sb_set(a->icon, S(""));
+}
+
+static void scan_entry(category *c, str picks, str matched, const game_list *art, str folder, str name) {
   STRBUF(512) path;
   struct stat st;
   if (name.p[0] == '.' || !sb_set(path, folder, S("/"), name) || stat(path.p, &st) != 0)
@@ -517,6 +607,8 @@ static void scan_entry(category *c, str picks, str matched, str folder, str name
     sb_set(a->arg, sb_str(path));
     use_core(c, a, core_of(c, picks, sb_str(path)));
     find_image(a, stem(sb_str(path)));
+    if (a->icon.n == 0)
+      listed_art(art, folder, name, a);
     /* Picked by hand, else by its CRC */
     str match;
     STRBUF(16) hex;
@@ -596,10 +688,12 @@ static void scan_folder(category *c, str picks, str matched, str folder) {
   DIR *dir = opendir(folder.p);
   if (dir == NULL)
     return;
+  game_list art = c->roms.n > 0 ? game_list_read(folder) : (game_list){0};
   struct dirent *d;
   while ((d = readdir(dir)) != NULL)
-    scan_entry(c, picks, matched, folder, str_c(d->d_name));
+    scan_entry(c, picks, matched, &art, folder, str_c(d->d_name));
   closedir(dir);
+  game_list_free(&art);
 }
 
 static bool shares_item(str a, str b) {
